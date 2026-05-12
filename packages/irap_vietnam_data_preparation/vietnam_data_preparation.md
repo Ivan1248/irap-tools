@@ -57,23 +57,23 @@ substantial changes.
 
 The metadata directory must contain the following files (names match BiH):
 
-- **`splits.json`** — `{"train": [seg_id, ...], "val": [...], "test": [...]}`,
+- **`splits.json`** – `{"train": [seg_id, ...], "val": [...], "test": [...]}`,
   segment ids as strings.
-- **`segment_id_to_data_paths_rel.json`** — `{seg_id: {"rgb": "<rel/path.png>"}}`
+- **`segment_id_to_data_paths_rel.json`** – `{seg_id: {"rgb": "<rel/path.png>"}}`
   with paths relative to the data root. BiH also has `"depth"`; we will likely
   omit it (RGB-only release).
-- **`segment_id_to_road_data.json`** — `{seg_id: {"required_attributes":
+- **`segment_id_to_road_data.json`** – `{seg_id: {"required_attributes":
   {attr_name: irap_code, ...}, ...}}`. Only `required_attributes` is consumed
   by `BihSequence`; we can keep extra keys (e.g. lat/lon, distance).
-- **`attribute_metadata.json`** — two maps:
-  - `"attribute_to_idx"`: `{attr_name: int}` — defines the canonical attribute
+- **`attribute_metadata.json`** – two maps:
+  - `"attribute_to_idx"`: `{attr_name: int}` – defines the canonical attribute
     order (and therefore the order of class indices in the loaded `target`).
   - `"attribute_value_to_irap_number"`: `{attr_name: {value_label: irap_code}}`.
     `BihSequence` enumerates the keys of each inner dict to assign class
     indices (`enumerate(... .keys())`), so the **insertion order** of value
     labels defines the class index order. We will populate `value_label` with
     the human-readable IRAP label (see Q14 for the source of these labels).
-- **`road_id_to_segment_id_sequence.json`** — `{road_id: [seg_id, seg_id, ...]}`,
+- **`road_id_to_segment_id_sequence.json`** – `{road_id: [seg_id, seg_id, ...]}`,
   ordered along the road. Used for context-window construction (offsets like
   `(0, -1, -4)`) and for N-context filtering.
 - (Optional) `seg_to_res/{train,val,test}.pickle` for N-context filtering. We
@@ -87,7 +87,7 @@ consecutiveness explicitly.
 
 ---
 
-## 2. Stage 1 — Download (already implemented)
+## 2. Stage 1 – Download (already implemented)
 
 Module: `irap_vietnam_data_preparation/download_images.py`
 
@@ -103,7 +103,7 @@ Drive** (Decision 2); we don't automate that.
 
 ---
 
-## 3. Stage 2 — Extract images (already implemented)
+## 3. Stage 2 – Extract images (already implemented)
 
 Module: `irap_vietnam_data_preparation/extract_images.py`
 
@@ -126,7 +126,7 @@ name + segment id.
 
 ---
 
-## 4. Stage 3 — Build labels and metadata from `coding-tables.zip` (TODO)
+## 4. Stage 3 – Build labels and metadata from `coding-tables.zip` (TODO)
 
 This is the new work. The zip contains XLS(X?) files with one row per labeled
 segment. Each table has many columns; we use a fixed subset:
@@ -142,7 +142,7 @@ segment. Each table has many columns; we use a fixed subset:
 | `Carriageway label` … *up to but not including* `Additional comments` | IRAP attribute values (numeric IRAP codes). Some columns may be missing codes. |
 | Additional comments                  | Ignored.                                                     |
 
-### Step 3.1 — Collect labeled rows
+### Step 3.1 – Collect labeled rows
 
 For each `.xls`/`.xlsx` in the unzipped `coding-tables/` directory:
 
@@ -164,7 +164,7 @@ For each `.xls`/`.xlsx` in the unzipped `coding-tables/` directory:
 8. Build a row record:
    `(section, distance, length, lat, lon, seg_id, comments, attr_values)`.
 
-### Step 3.2 — Match rows to images
+### Step 3.2 – Match rows to images
 
 For each row, expected image filename:
 `f"{section}_seg{seg_id}.png"` (assuming an underscore between section name
@@ -175,7 +175,7 @@ and `seg`, as in `VID_20241211_135439_00_011_seg1814508.png`).
   f"images/{filename}"}}` (the data root will be the directory **containing**
   `images/`).
 
-### Step 3.3 — Attribute schema
+### Step 3.3 – Attribute schema
 
 `attribute_metadata.json` is **supplied as an input** alongside the coding
 tables (Decision 14). We treat it as the canonical schema and only validate
@@ -188,7 +188,7 @@ the Vietnam data against it:
   labels we should have kept).
 - **Class indices** are assigned via insertion order of value labels in
   `attribute_value_to_irap_number[attr]`, matching `BihSequence`. Use the
-  **full code space** from the supplied file (Decision 15) — codes that
+  **full code space** from the supplied file (Decision 15) – codes that
   don't occur in Vietnam still get a class index, so the index space is
   shared with BiH.
 - For each row, look up each attribute's IRAP code (numeric in the XLS
@@ -197,7 +197,7 @@ the Vietnam data against it:
   on unknown codes (matches Decision 9 / BiH semantics).
 - The validated file is **copied into `IRAP_VIETNAM_METADATA/` verbatim**.
 
-### Step 3.4 — Build `segment_id_to_road_data.json`
+### Step 3.4 – Build `segment_id_to_road_data.json`
 
 For each kept segment:
 
@@ -222,7 +222,7 @@ For each kept segment:
 Rows where any required attribute is missing or `None`/blank get dropped
 (matches BiH semantics in `bih_dataset.py:356-377`).
 
-### Step 3.5 — Build `road_id_to_segment_id_sequence.json`
+### Step 3.5 – Build `road_id_to_segment_id_sequence.json`
 
 - One entry per `Section` (string `road_id`).
 - Sort the section's rows by `Distance` ascending; the value is the resulting
@@ -232,7 +232,7 @@ Rows where any required attribute is missing or `None`/blank get dropped
   ≈ 0.02. Error on violation; we depend on this for `BihSequence` context
   arithmetic.
 
-### Step 3.6 — Build `splits.json` (per-section)
+### Step 3.6 – Build `splits.json` (per-section)
 
 Goal: train/val/test should not share geography. Per-section assignment is
 sufficient (Decision 11): shuffle sections with a fixed seed, allocate to
@@ -240,7 +240,7 @@ splits by target ratio (e.g. 80/10/10). Done as the **last** step of the
 pipeline so we can iterate on splits independently of the heavy parsing
 work.
 
-### Step 3.7 — Output layout
+### Step 3.7 – Output layout
 
 ```
 <IRAP_HOME>/IRAP_VIETNAM/
@@ -260,7 +260,7 @@ The data root is `<IRAP_HOME>/IRAP_VIETNAM`; metadata sibling matches BiH's
 
 ---
 
-## 5. Stage 4 — Wire up training/eval (TODO, after Stage 3)
+## 5. Stage 4 – Wire up training/eval (TODO, after Stage 3)
 
 Reuse `BihSequence` directly: the class derives the metadata dir from the
 data dir name (`<root>_METADATA`), and integer-arithmetic context resolution
@@ -295,23 +295,23 @@ and the prefix of the matching image filename ⇒ error.
 
 Steps:
 
-1. **`parse_coding_tables.py`** — load the supplied attribute metadata,
+1. **`parse_coding_tables.py`** – load the supplied attribute metadata,
    iterate `.xls`/`.xlsx` files, validate headers against the canonical
    attribute set (Decision 7 + 14), drop non-coding files, parse rows,
    resolve duplicates (Decision 6), check single-section per file
    (Decision 5). Emit a normalized per-row Parquet/CSV +
    `parse_report.json` (counts, warnings, dropped rows).
-2. **`build_metadata.py`** — consume the parsed table + the `images/`
+2. **`build_metadata.py`** – consume the parsed table + the `images/`
    directory; emit `segment_id_to_data_paths_rel.json`,
    `segment_id_to_road_data.json`, `road_id_to_segment_id_sequence.json`
    (with consecutiveness validation, §3.5), and copy the supplied
    `attribute_metadata.json` verbatim. No image reading required;
    idempotent.
-3. **`make_splits.py`** — per-section random allocation to train/val/test
+3. **`make_splits.py`** – per-section random allocation to train/val/test
    with a fixed seed; writes `splits.json`. Run last so we can re-roll
    without redoing parsing.
-4. **Loader factory** — `make_vietnam_data` in
+4. **Loader factory** – `make_vietnam_data` in
    `vidlu_irap_gaim/data/vietnam_dataset.py` (a thin wrapper over
    `BihSequence`). The class itself is reused unchanged.
-5. **Sanity script** — load all three splits, print shapes of first
+5. **Sanity script** – load all three splits, print shapes of first
    batches, attribute class counts, split sizes, and a few example records.

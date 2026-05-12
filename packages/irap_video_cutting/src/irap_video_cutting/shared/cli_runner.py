@@ -9,7 +9,7 @@ Callers supply two callbacks to handle the parts that differ:
 
   get_duration_and_context(stem, video_path, cuts)
       Return ``(duration_s, segments, ctx)`` or ``None`` to skip this video.
-      *ctx* is opaque — it is forwarded unchanged to *cut_all*.
+      *ctx* is opaque – it is forwarded unchanged to *cut_all*.
 
   cut_all(stem, video_path, segments, snapped_starts, out_dir, ctx)
       Cut the MP4 and any sidecar files.  Return ``True`` on success,

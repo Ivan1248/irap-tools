@@ -74,7 +74,7 @@ def download_file(server: str, token: str, remote_path: str, dest: Path,
         print(f"[skip] {remote_path} ({expected_size} bytes already present)")
         return
     if existing > expected_size:
-        # Local file is larger than remote — likely corrupt; restart.
+        # Local file is larger than remote – likely corrupt; restart.
         print(f"[warn] {dest} larger than remote ({existing} > {expected_size}); "
               f"restarting download")
         dest.unlink()

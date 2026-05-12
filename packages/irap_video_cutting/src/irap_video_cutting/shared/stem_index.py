@@ -77,7 +77,7 @@ def _lookup_by_prefix(
     Returns ``(matched_stem, path)`` on success, or ``None`` if the prefix
     matches zero or more than one stem.
     """
-    # Exact match — fast path.
+    # Exact match – fast path.
     if prefix in stem_index:
         return prefix, stem_index[prefix]
 

@@ -1,6 +1,6 @@
 # IRAP tools
 
-Tools and pipelines built for the IRAP Vietnam road-survey work. Three independent Python packages:
+Tools and pipelines built for the IRAP Vietnam road-survey work.
 
 | Package | Purpose |
 |---|---|
@@ -14,4 +14,4 @@ Each package installs independently:
 uv pip install -e packages/irap_video_cutting
 ```
 
-Python 3.10+ required. Some packages additionally need `ffmpeg`/`ffprobe` or `unrar`/`7z` on `PATH` — see the package READMEs.
+Python 3.10+ required. Some packages additionally need `ffmpeg`/`ffprobe` or `unrar`/`7z` on `PATH` – see the package READMEs.

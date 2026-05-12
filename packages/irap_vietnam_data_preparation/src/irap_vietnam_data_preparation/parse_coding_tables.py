@@ -230,7 +230,7 @@ def classify_road_volume(cell: T.Any) -> int | None:
         return 5
     if v >= 1:
         return 6
-    return 7  # 0 vehicles — not applicable
+    return 7  # 0 vehicles – not applicable
 
 
 # Attributes whose table cells contain raw values (not IRAP codes) that need
@@ -372,7 +372,7 @@ def validate_columns(
             cols_str = ", ".join(f"'{c}'" for c in table_cols)
             print(
                 f"WARN: {file.name}: ignoring '{meta_attr}' "
-                f"(expected table col(s): {cols_str}) — column not found in table",
+                f"(expected table col(s): {cols_str}) – column not found in table",
                 file=sys.stderr,
             )
 
@@ -652,12 +652,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR reading {path}: {e}", file=sys.stderr)
             raise
         if df_head.empty:
-            print(f"INFO: {path.name}: skipping — empty sheet", file=sys.stderr)
+            print(f"INFO: {path.name}: skipping – empty sheet", file=sys.stderr)
             skipped_files[path.name] = "empty sheet"
             continue
         if not file_is_coding_table(
                 df_head, attribute_names, attr_name_mapping=attr_name_mapping):
-            print(f"INFO: {path.name}: skipping — not a coding table "
+            print(f"INFO: {path.name}: skipping – not a coding table "
                   f"(no 'Section' column or no recognizable attribute column)",
                   file=sys.stderr)
             skipped_files[path.name] = (
@@ -678,7 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                 empty_attrs_per_file=empty_attrs_per_file,
             )
         except ValueError as e:
-            print(f"WARN: {path.name}: skipping — column validation failed:\n{e}",
+            print(f"WARN: {path.name}: skipping – column validation failed:\n{e}",
                   file=sys.stderr)
             skipped_files[path.name] = f"column validation failed: {e}"
             continue

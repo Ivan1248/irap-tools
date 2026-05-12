@@ -22,7 +22,7 @@ indexed by the integer in its ``_seg<N>.png`` suffix, and each parquet row is
 joined to its seg_id. If exactly one image has that seg_id, it is used. Rows
 with no matching image are dropped. The image's parent folder name is compared
 to the row's ``section``; mismatches are recorded (``prefix_mismatch``) but
-not dropped — they happen because the coding-table "Section" cell and the
+not dropped – they happen because the coding-table "Section" cell and the
 RAR-side video-folder name are independently authored.
 
 Within each section, the sequence is sorted by Distance ascending. The

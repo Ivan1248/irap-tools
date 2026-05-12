@@ -35,7 +35,7 @@ def assign_splits(
     Allocation rule: cluster section centroids using K-Means. Then walk the
     shuffled clusters and assign each entire cluster to the split whose current
     size is most under its target proportion. This keeps
-    small section counts (e.g. n=4 with 80/10/10) sensible — every split
+    small section counts (e.g. n=4 with 80/10/10) sensible – every split
     receives at least one section if the ratio is nonzero.
     """
     if abs(sum(ratios) - 1.0) > 1e-6:

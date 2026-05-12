@@ -15,8 +15,8 @@ For the design rationale and decisions behind each step see
 
 ## Layout
 
-Every per-stage script takes a single positional `<data_dir>` argument — the path to
-the dataset root — and derives all subpaths internally.
+Every per-stage script takes a single positional `<data_dir>` argument – the path to
+the dataset root – and derives all subpaths internally.
 
 ```
 <data_dir>/                      # IRAP_Vietnam dataset root
@@ -59,7 +59,7 @@ already done. See `prepare_dataset.sh --help` for split-ratio / seed options.
 
 Set `DATA_DIR=/path/to/IRAP_Vietnam`.
 
-### Stage 1 — Download images from Seafile
+### Stage 1 – Download images from Seafile
 
 ```bash
 python download_images.py $DATA_DIR
@@ -67,7 +67,7 @@ python download_images.py $DATA_DIR
 
 Files are resumable (HTTP Range). Existing files with matching size are skipped. Total ≈ 110 GB across 7 `split*.rar` archives plus a small index.
 
-### Stage 2 — Extract images grouped by source video
+### Stage 2 – Extract images grouped by source video
 
 ```bash
 python extract_images.py $DATA_DIR
@@ -86,7 +86,7 @@ python extract_images.py $DATA_DIR
 - If you have an old **flat** `images/` from a previous run, delete it before
   re-running so the new layout isn't mixed with the old one.
 
-### Stage 3a — Parse coding tables
+### Stage 3a – Parse coding tables
 
 ```bash
 python parse_coding_tables.py $DATA_DIR
@@ -98,7 +98,7 @@ with `Length != 0.02 km`, missing scalar/attribute fields, unparseable
 `Image Reference FPZ`, or unknown IRAP codes. Resolves duplicate `seg_id`s
 across files by keeping the row with the most non-empty attribute cells.
 
-### Stage 3b — Build BiH-compatible metadata
+### Stage 3b – Build BiH-compatible metadata
 
 ```bash
 python build_metadata.py $DATA_DIR
@@ -111,7 +111,7 @@ recorded as `prefix_mismatch` (not dropped). Validates the section adjacency
 invariant (distance step ≈ 0.02 km between consecutive segments). The summary
 is written to `_work/build_report.json`.
 
-### Stage 3c — Assign train/val/test splits
+### Stage 3c – Assign train/val/test splits
 
 #### Automatic (K-Means)
 
@@ -131,7 +131,7 @@ streamlit run split_editor.py -- $DATA_DIR
 Opens a browser-based map showing all road sections as coloured polylines.
 
 1. Pick an active split in the sidebar (**Train / Val / Test / None**).
-2. **Draw a rectangle** on the map — all sections whose centroid falls
+2. **Draw a rectangle** on the map – all sections whose centroid falls
    inside are assigned to the active split.
 3. Use **Undo** to revert the last batch; **Reset** to clear all.
 4. **Save** writes `splits.json` in the same format as the automatic tool.
@@ -140,12 +140,6 @@ If `splits.json` already exists in the metadata directory it is used as the
 starting assignment (useful for tweaking an automatic result).
 Requires `streamlit >= 1.35`.
 
-### Stage 4 — Sanity check
+## Stage 4 – clean up
 
-```bash
-python sanity_check.py $DATA_DIR
-```
-
-Builds `{train, val, test}` via
-[`make_vietnam_data`](../vidlu_irap_gaim/data/vietnam_dataset.py) and prints split sizes,
-attribute names + class counts, and the first record's tensor shapes.
+After verifying the output, you can delete the `_raw/` and `_work/` directories.

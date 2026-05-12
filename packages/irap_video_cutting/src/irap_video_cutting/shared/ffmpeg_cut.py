@@ -4,9 +4,9 @@ Shared ffmpeg helpers for stream-copy video cutting.
 Both gpx and webgis use this module.  The two callers differ in
 two optional flags:
 
-  - movflags_faststart  (webgis: True  — puts moov atom first for HTML5 playback)
-  - strip_audio         (webgis: True  — WebGIS viewer does not use audio)
-  - original_creation_time_s_epoch  (gpx: float — embeds creation_time metadata)
+  - movflags_faststart  (webgis: True  – puts moov atom first for HTML5 playback)
+  - strip_audio         (webgis: True  – WebGIS viewer does not use audio)
+  - original_creation_time_s_epoch  (gpx: float – embeds creation_time metadata)
 """
 
 import datetime as _dt

@@ -10,7 +10,7 @@ writes ``<data_dir>/splits.json``.
 
 Interaction:
     1. Pick an active split in the sidebar (Train / Val / Test / None).
-    2. Draw a rectangle on the map — all sections whose centroid falls
+    2. Draw a rectangle on the map – all sections whose centroid falls
        inside are assigned to the active split.
     3. Undo reverts the last assignment batch; Reset clears all.
     4. Save writes splits.json in the same format as make_splits.py.
@@ -151,7 +151,7 @@ def _build_figure(
 ) -> tuple[go.Figure, dict]:
     fig = go.Figure()
 
-    # Layer 1: road polylines — 4 aggregated traces (one per split)
+    # Layer 1: road polylines – 4 aggregated traces (one per split)
     for split, color in COLORS.items():
         lats: list = []
         lons: list = []
@@ -170,7 +170,7 @@ def _build_figure(
             showlegend=False,
         ))
 
-    # Layer 2: centroids — single trace, used for box selection
+    # Layer 2: centroids – single trace, used for box selection
     sections = list(section_data)
     centroid_lats = [section_data[s]["centroid"][0] for s in sections]
     centroid_lons = [section_data[s]["centroid"][1] for s in sections]

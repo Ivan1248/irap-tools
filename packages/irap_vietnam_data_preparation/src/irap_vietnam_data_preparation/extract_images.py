@@ -6,7 +6,7 @@ artifact) and writes files under ``<out>/<video_dir>/<basename>.png``, preservin
 the per-video grouping. Same-basename files across different video directories
 are not collisions; only two archives writing the **same post-strip path** count.
 By default the script aborts on any such duplicate path; pass
-``--ignore-duplicates`` to proceed — duplicates that share (size, CRC32) are
+``--ignore-duplicates`` to proceed – duplicates that share (size, CRC32) are
 silently kept (first archive wins), while duplicates with differing content
 trigger a warning.
 
@@ -125,7 +125,7 @@ def extract(binary: str, kind: str, archive: Path, out: Path, *,
 
     Uses ``unrar x`` / ``7z x`` so subdirectories from inside the archive are
     retained. The resulting ``<out>/splitN/`` wrapper directories are *not*
-    flattened here — callers must invoke :func:`_flatten_split_wrappers` once
+    flattened here – callers must invoke :func:`_flatten_split_wrappers` once
     after all archives are extracted (deferring is required so that concurrent
     extractions of archives sharing a ``splitN/<video_dir>/`` path do not race).
 
