@@ -8,7 +8,7 @@ Video processing tools for road surveys.
 From the repository root:
 
 ```bash
-pip install -e packages/irap_video_cutting
+uv pip install -e packages/irap_video_cutting
 ```
 
 This registers the console-script entry points so they can be run from anywhere.

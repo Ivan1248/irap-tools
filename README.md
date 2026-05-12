@@ -11,7 +11,7 @@ Tools and pipelines built for the IRAP Vietnam road-survey work. Three independe
 Each package installs independently:
 
 ```bash
-pip install -e packages/irap_video_cutting
+uv pip install -e packages/irap_video_cutting
 ```
 
 Python 3.10+ required. Some packages additionally need `ffmpeg`/`ffprobe` or `unrar`/`7z` on `PATH` — see the package READMEs.

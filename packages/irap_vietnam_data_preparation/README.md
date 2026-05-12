@@ -10,7 +10,7 @@ For the design rationale and decisions behind each step see
 ## Prerequisites
 
 - `unrar` (preferred) or `7z` on `PATH` for image extraction.
-- Python packages: installed automatically by `pip install -e packages/irap_vietnam_data_preparation` from the repository root. For the Streamlit-based manual split editor, install with the `gui` extra: `pip install -e "packages/irap_vietnam_data_preparation[gui]"`.
+- Python packages: installed automatically by `uv pip install -e packages/irap_vietnam_data_preparation` from the repository root. For the Streamlit-based manual split editor, install with the `gui` extra: `uv pip install -e "packages/irap_vietnam_data_preparation[gui]"`.
 - The `IRAP_Vietnam/` dataset root, with `_raw/` populated (see "Layout" below).
 
 ## Layout
