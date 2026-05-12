@@ -1,6 +1,6 @@
 # irap-vietnam-360
 
-**NOTE: This project has mostly moved here: https://github.com/Ivan1248/gyroflow**
+**NOTE: This project has been superseded by https://github.com/Ivan1248/gyroflow**
 
 This project converts fisheye video sequences to perspective projection videos or images using GPS track data, saving one image every distance step along the path.
 

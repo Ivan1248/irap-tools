@@ -3,20 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "irap-vietnam-360"
+name = "irap-video-cutting"
 version = "0.1.0"
+description = "Cut MP4 + GPX / WebGIS sidecar files at manual timestamps"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy",
-    "tqdm",
-]
-
-[project.optional-dependencies]
-video360 = [
     "av>=10.0.0",
+    "numpy",
     "opencv-python",
     "scipy",
     "telemetry-parser",
+    "tqdm",
 ]
 
 [project.scripts]
@@ -26,5 +23,4 @@ cut-webgis     = "irap_video_cutting.webgis.cut_webgis:main"
 cut-webgis-gui = "irap_video_cutting.webgis.cut_webgis_gui:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["irap_video_cutting*", "irap_vietnam_360*"]
+where = ["src"]

@@ -1,6 +1,0 @@
-av>=10.0.0
-opencv-python
-numpy
-scipy
-tqdm
-telemetry-parser 
