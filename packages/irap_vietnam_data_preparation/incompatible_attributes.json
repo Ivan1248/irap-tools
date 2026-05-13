@@ -1,0 +1,32 @@
+{
+  "_comment": "Attribute names present in BiH attribute_metadata.json that should be excluded when parsing Vietnam coding tables (the corresponding table columns either don't exist or encode incompatible semantics).",
+  "incompatible_with_bh": [
+    "Variable speed limit",
+    "Speed limit",
+    "Centreline rumble strips",
+    "Facilities for motorcycles",
+    "Facilities for bicycles",
+    "Motorcycle %",
+    "Bicycle peak hourly flow",
+    "Pedestrian channelisation",
+    "Pedestrian peak hour flow across the road",
+    "Pedestrian peak hour flow along the road passenger-side",
+    "Pedestrian peak hour flow along the road driver-side"
+  ],
+  "ignored_from_bh": [
+    "Motorcycle speed limit",
+    "Truck Speed limit",
+    "Differential speed limits",
+    "Upgrade cost",
+    "Roadworks",
+    "Centreline rumble strips code",
+    "Motorcycle facilities",
+    "Bicycle facility",
+    "Motorcycle observed flow",
+    "Bicycle observed flow",
+    "Pedestrian observed flow across the road",
+    "Pedestrian observed flow along the road driver-side",
+    "Pedestrian observed flow along the road passenger-side",
+    "Pedestrian fencing"
+  ]
+}

@@ -10,8 +10,10 @@ For the design rationale and decisions behind each step see
 ## Prerequisites
 
 - `unrar` (preferred) or `7z` on `PATH` for image extraction.
-- Python packages: installed automatically by `uv pip install -e packages/irap_vietnam_data_preparation` from the repository root. For the Streamlit-based manual split editor, install with the `gui` extra: `uv pip install -e "packages/irap_vietnam_data_preparation[gui]"`.
+- Python packages: `uv pip install pandas openpyxl xlrd pyarrow tqdm numpy scikit-learn`. For the Streamlit-based manual split editor, also install `streamlit>=1.35 plotly`.
 - The `IRAP_Vietnam/` dataset root, with `_raw/` populated (see "Layout" below).
+
+The scripts are plain files in this directory — no installation step. Run them from here (or via the `prepare_dataset.sh` wrapper, which uses absolute paths).
 
 ## Layout
 

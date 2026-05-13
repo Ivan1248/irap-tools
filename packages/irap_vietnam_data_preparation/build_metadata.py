@@ -13,6 +13,8 @@ Writes (into <data_dir>/ directly):
     segment_id_to_road_data.json
     road_id_to_segment_id_sequence.json
     attribute_metadata.json               (copy of _raw/attribute_metadata.json)
+    unlabeled_segment_ids.json
+    unlabeled_sequence_id_to_data.json    (sequence_id -> {segs, centroid}) for editor
 
 Writes (into <data_dir>/_work/):
     build_report.json                     (counts, warnings)
@@ -38,6 +40,7 @@ from collections import defaultdict
 from pathlib import Path
 import typing as T
 
+import numpy as np
 import pandas as pd
 
 import layout
@@ -273,6 +276,42 @@ def main(argv: list[str] | None = None) -> int:
     }
     print(f"  {len(unlabeled_seg_ids)} image(s) have no matching row (unlabeled).")
 
+    # Group unlabeled seg_ids by image folder, and compute a centroid for each
+    # folder from labeled siblings in the same folder so they can be placed on
+    # the map by the split editor.
+    labeled_folder_to_seg_ids: dict[str, list[str]] = defaultdict(list)
+    for sid, rel in seg_to_path.items():
+        labeled_folder_to_seg_ids[Path(rel).parent.name].append(sid)
+    labeled_seg_to_latlon = {
+        str(row["seg_id"]): (float(row["lat"]), float(row["lon"]))
+        for _, row in df.iterrows()
+    }
+    unlabeled_folder_to_seg_ids: dict[str, list[str]] = defaultdict(list)
+    for sid in unlabeled_seg_ids:
+        folder = Path(unlabeled_seg_to_path[sid]).parent.name
+        unlabeled_folder_to_seg_ids[folder].append(sid)
+
+    unlabeled_sequence_id_to_data: dict[str, dict] = {}
+    unplaceable_unlabeled_seg_ids: list[str] = []
+    for folder, segs in unlabeled_folder_to_seg_ids.items():
+        labeled_siblings = labeled_folder_to_seg_ids.get(folder, [])
+        sibling_coords = [
+            labeled_seg_to_latlon[s] for s in labeled_siblings
+            if s in labeled_seg_to_latlon
+        ]
+        if not sibling_coords:
+            unplaceable_unlabeled_seg_ids.extend(segs)
+            continue
+        lats = [c[0] for c in sibling_coords]
+        lons = [c[1] for c in sibling_coords]
+        unlabeled_sequence_id_to_data[folder] = {
+            "segs": sorted(segs, key=int),
+            "centroid": [float(np.median(lats)), float(np.median(lons))],
+        }
+    if unplaceable_unlabeled_seg_ids:
+        print(f"  {len(unplaceable_unlabeled_seg_ids)} unlabeled image(s) could not be "
+              f"placed on the map (no labeled siblings in image folder).", file=sys.stderr)
+
     print("Building segment_id_to_data_paths_rel...")
     seg_to_paths = build_segment_id_to_data_paths_rel({**seg_to_path, **unlabeled_seg_to_path})
     print("Building segment_id_to_road_data...")
@@ -313,10 +352,15 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(attr_meta_normalized, f, indent=2, ensure_ascii=False)
     print(f"Wrote {attr_meta_out}")
 
-    unlabeled_path = layout.unlabeled_seg_ids_path(data_dir)
+    unlabeled_path = layout.unlabeled_segment_ids_path(data_dir)
     with open(unlabeled_path, "w", encoding="utf-8") as f:
         json.dump(unlabeled_seg_ids, f, indent=2, ensure_ascii=False)
     print(f"Wrote {unlabeled_path}")
+
+    unlabeled_sequence_path = layout.unlabeled_sequence_id_to_data_path(data_dir)
+    with open(unlabeled_sequence_path, "w", encoding="utf-8") as f:
+        json.dump(unlabeled_sequence_id_to_data, f, indent=2, ensure_ascii=False)
+    print(f"Wrote {unlabeled_sequence_path}")
 
     report = {
         "num_rows_in": int(num_rows_in),
@@ -324,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
         **{k: int(v) if isinstance(v, int) else v for k, v in match_stats.items()},
         "num_unlabeled_images": len(unlabeled_seg_ids),
         "unlabeled_examples": unlabeled_seg_ids[:20],
+        "num_unlabeled_sequences_placed": len(unlabeled_sequence_id_to_data),
+        "num_unplaceable_unlabeled_seg_ids": len(unplaceable_unlabeled_seg_ids),
+        "unplaceable_unlabeled_examples": unplaceable_unlabeled_seg_ids[:20],
         "num_sections": len(road_to_seq),
         "section_lengths": {s: len(seq) for s, seq in road_to_seq.items()},
         "num_adjacency_violations": len(violations),

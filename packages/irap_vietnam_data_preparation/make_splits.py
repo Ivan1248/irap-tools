@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         for s in section_list:
             splits_out[split_name].extend(section_to_segs[s])
 
-    unlabeled_path = layout.unlabeled_seg_ids_path(args.data_dir)
+    unlabeled_path = layout.unlabeled_segment_ids_path(args.data_dir)
     if unlabeled_path.is_file():
         with open(unlabeled_path, "r", encoding="utf-8") as f:
             splits_out["unlabeled"] = json.load(f)

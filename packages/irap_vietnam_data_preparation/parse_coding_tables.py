@@ -14,11 +14,15 @@ Writes (into ``<data_dir>/_work/``):
 
 Validation rules (see irap_vietnam_data_preparation/vietnam_data_preparation.md):
 
-- Header lookup is by name; column order is not assumed.
+- Header lookup is by name (case-insensitive after whitespace strip); column
+  order is not assumed. Table columns are expected to match the BiH attribute
+  metadata names directly.
 - Required scalar columns: Section, Distance, Length, Latitude start,
   Longitude start, Image Reference FPZ, Comments.
 - Required attribute columns: every key of attribute_to_idx in the supplied
-  metadata. Missing any required column => fatal error.
+  metadata, minus the entries listed in ``incompatible_attributes.json``
+  (``ignored_from_bh``). Missing any remaining required column => fatal
+  error.
 - Files lacking the labeling columns entirely (Section + at least one
   attribute) are skipped as "non-coding files".
 - Rows are dropped (and counted) when:
@@ -64,7 +68,7 @@ REQUIRED_SCALAR_COLUMNS = (
 
 EXPECTED_LENGTH_KM = 0.02
 LENGTH_TOLERANCE = 1e-6
-ATTR_NAME_MAPPING_FILE = "attribute_name_mapping.json"
+INCOMPATIBLE_ATTRIBUTES_FILE = "incompatible_attributes.json"
 
 SEG_ID_RE = re.compile(r"seg\.?\s*no\.?\s*(\d+)", re.IGNORECASE)
 SEG_ID_FALLBACK_RE = re.compile(r"\b(\d{4,})\b")
@@ -115,25 +119,17 @@ def load_attribute_metadata(path: Path) -> tuple[list[str], dict[str, set[int]]]
     return attribute_names, valid_codes
 
 
-def load_attribute_name_mapping(
-    script_dir: Path,
-) -> tuple[dict[str, str], dict[str, list[str]]]:
-    """Load ``attribute_name_mapping.json`` from the script directory.
+def load_ignored_attributes(script_dir: Path) -> list[str]:
+    """Load ``ignored_from_bh`` from the mapping file in the script dir.
 
-    Returns:
-        attr_name_mapping: ``{metadata_attr_name: table_column_name}``
-        ignored_attr_mapping: ``{metadata_attr_name: [table_column_names]}``
-
-    If the file is absent, returns empty dicts (no mapping applied).
+    Returns the list of BiH attribute names to exclude. Empty list if file absent.
     """
-    path = script_dir / ATTR_NAME_MAPPING_FILE
+    path = script_dir / INCOMPATIBLE_ATTRIBUTES_FILE
     if not path.is_file():
-        return {}, {}
+        return []
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    attr_name_mapping = data.get("metadata_to_table", {})
-    ignored_attr_mapping = data.get("ignored_metadata_attributes", {})
-    return attr_name_mapping, ignored_attr_mapping
+    return list(data.get("ignored_from_bh", []))
 
 
 def find_table_files(coding_tables_dir: Path) -> list[Path]:
@@ -185,6 +181,7 @@ def parse_float(cell: T.Any) -> float | None:
     try:
         return float(cell)
     except (TypeError, ValueError):
+        print(f"WARNING: expected numeric value, got non-numeric {cell!r}")
         return None
 
 
@@ -196,9 +193,13 @@ def parse_int_code(cell: T.Any) -> int | None:
         # Excel often loads numeric codes as floats (e.g. 1.0).
         f = float(cell)
     except (TypeError, ValueError):
+        if isinstance(cell, str) and cell.split(' ')[0].isdigit():
+            return int(cell.split(' ')[0])
+        print(f"WARNING: expected numeric code, got non-numeric {cell!r}")
         return None
     i = int(f)
     if float(i) != f:
+        print(f"WARNING: expected integer code, got non-integer {f} in cell with value {cell!r}")
         return None
     return i
 
@@ -262,8 +263,6 @@ def read_sheet(path: Path) -> pd.DataFrame:
 def file_is_coding_table(
     df: pd.DataFrame,
     attribute_names: T.Sequence[str],
-    *,
-    attr_name_mapping: dict[str, str] | None = None,
 ) -> bool:
     """True if the file looks like a labeling sheet.
 
@@ -272,9 +271,7 @@ def file_is_coding_table(
     lacking both are silently skipped.
     """
     headers = {normalize_header(c).lower() for c in df.columns}
-    attr_name_mapping = attr_name_mapping or {}
-    table_attr_names = [attr_name_mapping.get(a, a) for a in attribute_names]
-    return "section" in headers and any(a.lower() in headers for a in table_attr_names)
+    return "section" in headers and any(a.lower() in headers for a in attribute_names)
 
 
 def validate_columns(
@@ -282,14 +279,13 @@ def validate_columns(
     attribute_names: T.Sequence[str],
     *,
     file: Path,
-    attr_name_mapping: dict[str, str] | None = None,
-    ignored_attr_mapping: dict[str, list[str]] | None = None,
+    ignored_attributes: list[str] | None = None,
 ) -> dict[str, str]:
     """Return ``{logical_name: actual_column_name}`` for every required column.
 
     Header lookup is case-insensitive (after whitespace stripping). Attribute
-    column names are first translated via ``attr_name_mapping`` (metadata name
-    -> table column name) before lookup.
+    columns are looked up by their metadata name directly (table column names
+    are expected to match).
 
     Raises ``ValueError`` if any required column is missing. The message lists
     missing required columns next to their closest header found in the file,
@@ -297,13 +293,10 @@ def validate_columns(
     schema (so renames vs. truly-extra columns are easy to tell apart).
 
     When all required columns are found, also prints:
-    - Per ignored attribute: how many non-empty values its mapped table column
-      contains (WARN; so callers can verify the skip is intentional).
-    - A list of non-scalar columns in the table that have no values at all
-      (INFO; useful for detecting unused/placeholder attribute columns).
+    - Per ignored attribute that is present in the table: how many non-empty
+      values it contains (WARN; so callers can verify the skip is intentional).
     """
-    attr_name_mapping = attr_name_mapping or {}
-    ignored_attr_mapping = ignored_attr_mapping or {}
+    ignored_attributes = ignored_attributes or []
 
     actual = {normalize_header(c): c for c in df.columns}
     ci_index: dict[str, str] = {}
@@ -318,10 +311,9 @@ def validate_columns(
     # Scalar columns: look up by their own name.
     resolved: dict[str, str | None] = {r: resolve_one(r) for r in REQUIRED_SCALAR_COLUMNS}
 
-    # Attribute columns: look up by their mapped table column name.
+    # Attribute columns: look up by their metadata name (== table column name).
     for attr in attribute_names:
-        table_col = attr_name_mapping.get(attr, attr)
-        resolved[attr] = resolve_one(table_col)
+        resolved[attr] = resolve_one(attr)
 
     missing = [r for r, h in resolved.items() if h is None]
     if missing:
@@ -355,24 +347,15 @@ def validate_columns(
 
     result = {r: actual[h] for r, h in resolved.items() if h is not None}
 
-    # Warn about ignored attributes: find their table column and count values.
-    for meta_attr, table_cols in ignored_attr_mapping.items():
-        for table_col in table_cols:
-            h = resolve_one(table_col)
-            if h is not None:
-                actual_col = actual[h]
-                num_vals = sum(1 for v in df[actual_col] if not is_blank(v))
-                print(
-                    f"WARN: {file.name}: ignoring '{meta_attr}' "
-                    f"(table col: '{actual_col}') ({num_vals} non-empty value(s))",
-                    file=sys.stderr,
-                )
-                break
-        else:
-            cols_str = ", ".join(f"'{c}'" for c in table_cols)
+    # Warn about ignored attributes that are present in the table.
+    for attr in ignored_attributes:
+        h = resolve_one(attr)
+        if h is not None:
+            actual_col = actual[h]
+            num_vals = sum(1 for v in df[actual_col] if not is_blank(v))
             print(
-                f"WARN: {file.name}: ignoring '{meta_attr}' "
-                f"(expected table col(s): {cols_str}) – column not found in table",
+                f"WARN: {file.name}: ignoring '{attr}' "
+                f"({num_vals} non-empty value(s))",
                 file=sys.stderr,
             )
 
@@ -399,8 +382,7 @@ def process_file(
     drop_counts: Counter,
     unknown_codes: dict[str, Counter],
     *,
-    attr_name_mapping: dict[str, str] | None = None,
-    ignored_attr_mapping: dict[str, list[str]] | None = None,
+    ignored_attributes: list[str] | None = None,
     empty_attr_file_counts: Counter | None = None,
     missing_rows_per_attr_per_file: dict[str, dict[str, int]] | None = None,
     non_empty_rows_per_file: dict[str, int] | None = None,
@@ -420,13 +402,12 @@ def process_file(
     df = read_sheet(path)
     if df.empty:
         return []
-    if not file_is_coding_table(df, attribute_names, attr_name_mapping=attr_name_mapping):
+    if not file_is_coding_table(df, attribute_names):
         return []
 
     cols = validate_columns(
         df, attribute_names, file=path,
-        attr_name_mapping=attr_name_mapping,
-        ignored_attr_mapping=ignored_attr_mapping,
+        ignored_attributes=ignored_attributes,
     )
 
     empty_attrs = [attr for attr in attribute_names
@@ -457,12 +438,17 @@ def process_file(
     for attr in attribute_names:
         if attr in per_file_skip:
             continue
-        num_blank = int((attr_blank[attr] & non_empty_mask).sum())
+        missing_mask = attr_blank[attr] & non_empty_mask
+        num_blank = int(missing_mask.sum())
         if num_blank > 0:
             missing_per_attr[attr] = num_blank
+            sample_indices = list(missing_mask[missing_mask].index[:5])
+            indices_str = ", ".join(str(i + 1) for i in sample_indices)
+            if num_blank > 5:
+                indices_str += ", ..."
             print(
                 f"WARN: {path.name}: attribute '{attr}' missing values in "
-                f"{num_blank}/{num_non_empty} non-empty row(s)",
+                f"{num_blank}/{num_non_empty} non-empty row(s) (row indices: {indices_str})",
                 file=sys.stderr,
             )
     if missing_rows_per_attr_per_file is not None and missing_per_attr:
@@ -615,15 +601,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     attribute_names, valid_codes = load_attribute_metadata(attr_meta_path)
-    attr_name_mapping, ignored_attr_mapping = load_attribute_name_mapping(
-        Path(__file__).parent
-    )
-    if ignored_attr_mapping:
-        ignored = sorted(ignored_attr_mapping)
-        attribute_names = [a for a in attribute_names if a not in ignored_attr_mapping]
-        valid_codes = {k: v for k, v in valid_codes.items() if k not in ignored_attr_mapping}
-        print(f"Ignoring {len(ignored)} attribute(s) per mapping file: "
-              + ", ".join(repr(a) for a in ignored))
+    ignored_attributes = load_ignored_attributes(Path(__file__).parent)
+    if ignored_attributes:
+        ignored_set = set(ignored_attributes)
+        attribute_names = [a for a in attribute_names if a not in ignored_set]
+        valid_codes = {k: v for k, v in valid_codes.items() if k not in ignored_set}
+        print(f"Ignoring {len(ignored_attributes)} attribute(s) per mapping file: "
+              + ", ".join(repr(a) for a in sorted(ignored_attributes)))
     coding_tables_dir = resolve_coding_tables_dir(raw)
     files = find_table_files(coding_tables_dir)
     if not files:
@@ -655,8 +639,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"INFO: {path.name}: skipping – empty sheet", file=sys.stderr)
             skipped_files[path.name] = "empty sheet"
             continue
-        if not file_is_coding_table(
-                df_head, attribute_names, attr_name_mapping=attr_name_mapping):
+        if not file_is_coding_table(df_head, attribute_names):
             print(f"INFO: {path.name}: skipping – not a coding table "
                   f"(no 'Section' column or no recognizable attribute column)",
                   file=sys.stderr)
@@ -669,8 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             rows = process_file(
                 path, attribute_names, valid_codes,
                 drop_counts, unknown_codes,
-                attr_name_mapping=attr_name_mapping,
-                ignored_attr_mapping=ignored_attr_mapping,
+                ignored_attributes=ignored_attributes,
                 empty_attr_file_counts=empty_attr_file_counts,
                 missing_rows_per_attr_per_file=missing_rows_per_attr_per_file,
                 non_empty_rows_per_file=non_empty_rows_per_file,
@@ -728,10 +710,7 @@ def main(argv: list[str] | None = None) -> int:
             "parsed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "coding_tables_dir": str(coding_tables_dir.relative_to(args.data_dir)),
             "attribute_metadata_path": str(attr_meta_path.relative_to(args.data_dir)),
-            "attribute_to_table_column": {
-                a: attr_name_mapping.get(a, a) for a in attribute_names
-            },
-            "ignored_attributes": sorted(ignored_attr_mapping),
+            "ignored_attributes": sorted(ignored_attributes),
         },
         "summary": {
             "files": {

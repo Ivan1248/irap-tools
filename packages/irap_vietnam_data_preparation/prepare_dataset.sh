@@ -47,4 +47,3 @@ fi
 python "$SCRIPT_DIR/parse_coding_tables.py" "$DATA_DIR"
 python "$SCRIPT_DIR/build_metadata.py"      "$DATA_DIR"
 python "$SCRIPT_DIR/make_splits.py"         "$DATA_DIR" --ratios $RATIOS --seed "$SEED"
-python "$SCRIPT_DIR/sanity_check.py"        "$DATA_DIR"

@@ -8,7 +8,8 @@ from pathlib import Path
 
 RAW_SUBDIR = "_raw"
 WORK_SUBDIR = "_work"
-IMAGES_SUBDIR = "images"
+IMAGES_SUBDIR = "FRAMES"
+IMAGES_DUPLICATES_SUBDIR = "FRAMES_duplicates"
 
 RARS_SUBDIR_UNDER_RAW = "image_rars"
 ATTR_META_FILENAME = "attribute_metadata.json"
@@ -16,7 +17,8 @@ CODING_TABLES_ZIP = "coding-tables.zip"
 ROWS_PARQUET = "rows.parquet"
 PARSE_REPORT = "parse_report.json"
 BUILD_REPORT = "build_report.json"
-UNLABELED_SEG_IDS_FILENAME = "unlabeled_seg_ids.json"
+UNLABELED_SEGMENT_IDS_FILENAME = "unlabeled_segment_ids.json"
+UNLABELED_SEQUENCE_ID_TO_DATA_FILENAME = "unlabeled_sequence_id_to_data.json"
 
 
 def raw_dir(data_dir: Path) -> Path:
@@ -29,6 +31,10 @@ def work_dir(data_dir: Path) -> Path:
 
 def images_dir(data_dir: Path) -> Path:
     return data_dir / IMAGES_SUBDIR
+
+
+def images_duplicates_dir(data_dir: Path) -> Path:
+    return work_dir(data_dir) / IMAGES_DUPLICATES_SUBDIR
 
 
 def metadata_dir(data_dir: Path) -> Path:
@@ -55,5 +61,9 @@ def build_report_path(data_dir: Path) -> Path:
     return work_dir(data_dir) / BUILD_REPORT
 
 
-def unlabeled_seg_ids_path(data_dir: Path) -> Path:
-    return metadata_dir(data_dir) / UNLABELED_SEG_IDS_FILENAME
+def unlabeled_segment_ids_path(data_dir: Path) -> Path:
+    return metadata_dir(data_dir) / UNLABELED_SEGMENT_IDS_FILENAME
+
+
+def unlabeled_sequence_id_to_data_path(data_dir: Path) -> Path:
+    return metadata_dir(data_dir) / UNLABELED_SEQUENCE_ID_TO_DATA_FILENAME

@@ -119,6 +119,43 @@ def list_entries(binary: str, kind: str, archive: Path
     return entries
 
 
+def _run_extraction(
+        cmd: list[str], kind: str, total: int, desc: str, position: int = 0,
+) -> None:
+    """Run *cmd* (unrar/7z), drive a tqdm progress bar, raise on non-zero exit."""
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    assert proc.stdout is not None
+
+    bar = tqdm(total=total, unit="file", desc=desc,
+               dynamic_ncols=True, position=position, leave=True)
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\r\n")
+            if kind == "unrar":
+                if line.startswith("Extracting") or "is not extracted" in line:
+                    bar.update(1)
+                    continue
+            else:
+                if line.startswith("- "):
+                    bar.update(1)
+                    continue
+            lo = line.lower()
+            if line and ("error" in lo or "failed" in lo or "cannot" in lo
+                         or "warning" in lo):
+                bar.write(line)
+    finally:
+        rc = proc.wait()
+        if bar.n < total and rc == 0:
+            bar.update(total - bar.n)
+        bar.close()
+
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
+
+
 def extract(binary: str, kind: str, archive: Path, out: Path, *,
             num_entries: int, position: int = 0) -> None:
     """Extract one archive preserving per-video subfolders; show a tqdm bar.
@@ -150,38 +187,7 @@ def extract(binary: str, kind: str, archive: Path, out: Path, *,
         # -bb1 emits one line per file; -bso0/-bsp0 silence summary/progress.
         cmd = [binary, "x", "-aos", "-bb1", "-bso1", "-bsp0",
                f"-o{out}", str(archive)]
-
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
-    )
-    assert proc.stdout is not None
-
-    bar = tqdm(total=num_entries, unit="file", desc=archive.name,
-               dynamic_ncols=True, position=position, leave=True)
-    try:
-        for line in proc.stdout:
-            line = line.rstrip("\r\n")
-            if kind == "unrar":
-                if line.startswith("Extracting") or "is not extracted" in line:
-                    bar.update(1)
-                    continue
-            else:
-                if line.startswith("- "):
-                    bar.update(1)
-                    continue
-            lo = line.lower()
-            if line and ("error" in lo or "failed" in lo or "cannot" in lo
-                         or "warning" in lo):
-                bar.write(line)
-    finally:
-        rc = proc.wait()
-        if bar.n < num_entries and rc == 0:
-            bar.update(num_entries - bar.n)
-        bar.close()
-
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
+    _run_extraction(cmd, kind, num_entries, archive.name, position)
 
 
 def _flatten_split_wrappers(out: Path) -> None:
@@ -217,19 +223,15 @@ def _merge_dir_into(src: Path, dst: Path) -> None:
                   f"(type mismatch)", file=sys.stderr)
 
 
-def check_collisions(
+def _compute_collisions(
         archive_entries: dict[Path, list[tuple[str, int, str | None]]],
-        ignore_duplicates: bool) -> tuple[int, int]:
-    """Return (num_files, total_bytes).
+) -> tuple[dict[str, list], dict[str, list], int]:
+    """Return ``(by_name, collisions, total_bytes)``.
 
-    Collisions are detected on the **post-strip** relative path
-    (``<video_dir>/<basename>``), not on basename alone. Same basename in
-    different video directories is therefore not a collision.
-
-    Aborts on duplicate paths unless ``ignore_duplicates`` is set, in which
-    case duplicates that share (size, CRC32) are silent and content-differing
-    duplicates produce a warning. Duplicates with at least one missing CRC are
-    compared on size only and reported as ambiguous.
+    ``by_name`` maps each post-strip relative path to a list of
+    ``(archive, inner_path, size, crc32_hex)`` tuples across all archives.
+    ``collisions`` is the sub-dict of ``by_name`` entries with more than one
+    occurrence.
     """
     by_name: dict[str, list[tuple[Path, str, int, str | None]]] = defaultdict(list)
     total_bytes = 0
@@ -238,11 +240,31 @@ def check_collisions(
             key = strip_split_wrapper(inner)
             by_name[key].append((archive, inner, size, crc))
             total_bytes += size
-
     collisions = {n: lst for n, lst in by_name.items() if len(lst) > 1}
-    if not collisions:
-        return len(by_name), total_bytes
+    return dict(by_name), collisions, total_bytes
 
+
+def _print_collision_group(
+        group: dict[str, list], stream, *, label: str | None = None,
+) -> None:
+    """Print up to 50 entries from *group* with optional *label* prefix."""
+    for name, lst in list(group.items())[:50]:
+        if label is None:
+            print(f"  {name}", file=stream)
+        else:
+            print(f"  {label}: {name}", file=stream)
+        for archive, inner, size, crc in lst:
+            crc_s = crc or "n/a"
+            print(f"    in {archive.name}: {inner} "
+                  f"({size} B, CRC32={crc_s})", file=stream)
+    if len(group) > 50:
+        print(f"  ... and {len(group) - 50} more", file=stream)
+
+
+def _report_collisions(
+        collisions: dict[str, list],
+        ignore_duplicates: bool) -> None:
+    """Print a collision report; abort with ``SystemExit(2)`` unless *ignore_duplicates*."""
     differing: dict[str, list] = {}
     ambiguous: dict[str, list] = {}
     identical: dict[str, list] = {}
@@ -260,14 +282,7 @@ def check_collisions(
     if not ignore_duplicates:
         print(f"ERROR: {len(collisions)} duplicate path(s) across archives "
               f"(pass --ignore-duplicates to proceed):", file=sys.stderr)
-        for name, lst in list(collisions.items())[:50]:
-            print(f"  {name}", file=sys.stderr)
-            for archive, inner, size, crc in lst:
-                crc_s = crc or "n/a"
-                print(f"    in {archive.name}: {inner} "
-                      f"({size} B, CRC32={crc_s})", file=sys.stderr)
-        if len(collisions) > 50:
-            print(f"  ... and {len(collisions) - 50} more", file=sys.stderr)
+        _print_collision_group(collisions, sys.stderr)
         raise SystemExit(2)
 
     print(f"  {len(collisions)} duplicate path(s); ignoring "
@@ -281,16 +296,52 @@ def check_collisions(
                                  ("note [identical content]", identical, sys.stdout)):
         if not group:
             continue
-        for name, lst in list(group.items())[:50]:
-            print(f"  {label}: {name}", file=stream)
-            for archive, inner, size, crc in lst:
-                crc_s = crc or "n/a"
-                print(f"    in {archive.name}: {inner} "
-                      f"({size} B, CRC32={crc_s})", file=stream)
-        if len(group) > 50:
-            print(f"  ... and {len(group) - 50} more", file=stream)
+        _print_collision_group(group, stream, label=label)
 
-    return len(by_name), total_bytes
+
+def extract_specific(
+        binary: str, kind: str, archive: Path, out: Path,
+        entries: list[tuple[str, int, str | None]], *, position: int = 0,
+) -> None:
+    """Extract specific *entries* from *archive* into *out*, showing a tqdm bar."""
+    if not entries:
+        return
+    out.mkdir(parents=True, exist_ok=True)
+    internal_paths = [e[0] for e in entries]
+    if kind == "unrar":
+        cmd = [binary, "x", "-o-", "-y", str(archive), str(out) + "/"] + internal_paths
+    else:
+        cmd = [binary, "x", "-aos", "-bb1", "-bso1", "-bsp0",
+               f"-o{out}", str(archive)] + internal_paths
+    _run_extraction(cmd, kind, len(entries), f"[dup] {archive.name}", position)
+
+
+def extract_duplicates(
+        binary: str, kind: str,
+        archive_entries: dict[Path, list[tuple[str, int, str | None]]],
+        collisions: dict[str, list],
+        dup_out: Path,
+) -> None:
+    """Extract all copies of duplicate entries into ``dup_out/<archive_stem>/``.
+
+    For every archive that contributes at least one entry involved in a
+    collision its duplicate entries are extracted to
+    ``dup_out/<archive.stem>/`` and the ``splitN/`` wrapper is then flattened,
+    yielding ``dup_out/<archive_stem>/<video_dir>/<file>.png``.
+    """
+    dup_inner_paths: dict[Path, set[str]] = defaultdict(set)
+    for name, lst in collisions.items():
+        for archive, inner, size, crc in lst:
+            dup_inner_paths[archive].add(inner)
+
+    for i, (archive, dup_paths) in enumerate(sorted(dup_inner_paths.items())):
+        entries = [(inner, size, crc)
+                   for inner, size, crc in archive_entries[archive]
+                   if inner in dup_paths]
+        archive_dup_out = dup_out / archive.stem
+        extract_specific(binary, kind, archive, archive_dup_out, entries,
+                         position=i)
+        _flatten_split_wrappers(archive_dup_out)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -327,11 +378,23 @@ def main(argv: list[str] | None = None) -> int:
         archive_entries[a] = list_entries(binary, kind, a)
         print(f"  {a.name}: {len(archive_entries[a])} entries")
 
+    dup_out = layout.images_duplicates_dir(args.data_dir)
+
     print("Checking for duplicate basenames across archives...")
-    num_files, total = check_collisions(
-        archive_entries, ignore_duplicates=args.ignore_duplicates)
+    by_name, collisions, total = _compute_collisions(archive_entries)
+    num_files = len(by_name)
     print(f"  {num_files} unique basenames, {total / 1e9:.2f} GB total "
           f"(uncompressed)")
+
+    if collisions:
+        if dup_out.exists():
+            shutil.rmtree(dup_out)
+        dup_out.mkdir(parents=True, exist_ok=True)
+        print(f"Extracting {len(collisions)} duplicate path(s) to {dup_out}...")
+        extract_duplicates(binary, kind, archive_entries, collisions, dup_out)
+        dup_count = sum(1 for p in dup_out.rglob("*") if p.is_file())
+        print(f"  {dup_count} file(s) written to {dup_out}")
+        _report_collisions(collisions, ignore_duplicates=args.ignore_duplicates)
 
     if out.exists() and any(out.iterdir()):
         if not args.yes:
