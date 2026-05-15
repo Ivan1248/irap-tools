@@ -254,8 +254,8 @@ def read_sheet(path: Path) -> pd.DataFrame:
     if not non_empty:
         return pd.DataFrame()
     if len(non_empty) > 1:
-        raise ValueError(
-            f"{path}: expected 1 sheet, found {len(non_empty)}: {list(non_empty)}"
+        print(
+            f"WARN: {path}: expected 1 sheet, found {len(non_empty)}: {list(non_empty)}"
         )
     return next(iter(non_empty.values()))
 
