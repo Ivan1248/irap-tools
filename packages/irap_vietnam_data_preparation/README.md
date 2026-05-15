@@ -1,19 +1,14 @@
 # IRAP-Vietnam data preparation
 
-End-to-end pipeline for turning the raw IRAP-Vietnam release (Seafile images
-+ `coding-tables.zip`) into a BiH-compatible dataset under
-`<datasets-dir>/IRAP_Vietnam/` consumable by `vidlu_irap_gaim.data.vietnam_dataset.make_vietnam_data` (which lives in a separate repository).
+End-to-end pipeline for turning the raw images and Excel tables into an IRAP-BH-compatible dataset.
 
-For the design rationale and decisions behind each step see
-[`vietnam_data_preparation.md`](vietnam_data_preparation.md).
+For the rationale and decisions behind each step see [`vietnam_data_preparation.md`](vietnam_data_preparation.md).
 
 ## Prerequisites
 
 - `unrar` (preferred) or `7z` on `PATH` for image extraction.
 - Python packages: `uv pip install pandas openpyxl xlrd pyarrow tqdm numpy scikit-learn`. For the Streamlit-based manual split editor, also install `streamlit>=1.35 plotly`.
 - The `IRAP_Vietnam/` dataset root, with `_raw/` populated (see "Layout" below).
-
-The scripts are plain files in this directory — no installation step. Run them from here (or via the `prepare_dataset.sh` wrapper, which uses absolute paths).
 
 ## Layout
 
@@ -26,11 +21,12 @@ the dataset root – and derives all subpaths internally.
     coding-tables.zip            # (or unzipped coding-tables/ directory)
     attribute_metadata.json
     image_rars/                  # Stage 1 output (downloaded RAR archives)
-  _work/                         # Stage 3a/3b reports; intermediate, can delete after
+  
+  _work/                         # intermediate outputs, can be deleted after
     rows.parquet
     parse_report.json
     build_report.json
-  images/                        # Stage 2 output (nested by source video)
+  images/                        # Stage 2 output (nested by video sequence)
     <video_dir>/
       <video_dir>_seg<N>.png
   segment_id_to_data_paths_rel.json  # Stage 3b outputs (directly in root)
@@ -75,18 +71,12 @@ Files are resumable (HTTP Range). Existing files with matching size are skipped.
 python extract_images.py $DATA_DIR
 ```
 
-- Extracts with `unrar x` / `7z x`, preserving the per-video subfolder
-  embedded in each archive. The outer `splitN/` wrapper (a RAR-partitioning
-  artifact) is stripped, leaving `images/<video_dir>/<video_dir>_seg<N>.png`.
+- Extracts with `unrar x` / `7z x`, preserving the per-video subfolder. The outer `splitN/` wrapper (a RAR-partitioning artifact) is stripped, leaving `images/<video_dir>/<video_dir>_seg<N>.png`.
 - Tries `unrar` first, falls back to `7z`.
 - Per-archive `tqdm` progress bar.
-- Pre-extraction collision check across archives, on the post-strip relative
-  path (so same basename in different video dirs is **not** a collision).
-  Identical/ambiguous duplicates are silent, content-differing duplicates are
-  warned.
+- Pre-extraction collision check across archives, on the post-strip relative path (so same basename in different video dirs is **not** a collision). Identical/ambiguous duplicates are silent, content-differing duplicates are warned.
 - Resumes by default (`unrar -o-` / `7z -aos`).
-- If you have an old **flat** `images/` from a previous run, delete it before
-  re-running so the new layout isn't mixed with the old one.
+- If you have an old **flat** `images/` from a previous run, delete it before re-running so the new layout isn't mixed with the old one.
 
 ### Stage 3a – Parse coding tables
 
