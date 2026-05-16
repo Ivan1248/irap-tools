@@ -122,21 +122,37 @@ def main(argv: list[str] | None = None) -> int:
         for s in section_list:
             splits_out[split_name].extend(section_to_segs[s])
 
-    unlabeled_path = layout.unlabeled_segment_ids_path(args.data_dir)
-    if unlabeled_path.is_file():
-        with open(unlabeled_path, "r", encoding="utf-8") as f:
-            splits_out["unlabeled"] = json.load(f)
+    unlabeled_seq_path = layout.unlabeled_sequence_id_to_data_path(args.data_dir)
+    unlabeled_seq_splits: dict[str, list[str]] = {}
+    if unlabeled_seq_path.is_file():
+        with open(unlabeled_seq_path, "r", encoding="utf-8") as f:
+            unlabeled_seq_data: dict = json.load(f)
+        unlabeled_sequences = sorted(unlabeled_seq_data)
+        unlabeled_centroids = {
+            seq: (float(entry["centroid"][0]), float(entry["centroid"][1]))
+            for seq, entry in unlabeled_seq_data.items()
+        }
+        if unlabeled_sequences:
+            unlabeled_seq_splits = assign_splits(
+                unlabeled_sequences, unlabeled_centroids, ratios, seed, k_clusters
+            )
+            for split_name, seq_list in unlabeled_seq_splits.items():
+                key = f"unlabeled_{split_name}"
+                splits_out[key] = []
+                for seq in seq_list:
+                    splits_out[key].extend(unlabeled_seq_data[seq]["segs"])
     else:
-        print(f"WARN: {unlabeled_path} not found; 'unlabeled' split omitted.",
+        print(f"WARN: {unlabeled_seq_path} not found; 'unlabeled_*' splits omitted.",
               file=sys.stderr)
 
-    for split_name in splits_out:
-        n_segs = len(splits_out[split_name])
-        if split_name == "unlabeled":
-            print(f"  {split_name}: {n_segs} segments")
-        else:
+    for split_name, seg_ids in splits_out.items():
+        n_segs = len(seg_ids)
+        if split_name in section_splits:
             print(f"  {split_name}: {len(section_splits[split_name])} sections, "
                   f"{n_segs} segments")
+        else:
+            n_seqs = len(unlabeled_seq_splits.get(split_name.removeprefix("unlabeled_"), []))
+            print(f"  {split_name}: {n_seqs} sequences, {n_segs} segments")
 
     out_path = metadata_dir / "splits.json"
     with open(out_path, "w", encoding="utf-8") as f:

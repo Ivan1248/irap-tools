@@ -105,6 +105,13 @@ is written to `_work/build_report.json`.
 
 ### Stage 3c – Assign train/val/test splits
 
+#### Output format
+
+Both tools write `splits.json` as `{<split_name>: [seg_id, ...]}` with segment ids as strings. Keys:
+
+- `train`, `val`, `test` – labeled segments assigned to each split.
+- `unlabeled_train`, `unlabeled_val`, `unlabeled_test` – unlabeled segments assigned the same way. Omitted entirely if `unlabeled_sequence_id_to_data.json` is not present in the metadata directory.
+
 #### Automatic (K-Means)
 
 ```bash
@@ -126,7 +133,7 @@ Opens a browser-based map showing all road sections as coloured polylines.
 2. **Draw a rectangle** on the map – all sections whose centroid falls
    inside are assigned to the active split.
 3. Use **Undo** to revert the last batch; **Reset** to clear all.
-4. **Save** writes `splits.json` in the same format as the automatic tool.
+4. **Save** writes `splits.json` (see *Output format* above).
 
 If `splits.json` already exists in the metadata directory it is used as the
 starting assignment (useful for tweaking an automatic result).

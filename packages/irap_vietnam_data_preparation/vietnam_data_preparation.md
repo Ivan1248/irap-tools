@@ -16,10 +16,16 @@ substantial changes.
    `IRAP_VIETNAM_METADATA`).
 2. `coding-tables.zip` is downloaded manually from Google Drive for now;
    automated download is out of scope.
-3. Segment ids **are consecutive integers within a section** (20 m spacing).
-   We will verify this from the `Distance` column during table parsing and
-   error out on violations. ⇒ `BihSequence` integer-arithmetic context
-   resolution works as-is; no `BihSequence` variant needed.
+3. **Invariant: `distance[i+1] − distance[i] == 0.01 km × (seg_id[i+1] − seg_id[i])`**
+   within ±2.5 m, across consecutive labeled segments of a section sorted by
+   distance. Each unit of seg_id corresponds to 10 m along the road, so a 20 m
+   labeled step is seg_id step 2, a single skipped label is seg_id step 4,
+   etc. `build_metadata.py` enforces this: violating transitions split the
+   section into multiple `road_id`s (`<section>__part0`, `<section>__part1`,
+   …) and are reported on stderr and in `_work/build_report.json` so the
+   underlying coding table can be corrected. `BihSequence` resolves context by
+   position within `road_id_to_segment_id_sequence.json`, so any well-formed
+   sub-sequence is directly usable; no `BihSequence` variant needed.
 4. The zip contains multiple XLS files; some have the data, some don't.
    Skip files missing the required columns; one sheet per file.
 5. One section per file is expected; **warn** if a file mixes sections.
@@ -30,7 +36,10 @@ substantial changes.
    is missing.
 8. Text labels per IRAP code are provided via the supplied `attribute_metadata.json` (see Decision 14).
 9. Drop rows with any missing required attribute (BiH semantics).
-10. `road_id` = section string (no hashing).
+10. `road_id` = section string, except for sections containing a continuity
+    violation (Decision 3) which become `<section>__part0`, `<section>__part1`,
+    …. `segment_id_to_road_data.json` keeps the original section string per
+    segment, so per-section splits in `make_splits.py` are unaffected.
 11. Splits: per-section assignment; this is the last step.
 12. RGB only.
 13. Image filenames: `f"{section}_seg{seg_id}.png"`. Confirmed.
@@ -57,8 +66,11 @@ substantial changes.
 
 The metadata directory must contain the following files (names match BiH):
 
-- **`splits.json`** – `{"train": [seg_id, ...], "val": [...], "test": [...]}`,
-  segment ids as strings.
+- **`splits.json`** – `{<split_name>: [seg_id, ...]}` with segment ids as
+  strings. Labeled keys: `train`, `val`, `test`. Optional unlabeled keys
+  (present when `unlabeled_sequence_id_to_data.json` exists): `unlabeled_train`,
+  `unlabeled_val`, `unlabeled_test`. See the Stage 3c "Output format" section in
+  [`README.md`](README.md) for details.
 - **`segment_id_to_data_paths_rel.json`** – `{seg_id: {"rgb": "<rel/path.png>"}}`
   with paths relative to the data root. BiH also has `"depth"`; we will likely
   omit it (RGB-only release).
@@ -224,13 +236,22 @@ Rows where any required attribute is missing or `None`/blank get dropped
 
 ### Step 3.5 – Build `road_id_to_segment_id_sequence.json`
 
-- One entry per `Section` (string `road_id`).
-- Sort the section's rows by `Distance` ascending; the value is the resulting
-  list of `seg_id`s as strings.
-- **Validate consecutiveness**: along each section, `int(seg_id[i+1]) -
-  int(seg_id[i])` should be 1, and `Distance[i+1] - Distance[i]` should be
-  ≈ 0.02. Error on violation; we depend on this for `BihSequence` context
-  arithmetic.
+- Group rows by `Section`, sort each group's rows by `Distance` ascending.
+- **Enforce the continuity invariant** (Decision 3): for every consecutive
+  pair `(i-1, i)` in the sorted section,
+  `abs(distance[i] − distance[i-1] − 0.01 × abs(seg_id[i] − seg_id[i-1])) ≤ 0.0025 km`.
+  If the check fails, split the section at that point: the run ending at
+  `i-1` becomes one sub-sequence, a fresh run starts at `i`. The road_id of
+  a clean (un-split) section is the bare section string; a split section
+  emits `<section>__part0`, `<section>__part1`, … in order.
+- The pipeline **does not fail** on violations — it records every offending
+  transition (`prev_seg_id`, `next_seg_id`, distances, `seg_id_step`,
+  `expected_distance_step_km`, source XLS file) in `_work/build_report.json`
+  and on stderr. These are typically data-entry errors in the coding tables
+  (e.g. a row whose `Image Reference FPZ` hyperlinks to a seg_id from a
+  different recording session); blocking the pipeline would make iteration
+  on the rest of the dataset awkward. Loaders skip split-boundary segments
+  as context centres automatically because no offset window fits.
 
 ### Step 3.6 – Build `splits.json` (per-section)
 
