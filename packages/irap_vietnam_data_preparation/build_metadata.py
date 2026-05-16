@@ -28,8 +28,10 @@ not dropped – they happen because the coding-table "Section" cell and the
 RAR-side video-folder name are independently authored.
 
 Within each section, the sequence is sorted by Distance ascending. The
-adjacency invariant (distance step == 0.02 km between consecutive
-segments) is checked and violations reported in the build_report.
+adjacency invariant `distance_step_km == 0.01 × abs(seg_id_step)` is
+enforced (each unit of seg_id ↔ 10 m). Violating transitions split the
+section into multiple road_ids (`<section>__part0`, `<section>__part1`, …)
+and are reported on stderr and in the build_report.
 """
 
 import argparse
@@ -46,7 +48,11 @@ import pandas as pd
 import layout
 
 
-SEGMENT_LENGTH_KM = 0.02
+# Each unit of seg_id step corresponds to 10 m along a section. A 20 m labeled
+# segment therefore has a seg_id step of 2; a missing labeled segment between
+# two coded rows shows up as step 4, etc.
+SEG_ID_STEP_TO_KM = 0.010
+ADJACENCY_TOLERANCE_KM = 0.0025  # ±2.5 m
 
 # Captures the integer N in any "..._segN.png" filename.
 SEG_ID_FROM_FILENAME_RE = re.compile(r"_seg(\d+)\.png$", re.IGNORECASE)
@@ -190,34 +196,85 @@ def build_segment_id_to_road_data(
 
 def build_road_sequences_and_validate(
     df: pd.DataFrame,
-) -> tuple[dict[str, list[str]], list[dict]]:
-    """Group by section, sort by distance, validate adjacency.
+) -> tuple[dict[str, list[str]], list[dict], dict[str, int]]:
+    """Group by section, sort by distance, validate adjacency, split on violation.
 
-    The expected distance between consecutive segments is
-    ``SEGMENT_LENGTH_KM`` (0.02 km). Returns ``(road_to_seq, violations)``
-    where each violation is ``{"section": ..., "prev": ..., "next": ...,
-    "distance_step_km": float}``.
+    The invariant enforced is
+
+        distance_step_km  ==  abs(seg_id_step) * SEG_ID_STEP_TO_KM    (±1 m)
+
+    i.e. each unit of seg_id corresponds to 10 m along the road. This catches
+    coding-table errors where one row's seg_id was hyperlinked to a different
+    recording session (huge seg_id jump, normal distance step), and also flags
+    sections whose seg_id-step convention is inconsistent with the rest of the
+    dataset.
+
+    When the invariant fails between positions ``i-1`` and ``i``, the section's
+    sequence is split there: the run ending at ``i-1`` is emitted as one
+    sub-sequence, and a fresh run starts at ``i``. Sub-sequences are named
+    ``"<section>"`` if there is only one for the section (i.e. the section was
+    clean), or ``"<section>__part<N>"`` for ``N = 0, 1, 2, ...`` if it was
+    split. Singleton sub-sequences are still emitted (the loader will skip
+    them as context centres because no offset window fits).
+
+    Returns:
+        road_to_seq: mapping ``road_id -> [seg_id, ...]``.
+        violations: one entry per failed transition (see code for keys).
+        sections_split: ``{section: num_sub_sequences}`` for sections that
+            produced more than one sub-sequence.
     """
     road_to_seq: dict[str, list[str]] = {}
     violations: list[dict] = []
-    tol_km = SEGMENT_LENGTH_KM / 20  # 1 m
+    sections_split: dict[str, int] = {}
+
+    def _emit(section: str, seg_ids: list[str], parts: list[tuple[int, int]]) -> None:
+        if len(parts) == 1:
+            lo, hi = parts[0]
+            road_to_seq[section] = seg_ids[lo:hi]
+            return
+        sections_split[section] = len(parts)
+        for n, (lo, hi) in enumerate(parts):
+            road_to_seq[f"{section}__part{n}"] = seg_ids[lo:hi]
 
     for section, group in df.groupby("section", sort=True):
-        sub = group.sort_values("distance", kind="stable")
-        seg_ids = sub["seg_id"].tolist()
-        distances = sub["distance"].tolist()
-        road_to_seq[section] = seg_ids
+        sub = group.sort_values("distance", kind="stable").reset_index(drop=True)
+        seg_ids = sub["seg_id"].astype(str).tolist()
+        seg_ids_int = [int(s) for s in seg_ids]
+        distances = sub["distance"].astype(float).tolist()
+        source_files = sub["source_file"].astype(str).tolist()
+
+        parts: list[tuple[int, int]] = []
+        run_start = 0
         for i in range(1, len(seg_ids)):
-            d_step = distances[i] - distances[i - 1]
-            if abs(d_step - SEGMENT_LENGTH_KM) > tol_km:
-                violations.append({
-                    "section": section,
-                    "prev": seg_ids[i - 1],
-                    "next": seg_ids[i],
-                    "distance_step_km": float(d_step),
-                    "expected_distance_step_km": SEGMENT_LENGTH_KM,
-                })
-    return road_to_seq, violations
+            seg_step = seg_ids_int[i] - seg_ids_int[i - 1]
+            dist_step = distances[i] - distances[i - 1]
+            expected_dist_step = abs(seg_step) * SEG_ID_STEP_TO_KM
+            ok = (
+                seg_step != 0
+                and abs(dist_step - expected_dist_step) <= ADJACENCY_TOLERANCE_KM
+            )
+            if ok:
+                continue
+            violations.append({
+                "section": section,
+                "prev_pos": i - 1,
+                "next_pos": i,
+                "prev_seg_id": seg_ids[i - 1],
+                "next_seg_id": seg_ids[i],
+                "prev_distance_km": float(distances[i - 1]),
+                "next_distance_km": float(distances[i]),
+                "distance_step_km": float(dist_step),
+                "seg_id_step": int(seg_step),
+                "expected_distance_step_km": float(expected_dist_step),
+                "source_file_prev": source_files[i - 1],
+                "source_file_next": source_files[i],
+            })
+            parts.append((run_start, i))
+            run_start = i
+        parts.append((run_start, len(seg_ids)))
+        _emit(section, seg_ids, parts)
+
+    return road_to_seq, violations, sections_split
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -317,14 +374,35 @@ def main(argv: list[str] | None = None) -> int:
     print("Building segment_id_to_road_data...")
     seg_to_road = build_segment_id_to_road_data(df, attribute_names)
     print("Building road_id_to_segment_id_sequence and validating adjacency...")
-    road_to_seq, violations = build_road_sequences_and_validate(df)
+    road_to_seq, violations, sections_split = build_road_sequences_and_validate(df)
     if violations:
-        print(f"WARN: {len(violations)} adjacency violation(s) "
-              f"(distance step != {SEGMENT_LENGTH_KM} km).", file=sys.stderr)
-        for v in violations[:10]:
-            print(f"  {v}", file=sys.stderr)
-        if len(violations) > 10:
-            print(f"  ... and {len(violations) - 10} more.", file=sys.stderr)
+        by_section: dict[str, list[dict]] = defaultdict(list)
+        for v in violations:
+            by_section[v["section"]].append(v)
+        print(
+            f"\nERROR: {len(violations)} segment-id / distance inconsistencies "
+            f"in {len(by_section)} section(s).\n"
+            f"  Fix these rows in the coding tables; for now the affected "
+            f"sequences have been split so the loader will skip them as "
+            f"context centres.\n",
+            file=sys.stderr,
+        )
+        for section in sorted(by_section):
+            entries = by_section[section]
+            sources = sorted({e["source_file_prev"] for e in entries}
+                             | {e["source_file_next"] for e in entries})
+            print(f"section {section}  (source: {', '.join(repr(s) for s in sources)})",
+                  file=sys.stderr)
+            for v in entries:
+                print(
+                    f"  pos {v['prev_pos']}->{v['next_pos']}: "
+                    f"seg {v['prev_seg_id']} -> {v['next_seg_id']}  "
+                    f"(seg_id_step={v['seg_id_step']:+d}, "
+                    f"distance_step={v['distance_step_km']:.3f} km, "
+                    f"expected_step={v['expected_distance_step_km']:.3f} km)",
+                    file=sys.stderr,
+                )
+            print(file=sys.stderr)
 
     out.mkdir(parents=True, exist_ok=True)
 
@@ -371,10 +449,13 @@ def main(argv: list[str] | None = None) -> int:
         "num_unlabeled_sequences_placed": len(unlabeled_sequence_id_to_data),
         "num_unplaceable_unlabeled_seg_ids": len(unplaceable_unlabeled_seg_ids),
         "unplaceable_unlabeled_examples": unplaceable_unlabeled_seg_ids[:20],
-        "num_sections": len(road_to_seq),
+        "num_sections": df["section"].nunique() if not df.empty else 0,
+        "num_road_sequences": len(road_to_seq),
         "section_lengths": {s: len(seq) for s, seq in road_to_seq.items()},
         "num_adjacency_violations": len(violations),
-        "adjacency_violation_examples": violations[:20],
+        "adjacency_violations": violations,
+        "num_sections_split": len(sections_split),
+        "sections_split": dict(sorted(sections_split.items())),
         "data_dir_name": data_dir.name,
     }
     report_path = layout.build_report_path(data_dir)
