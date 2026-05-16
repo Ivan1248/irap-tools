@@ -277,6 +277,45 @@ def build_road_sequences_and_validate(
     return road_to_seq, violations, sections_split
 
 
+def interleave_unlabeled_into_road_sequences(
+    road_to_seq: dict[str, list[str]],
+    seg_to_folder: dict[str, str],
+    folder_to_unlabeled_seg_ids: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Inject unlabeled siblings between adjacent labeled segments from the same folder.
+
+    `build_road_sequences_and_validate` lists only labeled segments, so consecutive
+    entries in a road sequence are typically 20 m apart (seg_id step 2). Cameras
+    saved images every 10 m, so an unlabeled image usually sits between each pair.
+    For the loader to use those as context frames (e.g. context_sequence=(0,-1,-2,…)),
+    they must appear in the road sequence at the right position.
+
+    We only inject between two labeled neighbours from the same image folder
+    (recording session), which is where the "1 seg_id = 10 m" invariant holds.
+    """
+    enriched: dict[str, list[str]] = {}
+    for road_id, seq in road_to_seq.items():
+        if not seq:
+            enriched[road_id] = []
+            continue
+        out = [seq[0]]
+        for prev, curr in zip(seq, seq[1:]):
+            f_prev = seg_to_folder.get(prev)
+            f_curr = seg_to_folder.get(curr)
+            if f_prev is not None and f_prev == f_curr:
+                p_int, c_int = int(prev), int(curr)
+                lo, hi = min(p_int, c_int), max(p_int, c_int)
+                in_between = [
+                    str(s) for s in folder_to_unlabeled_seg_ids.get(f_prev, [])
+                    if lo < int(s) < hi
+                ]
+                in_between.sort(key=int, reverse=(c_int < p_int))
+                out.extend(in_between)
+            out.append(curr)
+        enriched[road_id] = out
+    return enriched
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path,
@@ -366,6 +405,9 @@ def main(argv: list[str] | None = None) -> int:
             "centroid": [float(np.median(lats)), float(np.median(lons))],
         }
     if unplaceable_unlabeled_seg_ids:
+        # TODO: once per-segment geolocation is available for unlabeled images,
+        # emit these as standalone road_to_seq entries so they're reachable as
+        # context frames around future labeled additions.
         print(f"  {len(unplaceable_unlabeled_seg_ids)} unlabeled image(s) could not be "
               f"placed on the map (no labeled siblings in image folder).", file=sys.stderr)
 
@@ -375,6 +417,19 @@ def main(argv: list[str] | None = None) -> int:
     seg_to_road = build_segment_id_to_road_data(df, attribute_names)
     print("Building road_id_to_segment_id_sequence and validating adjacency...")
     road_to_seq, violations, sections_split = build_road_sequences_and_validate(df)
+    num_labeled_in_sequences = sum(len(seq) for seq in road_to_seq.values())
+    seg_to_folder = {
+        sid: Path(rel).parent.name
+        for sid, rel in {**seg_to_path, **unlabeled_seg_to_path}.items()
+    }
+    road_to_seq = interleave_unlabeled_into_road_sequences(
+        road_to_seq, seg_to_folder, unlabeled_folder_to_seg_ids,
+    )
+    num_unlabeled_inserted_into_sequences = (
+        sum(len(seq) for seq in road_to_seq.values()) - num_labeled_in_sequences
+    )
+    print(f"  Inserted {num_unlabeled_inserted_into_sequences} unlabeled segment(s) "
+          f"into road sequences.")
     if violations:
         by_section: dict[str, list[dict]] = defaultdict(list)
         for v in violations:
@@ -446,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
         **{k: int(v) if isinstance(v, int) else v for k, v in match_stats.items()},
         "num_unlabeled_images": len(unlabeled_seg_ids),
         "unlabeled_examples": unlabeled_seg_ids[:20],
+        "num_unlabeled_inserted_into_sequences": num_unlabeled_inserted_into_sequences,
         "num_unlabeled_sequences_placed": len(unlabeled_sequence_id_to_data),
         "num_unplaceable_unlabeled_seg_ids": len(unplaceable_unlabeled_seg_ids),
         "unplaceable_unlabeled_examples": unplaceable_unlabeled_seg_ids[:20],
