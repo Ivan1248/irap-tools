@@ -3,8 +3,9 @@
 Version: 2026-05-07
 
 End-to-end procedure for turning the raw IRAP-Vietnam release (images on Seafile
-+ coding tables in `coding-tables.zip`) into a dataset usable for training and
-evaluation through `vidlu_irap_gaim/data/bih_dataset.py`.
++ iRAP coding tables — per-segment attribute annotations — in
+`coding-tables.zip`) into a dataset usable for training and evaluation through
+`vidlu_irap_gaim/data/bih_dataset.py`.
 
 The goal is to mirror the **IRAP-BiH** metadata layout closely enough that the
 existing `BihSequence` dataset (or a thin sibling class) can load it without

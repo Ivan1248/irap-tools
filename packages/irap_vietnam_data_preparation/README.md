@@ -37,9 +37,12 @@ the dataset root – and derives all subpaths internally.
   splits.json                    # Stage 3c
 ```
 
-Before running anything, populate `<data_dir>/_raw/` with at least
-`coding-tables.zip` (or an unzipped `coding-tables/` directory) and
-`attribute_metadata.json`. Stage 1 fills `<data_dir>/_raw/image_rars/`.
+`coding-tables.zip` contains the iRAP coding tables — Excel spreadsheets of
+per-segment attribute annotations, where "coding" is iRAP's term for assigning
+attribute codes to 20-m road segments. Before running anything, populate
+`<data_dir>/_raw/` with at least `coding-tables.zip` (or an unzipped
+`coding-tables/` directory) and `attribute_metadata.json`. Stage 1 fills
+`<data_dir>/_raw/image_rars/`.
 
 `make_vietnam_data()` searches for `IRAP_Vietnam/` in this order: `$IRAP_HOME`,
 `$VIDLU_DATASETS`, `$VIDLU_DATA/datasets`, then ancestors of the package for

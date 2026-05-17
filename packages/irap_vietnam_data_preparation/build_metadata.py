@@ -1,4 +1,4 @@
-"""Build the IRAP-Vietnam metadata directory from parsed coding tables.
+"""Build the IRAP-Vietnam metadata directory from parsed coding tables (per-segment iRAP attribute annotations).
 
 Usage:
     python irap_vietnam_data_preparation/build_metadata.py <data_dir>

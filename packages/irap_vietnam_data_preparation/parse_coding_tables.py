@@ -1,4 +1,4 @@
-"""Parse IRAP-Vietnam coding tables into a normalized per-segment table.
+"""Parse IRAP-Vietnam coding tables (per-segment iRAP attribute annotations) into a normalized per-segment table.
 
 Usage:
     python irap_vietnam_data_preparation/parse_coding_tables.py <data_dir>

@@ -6,7 +6,8 @@
 #                                 [--ratios "TRAIN VAL TEST"] [--seed N]
 #
 # <data_dir>  IRAP_Vietnam dataset root. Must contain <data_dir>/_raw/ with
-#             coding-tables.zip and attribute_metadata.json before running.
+#             coding-tables.zip (iRAP per-segment attribute annotations) and
+#             attribute_metadata.json before running.
 #
 # Stage 3c (splits) here uses the automatic K-Means allocator; for manual
 # adjustment re-run later with split_editor.py.
