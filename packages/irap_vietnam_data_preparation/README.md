@@ -26,6 +26,7 @@ the dataset root – and derives all subpaths internally.
     rows.parquet
     parse_report.json
     build_report.json
+  
   images/                        # Stage 2 output (nested by video sequence)
     <video_dir>/
       <video_dir>_seg<N>.png
