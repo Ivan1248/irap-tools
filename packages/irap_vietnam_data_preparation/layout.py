@@ -19,6 +19,7 @@ PARSE_REPORT = "parse_report.json"
 BUILD_REPORT = "build_report.json"
 UNLABELED_SEGMENT_IDS_FILENAME = "unlabeled_segment_ids.json"
 UNLABELED_SEQUENCE_ID_TO_DATA_FILENAME = "unlabeled_sequence_id_to_data.json"
+UNLABELED_UNLOCATED_SEGMENT_IDS_FILENAME = "unlabeled_unlocated_segment_ids.json"
 
 
 def raw_dir(data_dir: Path) -> Path:
@@ -67,3 +68,7 @@ def unlabeled_segment_ids_path(data_dir: Path) -> Path:
 
 def unlabeled_sequence_id_to_data_path(data_dir: Path) -> Path:
     return metadata_dir(data_dir) / UNLABELED_SEQUENCE_ID_TO_DATA_FILENAME
+
+
+def unlabeled_unlocated_segment_ids_path(data_dir: Path) -> Path:
+    return metadata_dir(data_dir) / UNLABELED_UNLOCATED_SEGMENT_IDS_FILENAME

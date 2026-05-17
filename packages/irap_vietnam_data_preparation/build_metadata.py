@@ -15,17 +15,21 @@ Writes (into <data_dir>/ directly):
     attribute_metadata.json               (copy of _raw/attribute_metadata.json)
     unlabeled_segment_ids.json
     unlabeled_sequence_id_to_data.json    (sequence_id -> {segs, centroid}) for editor
+    unlabeled_unlocated_segment_ids.json  (only if non-empty: seg_ids from image
+                                           folders with no labeled siblings, so
+                                           no map coordinate is derivable)
 
 Writes (into <data_dir>/_work/):
     build_report.json                     (counts, warnings)
 
 Rows are matched to images **by seg_id**: every ``*.png`` under ``images/`` is
 indexed by the integer in its ``_seg<N>.png`` suffix, and each parquet row is
-joined to its seg_id. If exactly one image has that seg_id, it is used. Rows
-with no matching image are dropped. The image's parent folder name is compared
-to the row's ``section``; mismatches are recorded (``prefix_mismatch``) but
-not dropped – they happen because the coding-table "Section" cell and the
-RAR-side video-folder name are independently authored.
+joined to its seg_id. Exactly one image must match each seg_id; if multiple
+images share a seg_id a ValueError is raised. Rows with no matching image are
+dropped. The image's parent folder name is compared to the row's ``section``;
+mismatches are recorded (``prefix_mismatch``) but not dropped – they happen
+because the coding-table "Section" cell and the RAR-side video-folder name are
+independently authored.
 
 Within each section, the sequence is sorted by Distance ascending. The
 adjacency invariant `distance_step_km == 0.01 × abs(seg_id_step)` is
@@ -85,22 +89,15 @@ def match_rows_to_images(
     Returns ``(kept_df, seg_id_to_relpath, stats)`` where ``stats`` carries
     per-row counters and example lists for the build report.
 
-    Resolution policy when a seg_id matches >1 image:
-        1. Prefer paths whose parent folder name equals ``row.section``.
-        2. Otherwise prefer paths whose parent folder name is a prefix of
-           ``row.section`` (or vice versa).
-        3. Otherwise pick the lexicographically smallest path and flag as
-           ``ambiguous_image_match``.
+    Raises ValueError if more than one image shares a seg_id.
     """
 
     kept_indices: list[int] = []
     seg_to_path: dict[str, str] = {}
     no_image_examples: list[str] = []
     prefix_mismatch_examples: list[dict] = []
-    ambiguous_examples: list[dict] = []
     num_no_image = 0
     num_prefix_mismatch = 0
-    num_ambiguous = 0
 
     for idx, row in df.iterrows():
         seg_id = str(row["seg_id"])
@@ -111,36 +108,13 @@ def match_rows_to_images(
             if len(no_image_examples) < 20:
                 no_image_examples.append(seg_id)
             continue
-
         if len(candidates) == 1:
             chosen = candidates[0]
         else:
-            exact = [p for p in candidates if p.parent.name == section]
-            if len(exact) == 1:
-                chosen = exact[0]
-            elif exact:
-                chosen = sorted(exact)[0]
-                num_ambiguous += 1
-                if len(ambiguous_examples) < 20:
-                    ambiguous_examples.append({
-                        "seg_id": seg_id, "section": section,
-                        "candidates": [str(p) for p in candidates],
-                    })
-            else:
-                related = [
-                    p for p in candidates
-                    if p.parent.name.startswith(section) or section.startswith(p.parent.name)
-                ]
-                if len(related) == 1:
-                    chosen = related[0]
-                else:
-                    chosen = sorted(candidates)[0]
-                    num_ambiguous += 1
-                    if len(ambiguous_examples) < 20:
-                        ambiguous_examples.append({
-                            "seg_id": seg_id, "section": section,
-                            "candidates": [str(p) for p in candidates],
-                        })
+            raise ValueError(
+                f"Multiple images found for segment ID {seg_id}: "
+                f"{', '.join(str(c) for c in candidates)}"
+            )
 
         prefix = chosen.parent.name
         if prefix != section:
@@ -159,10 +133,8 @@ def match_rows_to_images(
     stats = {
         "num_rows_no_image": num_no_image,
         "num_rows_prefix_mismatch": num_prefix_mismatch,
-        "num_rows_ambiguous_image_match": num_ambiguous,
         "no_image_examples": no_image_examples,
         "prefix_mismatch_examples": prefix_mismatch_examples,
-        "ambiguous_image_examples": ambiguous_examples,
     }
     return kept_df, seg_to_path, stats
 
@@ -354,23 +326,22 @@ def main(argv: list[str] | None = None) -> int:
     num_rows_in = len(df)
     print(f"Matching rows to images under {images} by seg_id...")
     seg_id_to_image_paths = index_images_by_seg_id(images)
+    num_images_total = len(seg_id_to_image_paths)
     df, seg_to_path, match_stats = match_rows_to_images(df, seg_id_to_image_paths)
-    print(f"  {len(df)} rows kept; "
-          f"{match_stats['num_rows_no_image']} dropped (no image found).")
+    print(f"{len(df)}/{num_rows_in} rows matched to an image "
+          f"({match_stats['num_rows_no_image']} dropped: no matching image).")
     if match_stats["num_rows_prefix_mismatch"]:
-        print(f"  {match_stats['num_rows_prefix_mismatch']} row(s) matched by segment ID "
-              f"despite section/image-folder prefix mismatch.")
-    if match_stats["num_rows_ambiguous_image_match"]:
-        print(f"  {match_stats['num_rows_ambiguous_image_match']} row(s) had "
-              f"multiple candidate images.")
-
+        print(f"    of which {match_stats['num_rows_prefix_mismatch']}/{len(df)} matched by seg_id "
+              f"despite the coding-table Section disagreeing with the image folder name.")
     # Images with no matching parquet row (no labels).
     unlabeled_seg_ids = sorted(set(seg_id_to_image_paths.keys()) - set(seg_to_path.keys()), key=int)
     unlabeled_seg_to_path = {
         sid: sorted(seg_id_to_image_paths[sid])[0].as_posix()
         for sid in unlabeled_seg_ids
     }
-    print(f"  {len(unlabeled_seg_ids)} image(s) have no matching row (unlabeled).")
+    print(f"  Images under FRAMES: {num_images_total} total = "
+          f"{len(seg_to_path)} labeled (matched to a parquet row) + "
+          f"{len(unlabeled_seg_ids)} unlabeled (no parquet row).")
 
     # Group unlabeled seg_ids by image folder, and compute a centroid for each
     # folder from labeled siblings in the same folder so they can be placed on
@@ -404,12 +375,18 @@ def main(argv: list[str] | None = None) -> int:
             "segs": sorted(segs, key=int),
             "centroid": [float(np.median(lats)), float(np.median(lons))],
         }
+    num_placeable_unlabeled = len(unlabeled_seg_ids) - len(unplaceable_unlabeled_seg_ids)
+    print("  Unlabeled image partition (by image folder):")
+    print(f"    {num_placeable_unlabeled}/{len(unlabeled_seg_ids)} placeable on the map "
+          f"(folder has ≥1 labeled sibling; centroid = median of sibling lat/lon; "
+          f"selectable in split editor under unlabeled_train/val/test).")
     if unplaceable_unlabeled_seg_ids:
         # TODO: once per-segment geolocation is available for unlabeled images,
         # emit these as standalone road_to_seq entries so they're reachable as
         # context frames around future labeled additions.
-        print(f"  {len(unplaceable_unlabeled_seg_ids)} unlabeled image(s) could not be "
-              f"placed on the map (no labeled siblings in image folder).", file=sys.stderr)
+        print(f"    {len(unplaceable_unlabeled_seg_ids)}/{len(unlabeled_seg_ids)} unlocated "
+              f"(folder has no labeled sibling, no map coordinate derivable; "
+              f"auto-assigned to unlabeled_unlocated split).", file=sys.stderr)
 
     print("Building segment_id_to_data_paths_rel...")
     seg_to_paths = build_segment_id_to_data_paths_rel({**seg_to_path, **unlabeled_seg_to_path})
@@ -428,8 +405,9 @@ def main(argv: list[str] | None = None) -> int:
     num_unlabeled_inserted_into_sequences = (
         sum(len(seq) for seq in road_to_seq.values()) - num_labeled_in_sequences
     )
-    print(f"  Inserted {num_unlabeled_inserted_into_sequences} unlabeled segment(s) "
-          f"into road sequences.")
+    print(f"  Interleaved {num_unlabeled_inserted_into_sequences}/{num_placeable_unlabeled} "
+          f"placeable-unlabeled segments between adjacent labeled segments from the same "
+          f"image folder (the rest fall outside any labeled span).")
     if violations:
         by_section: dict[str, list[dict]] = defaultdict(list)
         for v in violations:
@@ -494,6 +472,13 @@ def main(argv: list[str] | None = None) -> int:
     with open(unlabeled_sequence_path, "w", encoding="utf-8") as f:
         json.dump(unlabeled_sequence_id_to_data, f, indent=2, ensure_ascii=False)
     print(f"Wrote {unlabeled_sequence_path}")
+
+    if unplaceable_unlabeled_seg_ids:
+        unlocated_path = layout.unlabeled_unlocated_segment_ids_path(data_dir)
+        unlocated_sorted = sorted(unplaceable_unlabeled_seg_ids, key=int)
+        with open(unlocated_path, "w", encoding="utf-8") as f:
+            json.dump(unlocated_sorted, f, indent=2, ensure_ascii=False)
+        print(f"Wrote {unlocated_path}")
 
     report = {
         "num_rows_in": int(num_rows_in),

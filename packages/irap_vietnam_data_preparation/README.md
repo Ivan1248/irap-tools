@@ -111,6 +111,7 @@ Both tools write `splits.json` as `{<split_name>: [seg_id, ...]}` with segment i
 
 - `train`, `val`, `test` – labeled segments assigned to each split.
 - `unlabeled_train`, `unlabeled_val`, `unlabeled_test` – unlabeled segments assigned the same way. Omitted entirely if `unlabeled_sequence_id_to_data.json` is not present in the metadata directory.
+- `unlabeled_unlocated` – unlabeled segments from image folders that have no labeled siblings, so no map coordinate is derivable. Auto-populated from `unlabeled_unlocated_segment_ids.json`; not user-editable in the map GUI. Omitted entirely if the file is absent.
 
 #### Automatic (K-Means)
 

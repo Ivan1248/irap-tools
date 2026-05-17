@@ -69,7 +69,10 @@ The metadata directory must contain the following files (names match BiH):
 - **`splits.json`** – `{<split_name>: [seg_id, ...]}` with segment ids as
   strings. Labeled keys: `train`, `val`, `test`. Optional unlabeled keys
   (present when `unlabeled_sequence_id_to_data.json` exists): `unlabeled_train`,
-  `unlabeled_val`, `unlabeled_test`. See the Stage 3c "Output format" section in
+  `unlabeled_val`, `unlabeled_test`. An additional `unlabeled_unlocated` key is
+  auto-populated from `unlabeled_unlocated_segment_ids.json` (unlabeled segments
+  from image folders with no labeled siblings, so no map coordinate is
+  derivable). See the Stage 3c "Output format" section in
   [`README.md`](README.md) for details.
 - **`segment_id_to_data_paths_rel.json`** – `{seg_id: {"rgb": "<rel/path.png>"}}`
   with paths relative to the data root. BiH also has `"depth"`; we will likely

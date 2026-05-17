@@ -33,7 +33,6 @@ Validation rules (see irap_vietnam_data_preparation/vietnam_data_preparation.md)
       one non-empty value in the file; attributes with zero non-empty values
       across the whole file are stored as None instead of causing a row drop),
     * any attribute IRAP code is not in attribute_value_to_irap_number.
-- A file mixing multiple Section values triggers a warning but is processed.
 - Duplicate segment ids across the entire dataset are resolved by keeping
   the row with the most non-empty attribute cells; warns on every collision.
 """

@@ -145,11 +145,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WARN: {unlabeled_seq_path} not found; 'unlabeled_*' splits omitted.",
               file=sys.stderr)
 
+    unlocated_path = layout.unlabeled_unlocated_segment_ids_path(args.data_dir)
+    if unlocated_path.is_file():
+        with open(unlocated_path, "r", encoding="utf-8") as f:
+            unlocated_seg_ids = [str(s) for s in json.load(f)]
+        if unlocated_seg_ids:
+            splits_out["unlabeled_unlocated"] = unlocated_seg_ids
+
     for split_name, seg_ids in splits_out.items():
         n_segs = len(seg_ids)
         if split_name in section_splits:
             print(f"  {split_name}: {len(section_splits[split_name])} sections, "
                   f"{n_segs} segments")
+        elif split_name == "unlabeled_unlocated":
+            print(f"  {split_name}: {n_segs} segments (auto)")
         else:
             n_seqs = len(unlabeled_seq_splits.get(split_name.removeprefix("unlabeled_"), []))
             print(f"  {split_name}: {n_seqs} sequences, {n_segs} segments")

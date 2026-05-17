@@ -100,6 +100,21 @@ def load_unlabeled_sequence_data(metadata_dir: str) -> dict[str, dict]:
 
 
 @st.cache_data
+def load_unlocated_seg_ids(metadata_dir: str) -> list[str]:
+    """Return unlabeled seg_ids with no derivable map location.
+
+    These come from image folders that have no labeled siblings; they are
+    auto-assigned to the ``unlabeled_unlocated`` split. Returns ``[]`` if the
+    file does not exist.
+    """
+    path = Path(metadata_dir) / layout.UNLABELED_UNLOCATED_SEGMENT_IDS_FILENAME
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [str(s) for s in json.load(f)]
+
+
+@st.cache_data
 def load_sequence_data(
     metadata_dir: str,
 ) -> tuple[dict, dict]:
@@ -312,6 +327,7 @@ def main() -> None:
 
     sequence_data, seg_to_sequence = load_sequence_data(str(args.metadata_dir))
     unlabeled_sequence_data: dict[str, dict] = load_unlabeled_sequence_data(str(args.metadata_dir))
+    unlocated_seg_ids: list[str] = load_unlocated_seg_ids(str(args.metadata_dir))
 
     labeled = Layer(
         name="labeled",
@@ -396,6 +412,18 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
+    if unlocated_seg_ids:
+        unlocated_color = UNLABELED_COLORS["none"]
+        st.sidebar.markdown(
+            f'<div style="margin:0 0 6px 0;font-size:0.85rem;color:#555;">'
+            f'<span style="background:{unlocated_color};display:inline-block;width:10px;'
+            f'height:10px;border-radius:2px;margin-right:6px;vertical-align:middle;"></span>'
+            f"unlabeled_unlocated: {len(unlocated_seg_ids)} segments "
+            f"(auto-assigned on save)"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
     st.sidebar.markdown("---")
     col1, col2 = st.sidebar.columns(2)
     undo_clicked = col1.button("Undo", width="stretch", disabled=not st.session_state.history)
@@ -428,6 +456,8 @@ def main() -> None:
                     continue
                 key = f"{layer.key_prefix}{sp}"
                 out.setdefault(key, []).extend(layer.data[seq]["segs"])
+        if unlocated_seg_ids:
+            out["unlabeled_unlocated"] = list(unlocated_seg_ids)
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2, ensure_ascii=False)
         st.sidebar.success(f"Saved {args.output}")
