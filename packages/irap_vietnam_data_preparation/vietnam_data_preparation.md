@@ -3,7 +3,7 @@
 Version: 2026-05-07
 
 End-to-end procedure for turning the raw IRAP-Vietnam release (images on Seafile
-+ iRAP coding tables — per-segment attribute annotations — in
++ iRAP coding tables – per-segment attribute annotations – in
 `coding-tables.zip`) into a dataset usable for training and evaluation through
 `vidlu_irap_gaim/data/bih_dataset.py`.
 
@@ -248,7 +248,7 @@ Rows where any required attribute is missing or `None`/blank get dropped
   `i-1` becomes one sub-sequence, a fresh run starts at `i`. The road_id of
   a clean (un-split) section is the bare section string; a split section
   emits `<section>__part0`, `<section>__part1`, … in order.
-- The pipeline **does not fail** on violations — it records every offending
+- The pipeline **does not fail** on violations – it records every offending
   transition (`prev_seg_id`, `next_seg_id`, distances, `seg_id_step`,
   `expected_distance_step_km`, source XLS file) in `_work/build_report.json`
   and on stderr. These are typically data-entry errors in the coding tables

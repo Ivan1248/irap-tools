@@ -37,7 +37,7 @@ the dataset root – and derives all subpaths internally.
   splits.json                    # Stage 3c
 ```
 
-`coding-tables.zip` contains the iRAP coding tables — Excel spreadsheets of
+`coding-tables.zip` contains the iRAP coding tables – Excel spreadsheets of
 per-segment attribute annotations, where "coding" is iRAP's term for assigning
 attribute codes to 20-m road segments. Before running anything, populate
 `<data_dir>/_raw/` with at least `coding-tables.zip` (or an unzipped
