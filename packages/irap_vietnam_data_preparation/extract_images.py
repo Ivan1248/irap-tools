@@ -40,10 +40,25 @@ import layout
 
 SPLIT_WRAPPER_RE = re.compile(r"^split\d+/", re.IGNORECASE)
 
+# Captures the video_dir prefix of a "<video_dir>_segN.png" filename.
+SEG_VIDEO_DIR_RE = re.compile(r"^(.*)_seg\d+\.png$", re.IGNORECASE)
+
 
 def strip_split_wrapper(internal_path: str) -> str:
     """Strip a single leading ``splitN/`` component from an archive entry path."""
     return SPLIT_WRAPPER_RE.sub("", internal_path, count=1)
+
+
+def video_dir_from_filename(filename: str) -> str | None:
+    """Return the owning ``<video_dir>`` for a ``<video_dir>_segN.png`` file.
+
+    Segment files are named ``<video_dir>_seg<N>.png``, so the video folder a
+    file belongs in is recoverable from the filename alone – independent of how
+    deeply the file was wrapped inside its source archive. Returns ``None`` when
+    the name does not match the convention.
+    """
+    m = SEG_VIDEO_DIR_RE.match(filename)
+    return m.group(1) if m else None
 
 
 def find_extractor() -> tuple[str, str]:
@@ -346,11 +361,6 @@ def extract_duplicates(
         _flatten_split_wrappers(archive_dup_out)
 
 
-def _count_files_in_dir(path: Path) -> int:
-    """Count all files recursively in a directory."""
-    return sum(1 for _ in path.rglob("*") if _.is_file())
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path,
@@ -455,25 +465,47 @@ def main(argv: list[str] | None = None) -> int:
             for fut in as_completed(futures):
                 fut.result()
 
-        # Flatten wrappers in temp directory
-        _flatten_split_wrappers(temp_extract_dir)
-        
-        # Count files to be merged (all will be replaced unconditionally)
-        files_to_merge = _count_files_in_dir(temp_extract_dir)
-        
-        # Merge temp extracted files into main output, overwriting unconditionally
+        # Route each file by its filename into out/<video_dir>/<file>.png,
+        # overwriting unconditionally. The missing_segments archives wrap the
+        # video folders in an arbitrary main folder (sometimes with extra
+        # subfolders), so we cannot rely on the extracted directory structure
+        # the way the regular splitN/ archives allow. Instead we recover the
+        # owning <video_dir> from each "<video_dir>_segN.png" filename, which
+        # is correct regardless of how deeply the file was nested.
         print("Merging missing_segments files with overwrite...")
+        replaced = 0   # overwrote a file that Stage 1 already produced
+        added = 0      # brand-new file not present from the regular archives
+        unmatched: list[Path] = []
         for src_file in temp_extract_dir.rglob("*"):
-            if src_file.is_file():
-                rel = src_file.relative_to(temp_extract_dir)
-                dst_file = out / rel
-                dst_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_file, dst_file)
-        
+            if not src_file.is_file():
+                continue
+            video_dir = video_dir_from_filename(src_file.name)
+            if video_dir is None:
+                unmatched.append(src_file)
+                continue
+            dst_file = out / video_dir / src_file.name
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            if dst_file.exists():
+                replaced += 1
+            else:
+                added += 1
+            shutil.copy2(src_file, dst_file)
+        files_to_merge = replaced + added
+
+        if unmatched:
+            print(f"WARN: {len(unmatched)} missing_segments file(s) did not match "
+                  f"the <video_dir>_segN.png naming convention and were skipped:",
+                  file=sys.stderr)
+            for p in unmatched[:20]:
+                print(f"    {p.relative_to(temp_extract_dir)}", file=sys.stderr)
+            if len(unmatched) > 20:
+                print(f"    ... and {len(unmatched) - 20} more", file=sys.stderr)
+
         # Cleanup temp directory
         shutil.rmtree(temp_extract_dir)
-        
-        print(f"Stage 2 complete. {files_to_merge} file(s) replaced or added.")
+
+        print(f"Stage 2 complete. {files_to_merge} missing_segments file(s) merged: "
+              f"{replaced} replaced existing, {added} newly added.")
         print(f"Total file(s) in {out}: "
               f"{sum(1 for _ in out.rglob('*') if _.is_file())}")
     
