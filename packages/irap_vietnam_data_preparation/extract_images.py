@@ -477,8 +477,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Total file(s) in {out}: "
               f"{sum(1 for _ in out.rglob('*') if _.is_file())}")
     
-    # Stage 3: Check for duplicates in regular archives (after all extraction)
-    print("\n[Stage 3] Checking for duplicates in regular archives...")
+    # Stage 3: Check for duplicates in regular archives only (not including missing_segments)
+    print("\n[Stage 3] Checking for duplicates in regular archives only...")
     if archive_entries:
         by_name, collisions, total = _compute_collisions(archive_entries)
         num_files = len(by_name)
@@ -496,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
             _report_collisions(collisions, ignore_duplicates=args.ignore_duplicates)
         else:
             print("  No duplicates found in regular archives.")
+    else:
+        print("  No regular archives to check for duplicates.")
     
     print(f"\nDone. {sum(1 for _ in out.rglob('*') if _.is_file())} file(s) in {out}")
     return 0
