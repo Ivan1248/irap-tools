@@ -87,8 +87,8 @@ The script now supports a **three-stage extraction process** with support for mi
 #### Stage 2.2 – Extract and replace missing_segments archives (optional)
 - If `missing_segments*.rar` files are present in `_raw/image_rars/`, they are extracted with **overwrite mode**
 - Extracts to a temporary directory first, then merges into `images/` directory
-- **Replaces existing files** from Stage 2.1 if they have different content
-- Reports the exact count of files replaced or added (using MD5 hash comparison)
+- **Replaces all existing files** from Stage 2.1 unconditionally (regardless of content)
+- Reports the count of files replaced or added
 - Automatically cleans up temporary directories
 
 #### Stage 2.3 – Check for duplicates in regular archives

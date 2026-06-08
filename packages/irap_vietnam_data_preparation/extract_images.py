@@ -346,28 +346,9 @@ def extract_duplicates(
         _flatten_split_wrappers(archive_dup_out)
 
 
-def _get_file_hashes(path: Path) -> dict[str, str]:
-    """Compute MD5 hashes of all files recursively for comparison."""
-    hashes = {}
-    if not path.exists():
-        return hashes
-    for f in path.rglob("*"):
-        if f.is_file():
-            rel = f.relative_to(path)
-            with open(f, "rb") as fp:
-                hashes[str(rel)] = hashlib.md5(fp.read()).hexdigest()
-    return hashes
-
-
-def _count_replaced_files(before_hashes: dict[str, str], after_path: Path) -> int:
-    """Count how many files were replaced (hash changed or new)."""
-    after_hashes = _get_file_hashes(after_path)
-    replaced = 0
-    for rel_path, after_hash in after_hashes.items():
-        before_hash = before_hashes.get(rel_path)
-        if before_hash is None or before_hash != after_hash:
-            replaced += 1
-    return replaced
+def _count_files_in_dir(path: Path) -> int:
+    """Count all files recursively in a directory."""
+    return sum(1 for _ in path.rglob("*") if _.is_file())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -457,9 +438,6 @@ def main(argv: list[str] | None = None) -> int:
         if not out.exists():
             out.mkdir(parents=True, exist_ok=True)
         
-        # Capture file hashes before extraction
-        before_hashes = _get_file_hashes(out)
-        
         num_jobs = args.jobs or min(len(missing_archives), 4)
         
         # Extract to temporary directory first
@@ -480,7 +458,10 @@ def main(argv: list[str] | None = None) -> int:
         # Flatten wrappers in temp directory
         _flatten_split_wrappers(temp_extract_dir)
         
-        # Merge temp extracted files into main output, overwriting
+        # Count files to be merged (all will be replaced unconditionally)
+        files_to_merge = _count_files_in_dir(temp_extract_dir)
+        
+        # Merge temp extracted files into main output, overwriting unconditionally
         print("Merging missing_segments files with overwrite...")
         for src_file in temp_extract_dir.rglob("*"):
             if src_file.is_file():
@@ -492,9 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         # Cleanup temp directory
         shutil.rmtree(temp_extract_dir)
         
-        # Count replacements
-        replaced_count = _count_replaced_files(before_hashes, out)
-        print(f"Stage 2 complete. {replaced_count} file(s) replaced or added.")
+        print(f"Stage 2 complete. {files_to_merge} file(s) replaced or added.")
         print(f"Total file(s) in {out}: "
               f"{sum(1 for _ in out.rglob('*') if _.is_file())}")
     
