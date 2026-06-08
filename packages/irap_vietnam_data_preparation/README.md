@@ -75,12 +75,47 @@ Files are resumable (HTTP Range). Existing files with matching size are skipped.
 python extract_images.py $DATA_DIR
 ```
 
-- Extracts with `unrar x` / `7z x`, preserving the per-video subfolder. The outer `splitN/` wrapper (a RAR-partitioning artifact) is stripped, leaving `images/<video_dir>/<video_dir>_seg<N>.png`.
-- Tries `unrar` first, falls back to `7z`.
-- Per-archive `tqdm` progress bar.
-- Pre-extraction collision check across archives, on the post-strip relative path (so same basename in different video dirs is **not** a collision). Identical/ambiguous duplicates are silent, content-differing duplicates are warned.
-- Resumes by default (`unrar -o-` / `7z -aos`).
-- If you have an old **flat** `images/` from a previous run, delete it before re-running so the new layout isn't mixed with the old one.
+The script now supports a **three-stage extraction process** with support for missing segments replacement:
+
+#### Stage 2.1 – Extract regular archives (split*.rar)
+- Extracts all regular `split*.rar` archives with skip-if-exists mode
+- Preserves the per-video subfolder structure
+- Strips the outer `splitN/` wrapper (a RAR-partitioning artifact), leaving `images/<video_dir>/<video_dir>_seg<N>.png`
+- Creates a fresh `images/` directory (prompts for confirmation if non-empty; use `--yes` to skip)
+- Flattens wrapper directories and reports total file count
+
+#### Stage 2.2 – Extract and replace missing_segments archives (optional)
+- If `missing_segments*.rar` files are present in `_raw/image_rars/`, they are extracted with **overwrite mode**
+- Extracts to a temporary directory first, then merges into `images/` directory
+- **Replaces existing files** from Stage 2.1 if they have different content
+- Reports the exact count of files replaced or added (using MD5 hash comparison)
+- Automatically cleans up temporary directories
+
+#### Stage 2.3 – Check for duplicates in regular archives
+- After all extractions complete, checks for duplicate paths **within regular archives only**
+- Missing_segments files are excluded from collision detection (they are intentionally replacing files)
+- If duplicates are found with differing content, aborts unless `--ignore-duplicates` is passed
+- Extracts duplicate copies to `_work/images_duplicates/` for manual review
+- Categorizes duplicates as: identical content, same size/no CRC, or differing content
+
+#### General options:
+- Tries `unrar` first, falls back to `7z`
+- Per-archive `tqdm` progress bar during extraction
+- `--ignore-duplicates`: Proceed when regular archives share duplicate paths (first archive wins)
+- `--yes` / `-y`: Skip confirmation prompt when wiping non-empty `images/` directory
+- `--jobs` / `-j`: Set number of parallel extractions (default: min(num_archives, 4))
+
+#### Workflow example:
+```bash
+# Extract all split files
+python extract_images.py $DATA_DIR
+
+# If missing_segments files are added later, re-run:
+python extract_images.py $DATA_DIR --yes
+# Stage 2.1 will skip (already extracted)
+# Stage 2.2 will extract and replace from missing_segments*.rar
+# Stage 2.3 will check for duplicates in split files
+```
 
 ### Stage 3a – Parse coding tables
 
