@@ -24,6 +24,7 @@ Reads ``<data_dir>/_raw/image_rars/*.rar``; writes nested images into
 ``<data_dir>/images/<video_dir>/``.
 """
 import argparse
+import hashlib
 import re
 import shutil
 import subprocess
@@ -39,10 +40,25 @@ import layout
 
 SPLIT_WRAPPER_RE = re.compile(r"^split\d+/", re.IGNORECASE)
 
+# Captures the video_dir prefix of a "<video_dir>_segN.png" filename.
+SEG_VIDEO_DIR_RE = re.compile(r"^(.*)_seg\d+\.png$", re.IGNORECASE)
+
 
 def strip_split_wrapper(internal_path: str) -> str:
     """Strip a single leading ``splitN/`` component from an archive entry path."""
     return SPLIT_WRAPPER_RE.sub("", internal_path, count=1)
+
+
+def video_dir_from_filename(filename: str) -> str | None:
+    """Return the owning ``<video_dir>`` for a ``<video_dir>_segN.png`` file.
+
+    Segment files are named ``<video_dir>_seg<N>.png``, so the video folder a
+    file belongs in is recoverable from the filename alone – independent of how
+    deeply the file was wrapped inside its source archive. Returns ``None`` when
+    the name does not match the convention.
+    """
+    m = SEG_VIDEO_DIR_RE.match(filename)
+    return m.group(1) if m else None
 
 
 def find_extractor() -> tuple[str, str]:
@@ -157,7 +173,7 @@ def _run_extraction(
 
 
 def extract(binary: str, kind: str, archive: Path, out: Path, *,
-            num_entries: int, position: int = 0) -> None:
+            num_entries: int, position: int = 0, overwrite: bool = False) -> None:
     """Extract one archive preserving per-video subfolders; show a tqdm bar.
 
     Uses ``unrar x`` / ``7z x`` so subdirectories from inside the archive are
@@ -166,10 +182,9 @@ def extract(binary: str, kind: str, archive: Path, out: Path, *,
     after all archives are extracted (deferring is required so that concurrent
     extractions of archives sharing a ``splitN/<video_dir>/`` path do not race).
 
-    Caller is expected to have wiped ``out`` beforehand; the extractor still
-    uses skip-if-exists mode (``-o-``/``-aos``) so that two workers writing
-    to the same ``splitN/<video_dir>/`` path resolve to first-wins instead of
-    racing on a partial overwrite.
+    Caller is expected to have wiped ``out`` beforehand; the extractor uses
+    skip-if-exists mode (``-o-``/``-aos``) by default, or overwrite mode
+    (``-y``/``-aoa``) if ``overwrite=True``.
 
     Drives the bar by parsing per-file lines from the extractor:
     - unrar: "Extracting  <path>" per file.
@@ -182,10 +197,12 @@ def extract(binary: str, kind: str, archive: Path, out: Path, *,
     """
     out.mkdir(parents=True, exist_ok=True)
     if kind == "unrar":
-        cmd = [binary, "x", "-o-", "-y", str(archive), str(out) + "/"]
+        skip_mode = "-y" if overwrite else "-o-"
+        cmd = [binary, "x", skip_mode, "-y", str(archive), str(out) + "/"]
     else:
         # -bb1 emits one line per file; -bso0/-bsp0 silence summary/progress.
-        cmd = [binary, "x", "-aos", "-bb1", "-bso1", "-bsp0",
+        skip_mode = "-aoa" if overwrite else "-aos"
+        cmd = [binary, "x", skip_mode, "-bb1", "-bso1", "-bsp0",
                f"-o{out}", str(archive)]
     _run_extraction(cmd, kind, num_entries, archive.name, position)
 
@@ -361,70 +378,160 @@ def main(argv: list[str] | None = None) -> int:
 
     rars = layout.rars_dir(args.data_dir)
     out = layout.images_dir(args.data_dir)
-    archives = sorted(rars.glob("*.rar")) if rars.is_dir() else []
-    if not archives:
+    all_archives = sorted(rars.glob("*.rar")) if rars.is_dir() else []
+    if not all_archives:
         print(f"No .rar archives found in {rars}", file=sys.stderr)
         return 1
 
+    # Separate regular archives from missing_segments archives
+    regular_archives = [a for a in all_archives if "missing_segments" not in a.name.lower()]
+    missing_archives = [a for a in all_archives if "missing_segments" in a.name.lower()]
+
     binary, kind = find_extractor()
     print(f"Using extractor: {binary} ({kind})")
-    print(f"Found {len(archives)} archive(s):")
-    for a in archives:
-        print(f"  {a.name}  ({a.stat().st_size / 1e9:.2f} GB)")
+    print(f"Found {len(all_archives)} archive(s):")
+    if regular_archives:
+        print(f"  Regular archives ({len(regular_archives)}):")
+        for a in regular_archives:
+            print(f"    {a.name}  ({a.stat().st_size / 1e9:.2f} GB)")
+    if missing_archives:
+        print(f"  Missing segments archives ({len(missing_archives)}):")
+        for a in missing_archives:
+            print(f"    {a.name}  ({a.stat().st_size / 1e9:.2f} GB)")
 
-    print(f"Indexing {len(archives)} archive(s)...")
+    # Index only regular archives for collision detection (missing_segments are meant to replace)
+    print(f"Indexing {len(regular_archives)} regular archive(s)...")
     archive_entries: dict[Path, list[tuple[str, int, str | None]]] = {}
-    for a in archives:
+    for a in regular_archives:
         archive_entries[a] = list_entries(binary, kind, a)
         print(f"  {a.name}: {len(archive_entries[a])} entries")
 
     dup_out = layout.images_duplicates_dir(args.data_dir)
 
-    print("Checking for duplicate basenames across archives...")
-    by_name, collisions, total = _compute_collisions(archive_entries)
-    num_files = len(by_name)
-    print(f"  {num_files} unique basenames, {total / 1e9:.2f} GB total "
-          f"(uncompressed)")
+    # Stage 1: Extract regular archives (skip-if-exists)
+    if regular_archives:
+        if out.exists() and any(out.iterdir()):
+            if not args.yes:
+                print(f"\n{out} is non-empty and will be wiped before extraction.")
+                reply = input("Proceed? [y/N] ").strip().lower()
+                if reply not in ("y", "yes"):
+                    print("Aborted.", file=sys.stderr)
+                    return 1
+            print(f"Wiping {out}...")
+            shutil.rmtree(out)
+        out.mkdir(parents=True, exist_ok=True)
 
-    if collisions:
-        if dup_out.exists():
-            shutil.rmtree(dup_out)
-        dup_out.mkdir(parents=True, exist_ok=True)
-        print(f"Extracting {len(collisions)} duplicate path(s) to {dup_out}...")
-        extract_duplicates(binary, kind, archive_entries, collisions, dup_out)
-        dup_count = sum(1 for p in dup_out.rglob("*") if p.is_file())
-        print(f"  {dup_count} file(s) written to {dup_out}")
-        _report_collisions(collisions, ignore_duplicates=args.ignore_duplicates)
+        num_jobs = args.jobs or min(len(regular_archives), 4)
+        print(f"\n[Stage 1] Extracting {len(regular_archives)} regular archive(s) "
+              f"with {num_jobs} parallel worker(s)...")
 
-    if out.exists() and any(out.iterdir()):
-        if not args.yes:
-            print(f"\n{out} is non-empty and will be wiped before extraction.")
-            reply = input("Proceed? [y/N] ").strip().lower()
-            if reply not in ("y", "yes"):
-                print("Aborted.", file=sys.stderr)
-                return 1
-        print(f"Wiping {out}...")
-        shutil.rmtree(out)
-    out.mkdir(parents=True, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=num_jobs) as ex:
+            futures = {
+                ex.submit(extract, binary, kind, a, out,
+                          num_entries=len(archive_entries[a]),
+                          position=i, overwrite=False): a
+                for i, a in enumerate(regular_archives)
+            }
+            for fut in as_completed(futures):
+                fut.result()
 
-    num_jobs = args.jobs or min(len(archives), 4)
-    print(f"Extracting {len(archives)} archive(s) with {num_jobs} "
-          f"parallel worker(s)...")
+        print("Flattening splitN/ wrappers...")
+        _flatten_split_wrappers(out)
+        print(f"Stage 1 complete. {sum(1 for _ in out.rglob('*') if _.is_file())} "
+              f"file(s) in {out}")
 
-    with ThreadPoolExecutor(max_workers=num_jobs) as ex:
-        futures = {
-            ex.submit(extract, binary, kind, a, out,
-                      num_entries=len(archive_entries[a]),
-                      position=i): a
-            for i, a in enumerate(archives)
-        }
-        for fut in as_completed(futures):
-            fut.result()
+    # Stage 2: Extract missing_segments archives (with overwrite)
+    if missing_archives:
+        print(f"\n[Stage 2] Extracting {len(missing_archives)} missing_segments "
+              f"archive(s) with overwrite...")
+        
+        if not out.exists():
+            out.mkdir(parents=True, exist_ok=True)
+        
+        num_jobs = args.jobs or min(len(missing_archives), 4)
+        
+        # Extract to temporary directory first
+        temp_extract_dir = out.parent / f".temp_missing_extract_{id(out)}"
+        if temp_extract_dir.exists():
+            shutil.rmtree(temp_extract_dir)
+        
+        with ThreadPoolExecutor(max_workers=num_jobs) as ex:
+            futures = {
+                ex.submit(extract, binary, kind, a, temp_extract_dir,
+                          num_entries=len(archive_entries[a]) if a in archive_entries else 0,
+                          position=i, overwrite=True): a
+                for i, a in enumerate(missing_archives)
+            }
+            for fut in as_completed(futures):
+                fut.result()
 
-    print("Flattening splitN/ wrappers...")
-    _flatten_split_wrappers(out)
+        # Route each file by its filename into out/<video_dir>/<file>.png,
+        # overwriting unconditionally. The missing_segments archives wrap the
+        # video folders in an arbitrary main folder (sometimes with extra
+        # subfolders), so we cannot rely on the extracted directory structure
+        # the way the regular splitN/ archives allow. Instead we recover the
+        # owning <video_dir> from each "<video_dir>_segN.png" filename, which
+        # is correct regardless of how deeply the file was nested.
+        print("Merging missing_segments files with overwrite...")
+        replaced = 0   # overwrote a file that Stage 1 already produced
+        added = 0      # brand-new file not present from the regular archives
+        unmatched: list[Path] = []
+        for src_file in temp_extract_dir.rglob("*"):
+            if not src_file.is_file():
+                continue
+            video_dir = video_dir_from_filename(src_file.name)
+            if video_dir is None:
+                unmatched.append(src_file)
+                continue
+            dst_file = out / video_dir / src_file.name
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            if dst_file.exists():
+                replaced += 1
+            else:
+                added += 1
+            shutil.copy2(src_file, dst_file)
+        files_to_merge = replaced + added
 
-    print(f"\nDone. {sum(1 for _ in out.iterdir())} files in {out}")
+        if unmatched:
+            print(f"WARN: {len(unmatched)} missing_segments file(s) did not match "
+                  f"the <video_dir>_segN.png naming convention and were skipped:",
+                  file=sys.stderr)
+            for p in unmatched[:20]:
+                print(f"    {p.relative_to(temp_extract_dir)}", file=sys.stderr)
+            if len(unmatched) > 20:
+                print(f"    ... and {len(unmatched) - 20} more", file=sys.stderr)
+
+        # Cleanup temp directory
+        shutil.rmtree(temp_extract_dir)
+
+        print(f"Stage 2 complete. {files_to_merge} missing_segments file(s) merged: "
+              f"{replaced} replaced existing, {added} newly added.")
+        print(f"Total file(s) in {out}: "
+              f"{sum(1 for _ in out.rglob('*') if _.is_file())}")
+    
+    # Stage 3: Check for duplicates in regular archives only (not including missing_segments)
+    print("\n[Stage 3] Checking for duplicates in regular archives only...")
+    if archive_entries:
+        by_name, collisions, total = _compute_collisions(archive_entries)
+        num_files = len(by_name)
+        print(f"  {num_files} unique basenames, {total / 1e9:.2f} GB total "
+              f"(uncompressed)")
+
+        if collisions:
+            if dup_out.exists():
+                shutil.rmtree(dup_out)
+            dup_out.mkdir(parents=True, exist_ok=True)
+            print(f"Extracting {len(collisions)} duplicate path(s) to {dup_out}...")
+            extract_duplicates(binary, kind, archive_entries, collisions, dup_out)
+            dup_count = sum(1 for p in dup_out.rglob("*") if p.is_file())
+            print(f"  {dup_count} file(s) written to {dup_out}")
+            _report_collisions(collisions, ignore_duplicates=args.ignore_duplicates)
+        else:
+            print("  No duplicates found in regular archives.")
+    else:
+        print("  No regular archives to check for duplicates.")
+    
+    print(f"\nDone. {sum(1 for _ in out.rglob('*') if _.is_file())} file(s) in {out}")
     return 0
 
 
