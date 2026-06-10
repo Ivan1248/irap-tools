@@ -75,47 +75,11 @@ Files are resumable (HTTP Range). Existing files with matching size are skipped.
 python extract_images.py $DATA_DIR
 ```
 
-The script now supports a **three-stage extraction process** with support for missing segments replacement:
-
-#### Stage 2.1 – Extract regular archives (split*.rar)
-- Extracts all regular `split*.rar` archives with skip-if-exists mode
-- Preserves the per-video subfolder structure
-- Strips the outer `splitN/` wrapper (a RAR-partitioning artifact), leaving `images/<video_dir>/<video_dir>_seg<N>.png`
-- Creates a fresh `images/` directory (prompts for confirmation if non-empty; use `--yes` to skip)
-- Flattens wrapper directories and reports total file count
-
-#### Stage 2.2 – Extract and replace missing_segments archives (optional)
-- If `missing_segments*.rar` files are present in `_raw/image_rars/`, they are extracted with **overwrite mode**
-- Extracts to a temporary directory first, then merges into `images/` directory
-- **Replaces all existing files** from Stage 2.1 unconditionally (regardless of content)
-- Reports the count of files replaced or added
-- Automatically cleans up temporary directories
-
-#### Stage 2.3 – Check for duplicates in regular archives
-- After all extractions complete, checks for duplicate paths **within regular archives only**
-- Missing_segments files are excluded from collision detection (they are intentionally replacing files)
-- If duplicates are found with differing content, aborts unless `--ignore-duplicates` is passed
-- Extracts duplicate copies to `_work/images_duplicates/` for manual review
-- Categorizes duplicates as: identical content, same size/no CRC, or differing content
-
-#### General options:
-- Tries `unrar` first, falls back to `7z`
-- Per-archive `tqdm` progress bar during extraction
-- `--ignore-duplicates`: Proceed when regular archives share duplicate paths (first archive wins)
-- `--yes` / `-y`: Skip confirmation prompt when wiping non-empty `images/` directory
-- `--jobs` / `-j`: Set number of parallel extractions (default: min(num_archives, 4))
-
-#### Workflow example:
-```bash
-# Extract all split files
-python extract_images.py $DATA_DIR
-
-# If missing_segments files are added later, re-run:
-python extract_images.py $DATA_DIR --yes
-# Stage 2.1 will skip (already extracted)
-# Stage 2.2 will extract and replace from missing_segments*.rar
-# Stage 2.3 will check for duplicates in split files
-```
+- Extracts with `unrar x` / `7z x`. The outer `splitN/` wrapper is stripped, leaving `images/<video_dir>/<video_dir>_seg<N>.png`.
+- Checks for collisions across the `split*.rar` archives. Aborts on duplicates unless `--ignore-duplicates` is passed. All duplicate copies are extracted to `_work/images_duplicates/` for manual review.
+- If `images/` exists, prompts to wipe before extraction (use `--yes` to wipe without prompting).
+- `missing_segments*.rar` archives (corrected segments) are applied last: each `<video_dir>_seg<N>.png` in them replaces or adds `images/<video_dir>/<file>`. They are excluded from the collision check, and replaced vs. added counts are reported.
+- No incremental mode: re-running wipes `images/`, re-extracts everything, then re-applies the missing_segments archives.
 
 ### Stage 3a – Parse coding tables
 
@@ -126,8 +90,10 @@ python parse_coding_tables.py $DATA_DIR
 Auto-unzips `_raw/coding-tables.zip` if needed. Validates required column names
 against `_raw/attribute_metadata.json` (errors on missing columns). Drops rows
 with `Length != 0.02 km`, missing scalar/attribute fields, unparseable
-`Image Reference FPZ`, or unknown IRAP codes. Resolves duplicate `seg_id`s
-across files by keeping the row with the most non-empty attribute cells.
+`Image Reference FPZ`, unknown IRAP codes, or – when the optional
+`offset_distance_m` column is present – an FPZ-to-annotation distance greater
+than 10 m. Resolves duplicate `seg_id`s across files by keeping the row with
+the most non-empty attribute cells.
 
 ### Stage 3b – Build BiH-compatible metadata
 
@@ -169,10 +135,10 @@ streamlit run split_editor.py -- $DATA_DIR
 
 Opens a browser-based map showing all road sections as coloured polylines.
 
-1. Pick an active split in the sidebar (**Train / Val / Test / None**).
+1. Pick an active split in the sidebar (`train`, `val`, `test`, or `none`).
 2. **Draw a rectangle** on the map – all sections whose centroid falls
    inside are assigned to the active split.
-3. Use **Undo** to revert the last batch; **Reset** to clear all.
+3. Use **Undo** to revert the last batch, **Reset** to clear all.
 4. **Save** writes `splits.json` (see *Output format* above).
 
 If `splits.json` already exists in the metadata directory it is used as the
