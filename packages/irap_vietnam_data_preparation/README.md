@@ -100,8 +100,7 @@ Rows with *some* (but not all) attribute cells blank are **kept** by default,
 with the missing cells set to `-1` (`MISSING_ATTR_CODE`, analogous to an ignore
 label). The `parse_report.json` and stdout summary record which attributes are
 missing in how many kept rows, per file and overall. Pass
-`--drop-rows-missing-attributes` to drop any
-row with a blank attribute cell.
+`--drop-rows-missing-attributes` to drop any row with a blank attribute cell.
 
 ### Stage 3b – Build BiH-compatible metadata
 

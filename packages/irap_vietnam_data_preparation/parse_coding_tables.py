@@ -22,7 +22,9 @@ Validation rules (see irap_vietnam_data_preparation/vietnam_data_preparation.md)
 - Required attribute columns: every key of attribute_to_idx in the supplied
   metadata, minus the entries listed in ``incompatible_attributes.json``
   (``ignored_from_bh``). Missing any remaining required column => fatal
-  error.
+  error. Attributes whose Vietnam table header differs from the BiH name are
+  resolved via the ``bh_to_table_attribute_name`` map in
+  ``incompatible_attributes.json`` (the output keeps the canonical BiH name).
 - Files lacking the labeling columns entirely (Section + at least one
   attribute) are skipped as "non-coding files".
 - Rows are dropped (and counted) when:
@@ -81,7 +83,7 @@ INCOMPATIBLE_ATTRIBUTES_FILE = "incompatible_attributes.json"
 # annotation coordinates. Rows whose annotation is farther than this from the
 # FPZ point are dropped. The column is ignored when absent or blank.
 ANNOT_LOC_OFFSET_COLUMN = "offset_distance_m"
-MAX_ANNOT_LOC_OFFSET_M = 8
+MAX_ANNOT_LOC_OFFSET_M = 5
 # Sentinel stored in attribute columns when a row-level cell is blank.
 # Distinct from None, which means the attribute was entirely absent in the file.
 MISSING_ATTR_CODE = -1
@@ -146,6 +148,21 @@ def load_ignored_attributes(script_dir: Path) -> list[str]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return list(data.get("ignored_from_bh", []))
+
+
+def load_attribute_name_mapping(script_dir: Path) -> dict[str, str]:
+    """Load ``bh_to_table_attribute_name`` from the mapping file in the script dir.
+
+    Returns ``{bh_attribute_name: vietnam_table_column_name}``. Empty dict if the
+    file or key is absent. Used to resolve required columns whose Vietnam header
+    differs from the canonical BiH name; the output keeps the BiH name.
+    """
+    path = script_dir / INCOMPATIBLE_ATTRIBUTES_FILE
+    if not path.is_file():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return dict(data.get("bh_to_table_attribute_name", {}))
 
 
 def find_table_files(coding_tables_dir: Path) -> list[Path]:
@@ -296,12 +313,15 @@ def validate_columns(
     *,
     file: Path,
     ignored_attributes: list[str] | None = None,
+    name_mapping: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Return ``{logical_name: actual_column_name}`` for every required column.
 
     Header lookup is case-insensitive (after whitespace stripping). Attribute
     columns are looked up by their metadata name directly (table column names
-    are expected to match).
+    are expected to match); when that fails, ``name_mapping`` (BiH name ->
+    Vietnam table header) provides a fallback so the result still keys on the
+    canonical BiH name.
 
     Raises ``ValueError`` if any required column is missing. The message lists
     missing required columns next to their closest header found in the file,
@@ -313,6 +333,7 @@ def validate_columns(
       values it contains (WARN; so callers can verify the skip is intentional).
     """
     ignored_attributes = ignored_attributes or []
+    name_mapping = name_mapping or {}
 
     actual = {normalize_header(c): c for c in df.columns}
     ci_index: dict[str, str] = {}
@@ -322,7 +343,13 @@ def validate_columns(
     def resolve_one(name: str) -> str | None:
         if name in actual:
             return name
-        return ci_index.get(name.lower())
+        h = ci_index.get(name.lower())
+        if h is not None:
+            return h
+        mapped = name_mapping.get(name)
+        if mapped is not None:
+            return mapped if mapped in actual else ci_index.get(mapped.lower())
+        return None
 
     # Scalar columns: look up by their own name.
     resolved: dict[str, str | None] = {r: resolve_one(r) for r in REQUIRED_SCALAR_COLUMNS}
@@ -438,6 +465,7 @@ def process_file(
     unknown_codes: dict[str, Counter],
     *,
     ignored_attributes: list[str] | None = None,
+    name_mapping: dict[str, str] | None = None,
     empty_attr_file_counts: Counter | None = None,
     missing_rows_per_attr_per_file: dict[str, dict[str, int]] | None = None,
     non_empty_rows_per_file: dict[str, int] | None = None,
@@ -465,6 +493,7 @@ def process_file(
     cols = validate_columns(
         df, attribute_names, file=path,
         ignored_attributes=ignored_attributes,
+        name_mapping=name_mapping,
     )
 
     # Optional FPZ-to-annotation offset column (not a required column).
@@ -726,6 +755,10 @@ def main(argv: list[str] | None = None) -> int:
         valid_codes = {k: v for k, v in valid_codes.items() if k not in ignored_set}
         print(f"Ignoring {len(ignored_attributes)} attribute(s) per mapping file: "
               + ", ".join(repr(a) for a in sorted(ignored_attributes)))
+    name_mapping = load_attribute_name_mapping(Path(__file__).parent)
+    if name_mapping:
+        print(f"Translating {len(name_mapping)} attribute name(s) to their "
+              f"Vietnam table header per mapping file.")
     coding_tables_dir = resolve_coding_tables_dir(raw)
     files = find_table_files(coding_tables_dir)
     if not files:
@@ -772,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
                 path, attribute_names, valid_codes,
                 drop_counts, unknown_codes,
                 ignored_attributes=ignored_attributes,
+                name_mapping=name_mapping,
                 empty_attr_file_counts=empty_attr_file_counts,
                 missing_rows_per_attr_per_file=missing_rows_per_attr_per_file,
                 non_empty_rows_per_file=non_empty_rows_per_file,
