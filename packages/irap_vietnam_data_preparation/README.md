@@ -72,7 +72,7 @@ Files are resumable (HTTP Range). Existing files with matching size are skipped.
 ### Stage 2 – Extract images grouped by source video
 
 ```bash
-python extract_images.py $DATA_DIR
+python extract_images.py $DATA_DIR --ignore-duplicates
 ```
 
 - Extracts with `unrar x` / `7z x`. The outer `splitN/` wrapper is stripped, leaving `images/<video_dir>/<video_dir>_seg<N>.png`.
