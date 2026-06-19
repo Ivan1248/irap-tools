@@ -583,7 +583,7 @@ def process_file(
         missing_attrs_row = [a for a, v in attrs.items() if v == MISSING_ATTR_CODE and a not in per_file_skip]
         if missing_attrs_row:
             print(
-                f"INFO: {path.name}: row {idx + 1}: missing value for attribute(s) "
+                f"WARN: {path.name}: row {idx + 1}: missing value for attribute(s) "
                 f"{', '.join(missing_attrs_row)}",
                 file=sys.stderr,
             )
@@ -702,9 +702,15 @@ def resolve_duplicates(
         kept.append(winner)
         for _, r in scored[1:]:
             dropped.append(r)
+        winner_filled = num_filled_attribute_cells(winner, attribute_names)
+        runner_up_filled = num_filled_attribute_cells(scored[1][1], attribute_names)
+        if winner_filled > runner_up_filled:
+            reason = f"most filled cells ({winner_filled} vs {runner_up_filled})"
+        else:
+            reason = f"first occurrence (tie at {winner_filled} filled cells)"
         files = [r["source_file"] for r in group]
         print(f"WARN: duplicate seg_id {seg_id} across {files}; "
-              f"kept row from {winner['source_file']}", file=sys.stderr)
+              f"kept row from {winner['source_file']} ({reason})", file=sys.stderr)
         conflicts = conflicting_attributes(group, attribute_names)
         if conflicts:
             details = "; ".join(
@@ -823,21 +829,35 @@ def main(argv: list[str] | None = None) -> int:
         rows_kept_per_file[path.name] = len(rows)
         all_rows.extend(rows)
 
-    print(f"Collected {len(all_rows)} rows before duplicate resolution.")
+    # Resolve duplicates first: it streams a per-collision WARN to stderr for
+    # every duplicate seg_id, so printing the summary beforehand would bury it
+    # above that wall of warnings. Emit the whole summary as one contiguous
+    # block afterwards, in the order rows flow through the pipeline.
     kept, dup_dropped = resolve_duplicates(all_rows, attribute_names)
-    print(f"After duplicate resolution: {len(kept)} kept, "
-          f"{len(dup_dropped)} duplicate row(s) dropped.")
     if drop_counts:
-        print(f"Rows dropped for other reasons ({sum(drop_counts.values())} total):")
+        print(f"Rows dropped during parsing ({sum(drop_counts.values())} total):")
         for reason, count in drop_counts.most_common():
             print(f"  {reason}: {count}")
-    total_rows_with_missing = sum(rows_with_missing_attrs_per_file.values())
+    print(f"Collected {len(all_rows)} rows before duplicate resolution.")
+    print(f"After duplicate resolution: {len(kept)} kept, "
+          f"{len(dup_dropped)} duplicate row(s) dropped.")
+
+    # Missing-attribute tallies computed over the final kept rows so every
+    # count below refers to the written output (the per-file dicts gathered
+    # during parsing are pre-dedup and would over-count by the duplicates).
+    missing_per_attr_kept: Counter = Counter()
+    total_rows_with_missing = 0
+    for rec in kept:
+        row_has_missing = False
+        for attr in attribute_names:
+            if rec.get(attr) == MISSING_ATTR_CODE:
+                missing_per_attr_kept[attr] += 1
+                row_has_missing = True
+        if row_has_missing:
+            total_rows_with_missing += 1
     if total_rows_with_missing:
         attr_missing_totals = sorted(
-            (
-                (attr, sum(v.get(attr, 0) for v in missing_rows_per_attr_per_file.values()))
-                for attr in attribute_names
-            ),
+            ((attr, missing_per_attr_kept.get(attr, 0)) for attr in attribute_names),
             key=lambda kv: (-kv[1], kv[0]),
         )
         print(f"Rows kept with at least one missing (-1) attribute: "
@@ -850,7 +870,7 @@ def main(argv: list[str] | None = None) -> int:
     entirely_file_empty = [
         attr for attr in attribute_names
         if int(empty_attr_file_counts[attr]) > 0
-        and sum(v.get(attr, 0) for v in missing_rows_per_attr_per_file.values()) == 0
+        and missing_per_attr_kept.get(attr, 0) == 0
     ]
     if entirely_file_empty:
         print("Attributes entirely absent from contributing files (no kept rows generated):")
@@ -905,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             "rows": {
                 "kept": len(kept),
-                "with_any_missing_attribute": sum(rows_with_missing_attrs_per_file.values()),
+                "with_any_missing_attribute": total_rows_with_missing,
                 "dropped_total": sum(drop_counts.values()),
                 "dropped_by_reason": dict(drop_counts),
                 "dropped_duplicates": len(dup_dropped),
@@ -916,9 +936,7 @@ def main(argv: list[str] | None = None) -> int:
         "attributes": {
             attr: {
                 **({"num_files_empty": nfe} if (nfe := int(empty_attr_file_counts[attr])) > 0 else dict()),
-                **({"total_rows_missing": trm} if (trm := sum(
-                    v.get(attr, 0) for v in missing_rows_per_attr_per_file.values()
-                )) > 0 else dict()),
+                **({"total_rows_missing": trm} if (trm := missing_per_attr_kept.get(attr, 0)) > 0 else dict()),
                 **({"num_files_unknown_code": uc} if len(uc := dict(unknown_codes.get(attr, Counter()))) > 0 else dict()),
             }
             for attr in attribute_names

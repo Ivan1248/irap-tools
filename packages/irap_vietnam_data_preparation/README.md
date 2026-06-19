@@ -125,15 +125,6 @@ Both tools write `splits.json` as `{<split_name>: [seg_id, ...]}` with segment i
 - `unlabeled_train`, `unlabeled_val`, `unlabeled_test` – unlabeled segments assigned the same way. Omitted if `unlabeled_sequence_id_to_data.json` is not present in the metadata directory.
 - `unlabeled_unlocated` – unlabeled segments from image folders that have no labeled siblings, so no map coordinate is derivable. Auto-populated from `unlabeled_unlocated_segment_ids.json` and not user-editable in the map GUI. Omitted if the file is absent.
 
-#### Automatic (K-Means)
-
-```bash
-python make_splits.py $DATA_DIR
-```
-
-Per-section deterministic allocation: whole sections go into one split,
-giving geographically non-overlapping splits with no leakage.
-
 #### Manual (map GUI)
 
 ```bash
@@ -151,6 +142,17 @@ Opens a browser-based map showing all road sections as coloured polylines.
 If `splits.json` already exists in the metadata directory it is used as the
 starting assignment (useful for tweaking an automatic result).
 Requires `streamlit >= 1.35`.
+
+#### Automatic (K-Means)
+
+Note: This procedure is experimental and not recommended. The code is AI-generated and not reviewed.
+
+```bash
+python make_splits.py $DATA_DIR
+```
+
+Per-section deterministic allocation: whole sections go into one split,
+giving geographically non-overlapping splits with no leakage.
 
 ## Stage 4 – clean up
 
