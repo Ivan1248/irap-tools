@@ -27,7 +27,7 @@ the dataset root – and derives all subpaths internally.
     parse_report.json
     build_report.json
   
-  images/                        # Stage 2 output (nested by video sequence)
+  FRAMES/                        # Stage 2 output (nested by video sequence)
     <video_dir>/
       <video_dir>_seg<N>.png
   segment_id_to_data_paths_rel.json  # Stage 3b outputs (directly in root)
@@ -47,15 +47,6 @@ attribute codes to 20-m road segments. Before running anything, populate
 `make_vietnam_data()` searches for `IRAP_Vietnam/` in this order: `$IRAP_HOME`,
 `$VIDLU_DATASETS`, `$VIDLU_DATA/datasets`, then ancestors of the package for
 `data/datasets/IRAP_Vietnam`.
-
-## End-to-end
-
-```bash
-bash prepare_dataset.sh <data_dir>
-```
-
-Skips downloading or extraction with `--skip-download` / `--skip-extract` if
-already done. See `prepare_dataset.sh --help` for split-ratio / seed options.
 
 ## Per-stage commands
 
