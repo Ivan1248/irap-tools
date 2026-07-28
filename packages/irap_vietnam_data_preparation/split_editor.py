@@ -126,14 +126,19 @@ def load_sequence_data(
         "centroid": (lat, lon),
     }
     seg_to_sequence[seg_id] = sequence
+
+    Sequences are the road_ids of ``road_id_to_segment_id_sequence.json``, *not*
+    the ``section`` field of ``segment_id_to_road_data.json``: a section whose
+    seg_id/distance adjacency is inconsistent is emitted as several
+    ``"<section>__partN"`` road_ids. ``seg_to_sequence`` is therefore built by
+    inverting ``sequence_data``, so it is the exact inverse of what the save
+    step writes.
     """
     base = Path(metadata_dir)
     with open(base / "segment_id_to_road_data.json", encoding="utf-8") as f:
         seg_to_road: dict = json.load(f)
     with open(base / "road_id_to_segment_id_sequence.json", encoding="utf-8") as f:
         road_to_segs: dict = json.load(f)
-
-    seg_to_sequence = {sid: data["section"] for sid, data in seg_to_road.items()}
 
     sequence_data: dict = {}
     for seq, segs in road_to_segs.items():
@@ -148,6 +153,8 @@ def load_sequence_data(
             "centroid": (float(np.median(lats)), float(np.median(lons))),
         }
 
+    seg_to_sequence = {sid: seq for seq, entry in sequence_data.items() for sid in entry["segs"]}
+
     return sequence_data, seg_to_sequence
 
 
@@ -155,18 +162,22 @@ def _load_existing(
     output_path: Path,
     seg_to_sequence: dict[str, str],
     key_prefix: str = "",
-) -> dict[str, str]:
-    """Return sequence → split from an existing splits.json.
+) -> tuple[dict[str, str], int, int]:
+    """Return (sequence → split, num_unmatched_seg_ids, num_seg_ids) from splits.json.
 
     Only keys starting with ``key_prefix`` are read; the prefix is stripped
-    before validation against :data:`SPLITS`. Returns ``{}`` if the file
-    does not exist.
+    before validation against :data:`SPLITS`. Seg_ids that resolve to no known
+    sequence are counted rather than silently dropped, so a stale or mismatched
+    splits.json is visible instead of quietly resetting sequences to "none".
+    Returns an empty mapping if the file does not exist.
     """
     if not output_path.exists():
-        return {}
+        return {}, 0, 0
     with open(output_path, encoding="utf-8") as f:
         raw: dict = json.load(f)
     result: dict[str, str] = {}
+    n_total = 0
+    n_unmatched = 0
     for key, seg_ids in raw.items():
         if not key.startswith(key_prefix):
             continue
@@ -177,10 +188,13 @@ def _load_existing(
         if key_prefix == "" and "_" in key:
             continue
         for sid in seg_ids:
+            n_total += 1
             seq = seg_to_sequence.get(str(sid))
             if seq:
                 result[seq] = split
-    return result
+            else:
+                n_unmatched += 1
+    return result, n_unmatched, n_total
 
 
 # Plotly figure
@@ -351,15 +365,32 @@ def main() -> None:
     if labeled.state_key not in st.session_state:
         u_seg_to_sequence = {str(sid): seq for seq, entry in unlabeled_sequence_data.items() for sid in entry["segs"]}
         seg_lookup = {labeled.name: seg_to_sequence, unlabeled.name: u_seg_to_sequence}
+        warnings: list[str] = []
         for layer in layers:
-            existing = _load_existing(args.output, seg_lookup[layer.name], layer.key_prefix)
+            existing, n_unmatched, n_total = _load_existing(
+                args.output, seg_lookup[layer.name], layer.key_prefix
+            )
             st.session_state[layer.state_key] = {s: existing.get(s, "none") for s in layer.data}
+            # Assignments are dropped either because a seg_id resolves to no
+            # sequence at all, or because it resolves to a sequence this layer
+            # does not know. Both silently reset sequences to "none".
+            n_unknown_seq = sum(1 for s in existing if s not in layer.data)
+            if n_unmatched or n_unknown_seq:
+                warnings.append(
+                    f"splits.json: {n_unmatched} of {n_total} {layer.name} seg_ids matched no "
+                    f"sequence, and {n_unknown_seq} of {len(existing)} matched sequences are "
+                    f"unknown here. Those assignments were reset to none."
+                )
+        st.session_state.load_warnings = warnings
         st.session_state.history: list[dict] = []
 
     assignments = {layer.name: st.session_state[layer.state_key] for layer in layers}
 
     # Sidebar
     st.sidebar.title("Split Editor")
+
+    for warning in st.session_state.get("load_warnings", []):
+        st.sidebar.warning(warning)
 
     active_split = st.sidebar.radio(
         "Active split (draw a box to assign)",
@@ -460,6 +491,8 @@ def main() -> None:
             out["unlabeled_unlocated"] = list(unlocated_seg_ids)
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2, ensure_ascii=False)
+        # The file now matches the in-session state, so any load warning is stale.
+        st.session_state.load_warnings = []
         st.sidebar.success(f"Saved {args.output}")
 
     # Map
