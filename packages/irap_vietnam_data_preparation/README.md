@@ -9,12 +9,8 @@ For the rationale and decisions behind each step see [`vietnam_data_preparation.
 
 - `unrar` (preferred) or `7z` on `PATH` for image extraction.
 - Python packages: `uv pip install pandas openpyxl xlrd pyarrow tqdm numpy`. The Streamlit-based split editor additionally needs `streamlit>=1.35 plotly`, and the optional cross-annotator evaluation needs `scikit-learn`.
-- The `IRAP_Vietnam/` dataset root, with `_raw/` populated (see "Layout" below).
+- The `IRAP_Vietnam` dataset root (for the `<data_dir>` argument), with `_raw/` populated (see "Layout" below).
 
-### Layout
-
-Every per-stage script takes a single positional `<data_dir>` argument – the path to
-the dataset root – and derives all subpaths internally.
 
 ```
 <data_dir>/                      # IRAP_Vietnam dataset root
@@ -38,8 +34,8 @@ the dataset root – and derives all subpaths internally.
   splits.json                    # Stage 3c
 ```
 
-`coding-tables.zip` contains the iRAP coding tables – Excel spreadsheets of per-segment attribute annotations. Before running anything, populate `<data_dir>/_raw/` with at least `coding-tables.zip` (or an unzipped `coding-tables/` directory) and `attribute_metadata.json`.
-
+Before running the scripts, populate `<data_dir>/_raw/` with at least `coding-tables.zip` (or a `coding-tables/` directory) and `attribute_metadata.json`.
+`coding-tables.zip` should contain the iRAP coding tables – Excel spreadsheets of per-segment attribute annotations.
 `coding-tables.zip` and `attribute_metadata.json` can be found here: https://github.com/Ivan1248/irap-tools/releases
 
 Stage 1 fills `<data_dir>/_raw/image_rars/`.
