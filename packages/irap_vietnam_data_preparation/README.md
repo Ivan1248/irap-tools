@@ -6,11 +6,12 @@ For the rationale and decisions behind each step see [`vietnam_data_preparation.
 
 ## Prerequisites
 
+
 - `unrar` (preferred) or `7z` on `PATH` for image extraction.
 - Python packages: `uv pip install pandas openpyxl xlrd pyarrow tqdm numpy`. The Streamlit-based split editor additionally needs `streamlit>=1.35 plotly`, and the optional cross-annotator evaluation needs `scikit-learn`.
 - The `IRAP_Vietnam/` dataset root, with `_raw/` populated (see "Layout" below).
 
-## Layout
+### Layout
 
 Every per-stage script takes a single positional `<data_dir>` argument – the path to
 the dataset root – and derives all subpaths internally.
@@ -22,7 +23,7 @@ the dataset root – and derives all subpaths internally.
     attribute_metadata.json
     image_rars/                  # Stage 1 output (downloaded RAR archives)
   
-  _work/                         # intermediate outputs, can be deleted after
+  _work/                         # intermediate outputs, can be deleted later
     rows.parquet
     parse_report.json
     build_report.json
@@ -37,16 +38,11 @@ the dataset root – and derives all subpaths internally.
   splits.json                    # Stage 3c
 ```
 
-`coding-tables.zip` contains the iRAP coding tables – Excel spreadsheets of
-per-segment attribute annotations, where "coding" is iRAP's term for assigning
-attribute codes to 20-m road segments. Before running anything, populate
-`<data_dir>/_raw/` with at least `coding-tables.zip` (or an unzipped
-`coding-tables/` directory) and `attribute_metadata.json`. Stage 1 fills
-`<data_dir>/_raw/image_rars/`.
+`coding-tables.zip` contains the iRAP coding tables – Excel spreadsheets of per-segment attribute annotations. Before running anything, populate `<data_dir>/_raw/` with at least `coding-tables.zip` (or an unzipped `coding-tables/` directory) and `attribute_metadata.json`.
 
-`make_vietnam_data()` searches for `IRAP_Vietnam/` in this order: `$IRAP_HOME`,
-`$VIDLU_DATASETS`, `$VIDLU_DATA/datasets`, then ancestors of the package for
-`data/datasets/IRAP_Vietnam`.
+`coding-tables.zip` and `attribute_metadata.json` can be found here: https://github.com/Ivan1248/irap-tools/releases
+
+Stage 1 fills `<data_dir>/_raw/image_rars/`.
 
 ## Per-stage commands
 
@@ -78,20 +74,9 @@ python extract_images.py $DATA_DIR --ignore-duplicates
 python parse_coding_tables.py $DATA_DIR
 ```
 
-Auto-unzips `_raw/coding-tables.zip` if needed. Validates required column names
-against `_raw/attribute_metadata.json` (errors on missing columns). Drops rows
-with `Length != 0.02 km`, missing scalar fields, unparseable
-`Image Reference FPZ`, no genuine attribute value at all (non-coding/padding
-rows), unknown IRAP codes, or, when the optional `offset_distance_m` column is
-present – an FPZ-to-annotation distance greater than 8 m. Resolves duplicate
-`seg_id`s across files by keeping the row with the most genuinely-coded
-attribute cells, warning when the duplicates' attribute values disagree.
+Auto-unzips `_raw/coding-tables.zip` if needed. Validates required column names against `_raw/attribute_metadata.json` (errors on missing columns). Drops rows with `Length != 0.02 km`, missing scalar fields, unparseable `Image Reference FPZ`, no genuine attribute value at all (non-coding/padding rows), unknown IRAP codes, or, when the optional `offset_distance_m` column is present – an FPZ-to-annotation distance greater than 8 m. Resolves duplicate `seg_id`s across files by keeping the row with the most genuinely-coded attribute cells, warning when the duplicates' attribute values disagree.
 
-Rows with *some* (but not all) attribute cells blank are **kept** by default,
-with the missing cells set to `-1` (`MISSING_ATTR_CODE`, analogous to an ignore
-label). The `parse_report.json` and stdout summary record which attributes are
-missing in how many kept rows, per file and overall. Pass
-`--drop-rows-missing-attributes` to drop any row with a blank attribute cell.
+Rows with *some* (but not all) attribute cells blank are **kept** by default, with the missing cells set to `-1` (`MISSING_ATTR_CODE`, analogous to an ignore label). The `parse_report.json` and stdout summary record which attributes are missing in how many kept rows, per file and overall. Pass `--drop-rows-missing-attributes` to drop any row with a blank attribute cell.
 
 #### Optional – Cross-annotator evaluation
 
@@ -105,12 +90,7 @@ python cross_annotator_eval.py $DATA_DIR
 python build_metadata.py $DATA_DIR
 ```
 
-Matches each parquet row to an image **by seg_id**, recursing into
-`<data_dir>/images/<video_dir>/`. Rows with no image are dropped. Mismatches
-between the coding-table `Section` cell and the image's `<video_dir>` name are
-recorded as `prefix_mismatch` (not dropped). Validates the section adjacency
-invariant (distance step ≈ 0.02 km between consecutive segments). The summary
-is written to `_work/build_report.json`.
+Matches each parquet row to an image **by seg_id**, recursing into `<data_dir>/images/<video_dir>/`. Rows with no image are dropped. Mismatches between the coding-table `Section` cell and the image's `<video_dir>` name are recorded as `prefix_mismatch` (not dropped). Validates the section adjacency invariant (distance step ≈ 0.02 km between consecutive segments). The summary is written to `_work/build_report.json`.
 
 ### Stage 3c – Assign train/val/test splits
 
@@ -144,8 +124,6 @@ Support is counted in **sequences**: a rare class seen in multiple segments of a
 Each split's row reads `N classes absent (M fixable)`:
 - **absent** – the split has no segment of the class.
 - **fixable** – of those, the ones occurring in at least `3 × n_min` sequences dataset-wide.
-
-Requires `streamlit >= 1.35`.
 
 ## Stage 4 – clean up
 
