@@ -4,7 +4,7 @@ Usage:
     python irap_vietnam_data_preparation/cross_annotator_eval.py <data_dir>
 
 Reads (under ``<data_dir>/_raw/``, exactly like parse_coding_tables.py):
-    coding-tables.zip                # OR an unzipped coding-tables/ directory
+    coding-tables.zip                # re-extracted into _work/coding-tables/
     attribute_metadata.json          # attribute_to_idx + value->irap mapping
 
 Writes (into ``<data_dir>/_work/``):
@@ -42,6 +42,7 @@ annotators (``--min-annotators``):
 """
 
 import argparse
+import itertools
 import json
 import math
 import sys
@@ -55,24 +56,14 @@ from sklearn.metrics import cohen_kappa_score, precision_recall_fscore_support
 
 import layout
 from parse_coding_tables import (
-    MISSING_ATTR_CODE,
     ParseSetupError,
     collect_all_rows,
     conflicting_attributes,
     format_row_ranges,
+    is_real_attribute_code,
     num_filled_attribute_cells,
     prepare_parse_inputs,
 )
-
-
-def _is_genuine(code: T.Any) -> bool:
-    """True if ``code`` is a real annotation (not blank/absent)."""
-    return code not in (None, MISSING_ATTR_CODE)
-
-
-def _clean_float(x: float | None) -> float | None:
-    """Map NaN/None to None so the JSON report stays valid (no NaN tokens)."""
-    return None if x is None or (isinstance(x, float) and math.isnan(x)) else x
 
 
 # -----------------------------------------------------------------------------
@@ -103,7 +94,9 @@ def agreement_kappa(a: T.Sequence[int], b: T.Sequence[int]) -> dict[str, T.Any]:
     if n == 0:
         return {"pct_agreement": None, "cohen_kappa": None, "n": 0}
     pct = float(np.mean(np.asarray(a) == np.asarray(b)))
-    kappa = _clean_float(float(cohen_kappa_score(a, b)))
+    kappa = float(cohen_kappa_score(a, b))
+    # NaN (no variability) -> None so the JSON report stays valid.
+    kappa = None if math.isnan(kappa) else kappa
     return {"pct_agreement": pct, "cohen_kappa": kappa, "n": n}
 
 
@@ -138,20 +131,20 @@ def group_by_segment(
 def attribute_comparisons(
     shared: T.Mapping[str, dict[str, dict]],
     attr: str,
-) -> T.Iterator[tuple[str, dict[str, int]]]:
-    """Yield ``(seg_id, {source_file: code})`` of genuine codes for one attribute.
+) -> T.Iterator[dict[str, int]]:
+    """Yield ``{source_file: code}`` of genuine codes for one attribute, per segment.
 
     Only segments where >= 2 annotators gave a genuine code for ``attr`` are
     yielded.
     """
-    for seg_id, per_file in shared.items():
+    for per_file in shared.values():
         coded = {
             source_file: rec.get(attr)
             for source_file, rec in per_file.items()
-            if _is_genuine(rec.get(attr))
+            if is_real_attribute_code(rec.get(attr))
         }
         if len(coded) >= 2:
-            yield seg_id, coded
+            yield coded
 
 
 def compute_attribute_metrics(
@@ -167,22 +160,18 @@ def compute_attribute_metrics(
         lambda: ([], [])
     )
     n_segments = 0
-    for _seg_id, coded in attribute_comparisons(shared, attr):
+    for coded in attribute_comparisons(shared, attr):
         n_segments += 1
         files = sorted(coded)
-        for a in files:
-            for b in files:
-                if a == b:
-                    continue
-                pooled_true.append(coded[a])
-                pooled_pred.append(coded[b])
-                t, p = pair_ordered[(a, b)]
-                t.append(coded[a])
-                p.append(coded[b])
-        for i in range(len(files)):
-            for j in range(i + 1, len(files)):
-                unordered_a.append(coded[files[i]])
-                unordered_b.append(coded[files[j]])
+        for a, b in itertools.permutations(files, 2):
+            pooled_true.append(coded[a])
+            pooled_pred.append(coded[b])
+            t, p = pair_ordered[(a, b)]
+            t.append(coded[a])
+            p.append(coded[b])
+        for a, b in itertools.combinations(files, 2):
+            unordered_a.append(coded[a])
+            unordered_b.append(coded[b])
 
     if n_segments == 0:
         return None
@@ -225,7 +214,7 @@ def collect_conflicts(
                 for rec in sorted(
                     group, key=lambda r: (r["source_file"], r["source_row"])
                 )
-                if _is_genuine(rec.get(attr))
+                if is_real_attribute_code(rec.get(attr))
             ]
             conflicts_per_attr[attr].append(
                 {"seg_id": seg_id, "annotations": annotations}

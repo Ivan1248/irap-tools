@@ -41,6 +41,7 @@ and are reported on stderr and in the build_report.
 """
 
 import argparse
+import bisect
 import json
 import re
 import sys
@@ -52,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 import layout
+from parse_coding_tables import ordered_attribute_names
 
 
 # Each unit of seg_id step corresponds to 10 m along a section. A 20 m labeled
@@ -101,22 +103,20 @@ def match_rows_to_images(
     num_no_image = 0
     num_prefix_mismatch = 0
 
-    for idx, row in df.iterrows():
-        seg_id = str(row["seg_id"])
-        section = str(row["section"])
+    for idx, seg_id, section in zip(df.index, df["seg_id"].astype(str),
+                                    df["section"].astype(str)):
         candidates = seg_id_to_image_paths.get(seg_id, [])
         if not candidates:
             num_no_image += 1
             if len(no_image_examples) < 20:
                 no_image_examples.append(seg_id)
             continue
-        if len(candidates) == 1:
-            chosen = candidates[0]
-        else:
+        if len(candidates) > 1:
             raise ValueError(
                 f"Multiple images found for segment ID {seg_id}: "
                 f"{', '.join(str(c) for c in candidates)}"
             )
+        chosen = candidates[0]
 
         prefix = chosen.parent.name
         if prefix != section:
@@ -153,17 +153,20 @@ def build_segment_id_to_road_data(
 ) -> dict[str, dict]:
     """Build ``segment_id -> {required_attributes, ..., comments, ...}``."""
     out: dict[str, dict] = {}
-    for _, row in df.iterrows():
-        sid = row["seg_id"]
+    for sid, section, distance, length, lat, lon, comments, attrs in zip(
+        df["seg_id"], df["section"], df["distance"], df["length"],
+        df["lat"], df["lon"], df["comments"],
+        df[list(attribute_names)].to_dict("records"),
+    ):
         out[sid] = {
-            "section": row["section"],
-            "distance_km": float(row["distance"]),
-            "length_km": float(row["length"]),
-            "lat": float(row["lat"]),
-            "lon": float(row["lon"]),
-            "comments": row["comments"],
-            "required_attributes": {a: (None if pd.isna(row[a]) else int(row[a]))
-                                    for a in attribute_names},
+            "section": section,
+            "distance_km": float(distance),
+            "length_km": float(length),
+            "lat": float(lat),
+            "lon": float(lon),
+            "comments": comments,
+            "required_attributes": {a: (None if pd.isna(v) else int(v))
+                                    for a, v in attrs.items()},
         }
     return out
 
@@ -267,6 +270,10 @@ def interleave_unlabeled_into_road_sequences(
     We only inject between two labeled neighbours from the same image folder
     (recording session), which is where the "1 seg_id = 10 m" invariant holds.
     """
+    folder_to_sorted_ids = {
+        folder: sorted(int(s) for s in seg_ids)
+        for folder, seg_ids in folder_to_unlabeled_seg_ids.items()
+    }
     enriched: dict[str, list[str]] = {}
     for road_id, seq in road_to_seq.items():
         if not seq:
@@ -279,12 +286,11 @@ def interleave_unlabeled_into_road_sequences(
             if f_prev is not None and f_prev == f_curr:
                 p_int, c_int = int(prev), int(curr)
                 lo, hi = min(p_int, c_int), max(p_int, c_int)
-                in_between = [
-                    str(s) for s in folder_to_unlabeled_seg_ids.get(f_prev, [])
-                    if lo < int(s) < hi
-                ]
-                in_between.sort(key=int, reverse=(c_int < p_int))
-                out.extend(in_between)
+                ids = folder_to_sorted_ids.get(f_prev, [])
+                in_between = ids[bisect.bisect_right(ids, lo):bisect.bisect_left(ids, hi)]
+                if c_int < p_int:
+                    in_between = in_between[::-1]
+                out.extend(str(s) for s in in_between)
             out.append(curr)
         enriched[road_id] = out
     return enriched
@@ -300,8 +306,6 @@ def main(argv: list[str] | None = None) -> int:
     images = layout.images_dir(data_dir)
     attr_meta_in = layout.attr_meta_path(data_dir)
     rows_path = layout.rows_path(data_dir)
-    out = layout.metadata_dir(data_dir)
-
     if not images.is_dir():
         print(f"ERROR: {images} not found.", file=sys.stderr)
         return 1
@@ -314,8 +318,7 @@ def main(argv: list[str] | None = None) -> int:
 
     with open(attr_meta_in, "r", encoding="utf-8") as f:
         attr_meta = json.load(f)
-    idx_to_attr = {int(v): k for k, v in attr_meta["attribute_to_idx"].items()}
-    attribute_names = [idx_to_attr[i] for i in sorted(idx_to_attr)]
+    attribute_names = ordered_attribute_names(attr_meta)
 
     df = pd.read_parquet(rows_path)
     print(f"Loaded {len(df)} rows from {rows_path}.")
@@ -338,9 +341,11 @@ def main(argv: list[str] | None = None) -> int:
     # Images with no matching parquet row (no labels).
     unlabeled_seg_ids = sorted(set(seg_id_to_image_paths.keys()) - set(seg_to_path.keys()), key=int)
     unlabeled_seg_to_path = {
-        sid: sorted(seg_id_to_image_paths[sid])[0].as_posix()
+        sid: min(seg_id_to_image_paths[sid]).as_posix()
         for sid in unlabeled_seg_ids
     }
+    all_seg_to_path = {**seg_to_path, **unlabeled_seg_to_path}
+    seg_to_folder = {sid: Path(rel).parent.name for sid, rel in all_seg_to_path.items()}
     print(f"  Images under FRAMES: {num_images_total} total = "
           f"{len(seg_to_path)} labeled (matched to a parquet row) + "
           f"{len(unlabeled_seg_ids)} unlabeled (no parquet row).")
@@ -349,25 +354,21 @@ def main(argv: list[str] | None = None) -> int:
     # folder from labeled siblings in the same folder so they can be placed on
     # the map by the split editor.
     labeled_folder_to_seg_ids: dict[str, list[str]] = defaultdict(list)
-    for sid, rel in seg_to_path.items():
-        labeled_folder_to_seg_ids[Path(rel).parent.name].append(sid)
-    labeled_seg_to_latlon = {
-        str(row["seg_id"]): (float(row["lat"]), float(row["lon"]))
-        for _, row in df.iterrows()
-    }
+    for sid in seg_to_path:
+        labeled_folder_to_seg_ids[seg_to_folder[sid]].append(sid)
+    labeled_seg_to_latlon = dict(zip(
+        df["seg_id"].astype(str),
+        zip(df["lat"].astype(float), df["lon"].astype(float)),
+    ))
     unlabeled_folder_to_seg_ids: dict[str, list[str]] = defaultdict(list)
     for sid in unlabeled_seg_ids:
-        folder = Path(unlabeled_seg_to_path[sid]).parent.name
-        unlabeled_folder_to_seg_ids[folder].append(sid)
+        unlabeled_folder_to_seg_ids[seg_to_folder[sid]].append(sid)
 
     unlabeled_sequence_id_to_data: dict[str, dict] = {}
     unplaceable_unlabeled_seg_ids: list[str] = []
     for folder, segs in unlabeled_folder_to_seg_ids.items():
         labeled_siblings = labeled_folder_to_seg_ids.get(folder, [])
-        sibling_coords = [
-            labeled_seg_to_latlon[s] for s in labeled_siblings
-            if s in labeled_seg_to_latlon
-        ]
+        sibling_coords = [labeled_seg_to_latlon[s] for s in labeled_siblings]
         if not sibling_coords:
             unplaceable_unlabeled_seg_ids.extend(segs)
             continue
@@ -391,16 +392,12 @@ def main(argv: list[str] | None = None) -> int:
               f"auto-assigned to unlabeled_unlocated split).", file=sys.stderr)
 
     print("Building segment_id_to_data_paths_rel...")
-    seg_to_paths = build_segment_id_to_data_paths_rel({**seg_to_path, **unlabeled_seg_to_path})
+    seg_to_paths = build_segment_id_to_data_paths_rel(all_seg_to_path)
     print("Building segment_id_to_road_data...")
     seg_to_road = build_segment_id_to_road_data(df, attribute_names)
     print("Building road_id_to_segment_id_sequence and validating adjacency...")
     road_to_seq, violations, sections_split = build_road_sequences_and_validate(df)
     num_labeled_in_sequences = sum(len(seq) for seq in road_to_seq.values())
-    seg_to_folder = {
-        sid: Path(rel).parent.name
-        for sid, rel in {**seg_to_path, **unlabeled_seg_to_path}.items()
-    }
     road_to_seq = interleave_unlabeled_into_road_sequences(
         road_to_seq, seg_to_folder, unlabeled_folder_to_seg_ids,
     )
@@ -439,56 +436,40 @@ def main(argv: list[str] | None = None) -> int:
                 )
             print(file=sys.stderr)
 
-    out.mkdir(parents=True, exist_ok=True)
-
-    def _dump(name: str, obj: T.Any) -> None:
-        path = out / name
+    def _dump(path: Path, obj: T.Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=2, ensure_ascii=False)
         print(f"Wrote {path}")
 
-    _dump("segment_id_to_data_paths_rel.json", seg_to_paths)
-    _dump("segment_id_to_road_data.json", seg_to_road)
-    _dump("road_id_to_segment_id_sequence.json", road_to_seq)
+    _dump(layout.segment_id_to_data_paths_rel_path(data_dir), seg_to_paths)
+    _dump(layout.segment_id_to_road_data_path(data_dir), seg_to_road)
+    _dump(layout.road_id_to_segment_id_sequence_path(data_dir), road_to_seq)
     # Normalize IRAP codes to int when writing the metadata. The input JSON
     # encodes them as strings, but `required_attributes` in
-    # segment_id_to_road_data.json uses ints (see line 183). BihSequence inverts
-    # `attribute_value_to_irap_number` and looks up by the int code, so the two
-    # sides must agree.
-    attr_meta_out = out / "attribute_metadata.json"
+    # segment_id_to_road_data.json uses ints (see build_segment_id_to_road_data).
+    # BihSequence inverts `attribute_value_to_irap_number` and looks up by the
+    # int code, so the two sides must agree.
     attr_meta_normalized = dict(attr_meta)
     attr_meta_normalized["attribute_value_to_irap_number"] = {
         attr: {value: int(code) for value, code in mapping.items()}
         for attr, mapping in attr_meta["attribute_value_to_irap_number"].items()
     }
-    with open(attr_meta_out, "w", encoding="utf-8") as f:
-        json.dump(attr_meta_normalized, f, indent=2, ensure_ascii=False)
-    print(f"Wrote {attr_meta_out}")
-
-    unlabeled_path = layout.unlabeled_segment_ids_path(data_dir)
-    with open(unlabeled_path, "w", encoding="utf-8") as f:
-        json.dump(unlabeled_seg_ids, f, indent=2, ensure_ascii=False)
-    print(f"Wrote {unlabeled_path}")
-
-    unlabeled_sequence_path = layout.unlabeled_sequence_id_to_data_path(data_dir)
-    with open(unlabeled_sequence_path, "w", encoding="utf-8") as f:
-        json.dump(unlabeled_sequence_id_to_data, f, indent=2, ensure_ascii=False)
-    print(f"Wrote {unlabeled_sequence_path}")
+    _dump(layout.output_attr_meta_path(data_dir), attr_meta_normalized)
+    _dump(layout.unlabeled_segment_ids_path(data_dir), unlabeled_seg_ids)
+    _dump(layout.unlabeled_sequence_id_to_data_path(data_dir), unlabeled_sequence_id_to_data)
 
     unlocated_path = layout.unlabeled_unlocated_segment_ids_path(data_dir)
     if unplaceable_unlabeled_seg_ids:
-        unlocated_sorted = sorted(unplaceable_unlabeled_seg_ids, key=int)
-        with open(unlocated_path, "w", encoding="utf-8") as f:
-            json.dump(unlocated_sorted, f, indent=2, ensure_ascii=False)
-        print(f"Wrote {unlocated_path}")
+        _dump(unlocated_path, sorted(unplaceable_unlabeled_seg_ids, key=int))
     elif unlocated_path.exists():
         unlocated_path.unlink()
         print(f"Removed stale {unlocated_path}")
 
     report = {
-        "num_rows_in": int(num_rows_in),
-        "num_rows_kept": int(len(df)),
-        **{k: int(v) if isinstance(v, int) else v for k, v in match_stats.items()},
+        "num_rows_in": num_rows_in,
+        "num_rows_kept": len(df),
+        **match_stats,
         "num_unlabeled_images": len(unlabeled_seg_ids),
         "unlabeled_examples": unlabeled_seg_ids[:20],
         "num_unlabeled_inserted_into_sequences": num_unlabeled_inserted_into_sequences,
@@ -504,11 +485,7 @@ def main(argv: list[str] | None = None) -> int:
         "sections_split": dict(sorted(sections_split.items())),
         "data_dir_name": data_dir.name,
     }
-    report_path = layout.build_report_path(data_dir)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-    print(f"Wrote {report_path}")
+    _dump(layout.build_report_path(data_dir), report)
     return 0
 
 
