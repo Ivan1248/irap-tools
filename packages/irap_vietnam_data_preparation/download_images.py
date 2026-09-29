@@ -7,14 +7,13 @@ subdirectories.
 Usage:
     python irap_vietnam_data_preparation/download_images.py <data_dir>
 
-Writes to ``<data_dir>/_raw/image_rars/``. Use ``--share-url`` for a non-default share.
+Writes to ``<data_dir>/_raw/image_rars/``.
 """
 import argparse
 import json
 import re
 import sys
 import typing as T
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -35,25 +34,21 @@ def parse_share_url(share_url: str) -> tuple[str, str]:
     return m.group(1), m.group(2)
 
 
-def list_dirents(server: str, token: str, path: str = "/",
-                 password: str | None = None) -> list[dict]:
+def list_dirents(server: str, token: str, path: str = "/") -> list[dict]:
     """List entries directly under `path` on the share."""
     qs = {"path": path}
-    if password:
-        qs["password"] = password
     url = f"{server}/api/v2.1/share-links/{token}/dirents/?{urllib.parse.urlencode(qs)}"
     with urllib.request.urlopen(url) as resp:
         data = json.load(resp)
     return data["dirent_list"]
 
 
-def walk_files(server: str, token: str, password: str | None = None
-               ) -> T.Iterator[dict]:
+def walk_files(server: str, token: str) -> T.Iterator[dict]:
     """Yield file dirents from the share, recursing into folders."""
     stack = ["/"]
     while stack:
         path = stack.pop()
-        for entry in list_dirents(server, token, path, password):
+        for entry in list_dirents(server, token, path):
             if entry["is_dir"]:
                 stack.append(entry["folder_path"])
             else:
@@ -61,11 +56,9 @@ def walk_files(server: str, token: str, password: str | None = None
 
 
 def download_file(server: str, token: str, remote_path: str, dest: Path,
-                  expected_size: int, password: str | None = None) -> None:
+                  expected_size: int) -> None:
     """Download `remote_path` to `dest`, resuming if a partial file exists."""
     qs = {"p": remote_path, "dl": "1"}
-    if password:
-        qs["password"] = password
     url = f"{server}/d/{token}/files/?{urllib.parse.urlencode(qs)}"
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -88,14 +81,7 @@ def download_file(server: str, token: str, remote_path: str, dest: Path,
         print(f"[resume] {remote_path} from byte {existing}")
 
     req = urllib.request.Request(url, headers=headers)
-    try:
-        resp = urllib.request.urlopen(req)
-    except urllib.error.HTTPError as e:
-        if e.code == 416 and existing == expected_size:
-            return  # Already complete.
-        raise
-
-    with resp, open(dest, mode) as f:
+    with urllib.request.urlopen(req) as resp, open(dest, mode) as f:
         with tqdm(
                 total=expected_size, initial=existing, unit="B", unit_scale=True,
                 unit_divisor=1024, desc=remote_path.lstrip("/"), miniters=1,
@@ -124,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     out = layout.rars_dir(args.data_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    files = list(walk_files(server, token, None))
+    files = list(walk_files(server, token))
     total = sum(f["size"] for f in files)
     print(f"Found {len(files)} file(s), total {total / 1e9:.2f} GB")
     for f in files:
@@ -133,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     for f in files:
         rel = f["file_path"].lstrip("/")
         dest = out / rel
-        download_file(server, token, f["file_path"], dest, f["size"], None)
+        download_file(server, token, f["file_path"], dest, f["size"])
 
     return 0
 

@@ -43,7 +43,8 @@ from tqdm import tqdm
 import layout
 
 
-SPLIT_WRAPPER_RE = re.compile(r"^split\d+/", re.IGNORECASE)
+SPLIT_DIR_NAME_RE = re.compile(r"split\d+", re.IGNORECASE)
+SPLIT_WRAPPER_RE = re.compile(rf"^{SPLIT_DIR_NAME_RE.pattern}/", re.IGNORECASE)
 
 # Captures the video_dir prefix of a "<video_dir>_segN.png" filename.
 SEG_VIDEO_DIR_RE = re.compile(r"^(.*)_seg\d+\.png$", re.IGNORECASE)
@@ -145,6 +146,28 @@ def list_entries(binary: str, kind: str, archive: Path
     return entries
 
 
+def _index_archives(binary: str, kind: str, archives: list[Path]
+                   ) -> dict[Path, list[tuple[str, int, str | None]]]:
+    """Return ``{archive: list_entries(...)}``, printing each archive's entry count."""
+    entries: dict[Path, list[tuple[str, int, str | None]]] = {}
+    for a in archives:
+        entries[a] = list_entries(binary, kind, a)
+        print(f"  {a.name}: {len(entries[a])} entries")
+    return entries
+
+
+def _extract_cmd(binary: str, kind: str, archive: Path, out: Path,
+                 members: list[str] | None = None) -> list[str]:
+    """Build the unrar/7z command extracting *archive* (or just *members*) into *out*."""
+    if kind == "unrar":
+        cmd = [binary, "x", "-o-", "-y", str(archive), str(out) + "/"]
+    else:
+        # -bb1 emits one line per file; -bso0/-bsp0 silence summary/progress.
+        cmd = [binary, "x", "-aos", "-bb1", "-bso1", "-bsp0",
+               f"-o{out}", str(archive)]
+    return cmd + (members or [])
+
+
 def _run_extraction(
         cmd: list[str], kind: str, total: int, desc: str, position: int = 0,
 ) -> None:
@@ -207,13 +230,8 @@ def extract(binary: str, kind: str, archive: Path, out: Path, *,
     extractions run concurrently.
     """
     out.mkdir(parents=True, exist_ok=True)
-    if kind == "unrar":
-        cmd = [binary, "x", "-o-", "-y", str(archive), str(out) + "/"]
-    else:
-        # -bb1 emits one line per file; -bso0/-bsp0 silence summary/progress.
-        cmd = [binary, "x", "-aos", "-bb1", "-bso1", "-bsp0",
-               f"-o{out}", str(archive)]
-    _run_extraction(cmd, kind, num_entries, archive.name, position)
+    _run_extraction(_extract_cmd(binary, kind, archive, out),
+                    kind, num_entries, archive.name, position)
 
 
 def _flatten_split_wrappers(out: Path) -> None:
@@ -225,7 +243,7 @@ def _flatten_split_wrappers(out: Path) -> None:
     kept and the duplicate from the splitN/ source is discarded).
     """
     for split_dir in sorted(out.iterdir()):
-        if not (split_dir.is_dir() and re.fullmatch(r"split\d+", split_dir.name, re.IGNORECASE)):
+        if not (split_dir.is_dir() and SPLIT_DIR_NAME_RE.fullmatch(split_dir.name)):
             continue
         _merge_dir_into(split_dir, out)
         if not any(split_dir.iterdir()):
@@ -333,12 +351,7 @@ def extract_specific(
     if not entries:
         return
     out.mkdir(parents=True, exist_ok=True)
-    internal_paths = [e[0] for e in entries]
-    if kind == "unrar":
-        cmd = [binary, "x", "-o-", "-y", str(archive), str(out) + "/"] + internal_paths
-    else:
-        cmd = [binary, "x", "-aos", "-bb1", "-bso1", "-bsp0",
-               f"-o{out}", str(archive)] + internal_paths
+    cmd = _extract_cmd(binary, kind, archive, out, [e[0] for e in entries])
     _run_extraction(cmd, kind, len(entries), f"[dup] {archive.name}", position)
 
 
@@ -410,10 +423,7 @@ def _apply_missing_segments(
     archive wins, deterministically.
     """
     print(f"\nIndexing {len(archives)} missing_segments archive(s)...")
-    entries: dict[Path, list[tuple[str, int, str | None]]] = {}
-    for a in archives:
-        entries[a] = list_entries(binary, kind, a)
-        print(f"  {a.name}: {len(entries[a])} entries")
+    entries = _index_archives(binary, kind, archives)
 
     if tmp.exists():
         shutil.rmtree(tmp)
@@ -495,10 +505,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {a.name}  ({a.stat().st_size / 1e9:.2f} GB)")
 
     print(f"Indexing {len(regular_archives)} regular archive(s)...")
-    archive_entries: dict[Path, list[tuple[str, int, str | None]]] = {}
-    for a in regular_archives:
-        archive_entries[a] = list_entries(binary, kind, a)
-        print(f"  {a.name}: {len(archive_entries[a])} entries")
+    archive_entries = _index_archives(binary, kind, regular_archives)
 
     dup_out = layout.images_duplicates_dir(args.data_dir)
 

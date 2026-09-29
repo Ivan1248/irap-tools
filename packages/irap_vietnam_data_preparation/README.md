@@ -30,7 +30,7 @@ For the rationale and decisions behind each step see [`vietnam_data_preparation.
   segment_id_to_data_paths_rel.json  # Stage 3b outputs (directly in root)
   segment_id_to_road_data.json
   road_id_to_segment_id_sequence.json
-  attribute_metadata.json        # copy of _raw/attribute_metadata.json
+  attribute_metadata.json        # copy of _raw/attribute_metadata.json (see build_metadata.py)
   splits.json                    # Stage 3c
 ```
 

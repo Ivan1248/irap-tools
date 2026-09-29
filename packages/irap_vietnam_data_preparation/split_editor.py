@@ -41,6 +41,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import layout
+from parse_coding_tables import is_real_attribute_code
 
 
 # Colours (one per split label)
@@ -55,10 +56,6 @@ COLORS: dict[str, str] = {
 }
 
 # Class-coverage settings. A "class" is one (attribute, IRAP code) pair.
-
-# Written by parse_coding_tables.py into cells that had no annotation; it is an
-# ignore label, not a class, so it never contributes to any count here.
-MISSING_ATTR_CODE = -1
 
 # Support is counted in distinct *sequences*, not segments: consecutive 20 m
 # segments of one road carry near-identical attributes, so 500 segments of a
@@ -91,8 +88,8 @@ UNLABELED_COLORS: dict[str, str] = {s: _muted(c) for s, c in COLORS.items()}
 # Metadata files rewritten by build_metadata.py. Their (mtime, size) forms the
 # cache key of the loaders below, so re-running the build invalidates them.
 METADATA_FILENAMES: tuple[str, ...] = (
-    "segment_id_to_road_data.json",
-    "road_id_to_segment_id_sequence.json",
+    layout.SEGMENT_ID_TO_ROAD_DATA_FILENAME,
+    layout.ROAD_ID_TO_SEGMENT_ID_SEQUENCE_FILENAME,
     layout.UNLABELED_SEQUENCE_ID_TO_DATA_FILENAME,
     layout.UNLABELED_UNLOCATED_SEGMENT_IDS_FILENAME,
     layout.ATTR_META_FILENAME,
@@ -108,7 +105,11 @@ class Layer:
     colors: dict[str, str]
     marker_size: int
     key_prefix: str  # "" or "unlabeled_"
-    state_key: str  # st.session_state key holding sequence -> split
+
+    @property
+    def state_key(self) -> str:
+        """st.session_state key holding sequence -> split."""
+        return f"{self.key_prefix}sequence_to_split"
 
 
 # CLI args (streamlit passes everything after "--" as sys.argv)
@@ -119,7 +120,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("data_dir", type=Path, help="IRAP_Vietnam dataset root.")
     args = parser.parse_args()
     args.metadata_dir = layout.metadata_dir(args.data_dir)
-    args.output = args.metadata_dir / "splits.json"
+    args.output = layout.splits_path(args.data_dir)
     return args
 
 
@@ -209,30 +210,29 @@ def load_sequence_data(
 
     ``classes`` is the sequence's histogram over the ``required_attributes``
     already present in ``segment_id_to_road_data.json``, and is what the class
-    coverage report is summed from. :data:`MISSING_ATTR_CODE` and ``None`` are
-    excluded, so an attribute that was never coded contributes no classes at all
+    coverage report is summed from. Non-genuine codes (``MISSING_ATTR_CODE`` and
+    ``None``) are excluded, so an attribute that was never coded contributes no classes at all
     rather than a spurious "missing" one.
     """
     base = Path(metadata_dir)
-    with open(base / "segment_id_to_road_data.json", encoding="utf-8") as f:
+    with open(base / layout.SEGMENT_ID_TO_ROAD_DATA_FILENAME, encoding="utf-8") as f:
         seg_to_road: dict = json.load(f)
-    with open(base / "road_id_to_segment_id_sequence.json", encoding="utf-8") as f:
+    with open(base / layout.ROAD_ID_TO_SEGMENT_ID_SEQUENCE_FILENAME, encoding="utf-8") as f:
         road_to_segs: dict = json.load(f)
 
     sequence_data: dict = {}
     for seq, segs in road_to_segs.items():
-        coords = [(seg_to_road[sid]["lat"], seg_to_road[sid]["lon"]) for sid in segs if sid in seg_to_road]
-        if not coords:
+        kept = [s for s in segs if s in seg_to_road]
+        if not kept:
             continue
+        coords = [(seg_to_road[sid]["lat"], seg_to_road[sid]["lon"]) for sid in kept]
         lats = [c[0] for c in coords]
         lons = [c[1] for c in coords]
-        kept = [s for s in segs if s in seg_to_road]
         classes: Counter = Counter()
         for sid in kept:
             for attr, code in seg_to_road[sid].get("required_attributes", {}).items():
-                if code is None or int(code) == MISSING_ATTR_CODE:
-                    continue
-                classes[(attr, int(code))] += 1
+                if is_real_attribute_code(code):
+                    classes[(attr, int(code))] += 1
         sequence_data[seq] = {
             "segs": kept,
             "coords": coords,
@@ -441,7 +441,7 @@ def _load_existing(
         split = key[len(key_prefix) :]
         # Rejects the "unlabeled_*" keys when key_prefix is "" (they are not
         # split names), and "unlabeled_unlocated" when it is "unlabeled_".
-        if not split or split not in SPLITS:
+        if split not in SPLITS:
             continue
         for sid in seg_ids:
             n_total += 1
@@ -460,19 +460,6 @@ def _load_existing(
 
 
 # Plotly figure
-
-
-def _data_bbox(sequence_data: dict) -> tuple[float, float, float, float] | None:
-    """Return (lat_min, lat_max, lon_min, lon_max) over all coords, or None."""
-    lats: list[float] = []
-    lons: list[float] = []
-    for s in sequence_data.values():
-        for lat, lon in s["coords"]:
-            lats.append(lat)
-            lons.append(lon)
-    if not lats:
-        return None
-    return min(lats), max(lats), min(lons), max(lons)
 
 
 def _centroid_trace(layer: Layer, assignments: dict[str, str]) -> go.Scattergeo:
@@ -501,7 +488,7 @@ def _build_figure(
     labeled_assignments: dict[str, str],
     unlabeled: Layer,
     unlabeled_assignments: dict[str, str],
-) -> tuple[go.Figure, dict]:
+) -> go.Figure:
     fig = go.Figure()
 
     # Layer 1: road polylines – 4 aggregated traces (one per split)
@@ -533,8 +520,6 @@ def _build_figure(
     # Layer 3: labeled centroids – used for box selection
     fig.add_trace(_centroid_trace(labeled, labeled_assignments))
 
-    bbox = _data_bbox(labeled.data)
-
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
         geo=dict(
@@ -562,36 +547,35 @@ def _build_figure(
         height=700,
         uirevision="stable",  # preserve zoom/pan across reruns
     )
-    diag = {
-        "n_sequences": len(labeled.data),
-        "n_centroids": len(labeled.data),
-        "bbox": bbox,
-    }
-    return fig, diag
+    return fig
 
 
-def _sidebar_row(layer: Layer, assignments: dict[str, str], split: str, total_segs: int, indent: bool) -> str:
-    """Return the HTML for one sidebar metric row."""
-    color = layer.colors[split]
-    n = sum(len(layer.data[s]["segs"]) for s, sp in assignments.items() if sp == split)
-    pct = f" ({100 * n / total_segs:.1f}%)" if total_segs and split != "none" else ""
-    seqs = sum(1 for sp in assignments.values() if sp == split)
-    label = f"{layer.key_prefix}{split}"
-    if indent:
+def _swatch_row(color: str, text: str, small: bool) -> str:
+    """Return the HTML for one sidebar row: a colour swatch followed by ``text``."""
+    if small:
         return (
             f'<div style="margin:0 0 6px 0;font-size:0.85rem;color:var(--sidebar-text-muted);">'
             f'<span style="background:{color};display:inline-block;width:10px;'
             f'height:10px;border-radius:2px;margin-right:6px;vertical-align:middle;"></span>'
-            f"{label}: {n} segments{pct}, {seqs} sequences"
-            f"</div>"
+            f"{text}</div>"
         )
     return (
         f'<div style="margin-bottom:2px;">'
         f'<span style="background:{color};display:inline-block;width:14px;height:14px;'
         f'border-radius:3px;margin-right:6px;vertical-align:middle;"></span>'
-        f"<strong>{label}</strong>: {n} segments{pct}, {seqs} sequences"
-        f"</div>"
+        f"{text}</div>"
     )
+
+
+def _sidebar_row(layer: Layer, assignments: dict[str, str], split: str, total_segs: int, indent: bool) -> str:
+    """Return the HTML for one sidebar metric row."""
+    n = sum(len(layer.data[s]["segs"]) for s, sp in assignments.items() if sp == split)
+    pct = f" ({100 * n / total_segs:.1f}%)" if total_segs and split != "none" else ""
+    seqs = sum(1 for sp in assignments.values() if sp == split)
+    label = f"{layer.key_prefix}{split}"
+    if not indent:
+        label = f"<strong>{label}</strong>"
+    return _swatch_row(layer.colors[split], f"{label}: {n} segments{pct}, {seqs} sequences", small=indent)
 
 
 def _coverage_row_html(coverage: ClassCoverage, split: str) -> str:
@@ -751,7 +735,6 @@ def main() -> None:
         colors=COLORS,
         marker_size=8,
         key_prefix="",
-        state_key="sequence_to_split",
     )
     unlabeled = Layer(
         name="unlabeled",
@@ -759,7 +742,6 @@ def main() -> None:
         colors=UNLABELED_COLORS,
         marker_size=6,
         key_prefix="unlabeled_",
-        state_key="unlabeled_sequence_to_split",
     )
     layers: tuple[Layer, ...] = (labeled, unlabeled)
 
@@ -888,14 +870,12 @@ def main() -> None:
             )
 
     if unlocated_seg_ids:
-        unlocated_color = UNLABELED_COLORS["none"]
         st.sidebar.markdown(
-            f'<div style="margin:0 0 6px 0;font-size:0.85rem;color:var(--sidebar-text-muted);">'
-            f'<span style="background:{unlocated_color};display:inline-block;width:10px;'
-            f'height:10px;border-radius:2px;margin-right:6px;vertical-align:middle;"></span>'
-            f"unlabeled_unlocated: {len(unlocated_seg_ids)} segments "
-            f"(auto-assigned on save)"
-            f"</div>",
+            _swatch_row(
+                UNLABELED_COLORS["none"],
+                f"unlabeled_unlocated: {len(unlocated_seg_ids)} segments (auto-assigned on save)",
+                small=True,
+            ),
             unsafe_allow_html=True,
         )
 
@@ -927,7 +907,7 @@ def main() -> None:
         st.rerun()
 
     if save_clicked:
-        out: dict[str, list] = {s: [] for s in SPLITS if s != "none"}
+        out: dict[str, list] = {s: [] for s in REAL_SPLITS}
         for layer in layers:
             for seq, sp in assignments[layer.name].items():
                 if sp == "none":
@@ -943,7 +923,7 @@ def main() -> None:
         st.sidebar.success(f"Saved {args.output}")
 
     # Map
-    fig, diag = _build_figure(
+    fig = _build_figure(
         labeled,
         assignments[labeled.name],
         unlabeled,
@@ -966,14 +946,13 @@ def main() -> None:
     # Handle map selection
     if event and event.selection and event.selection.points:
         prev = _snapshot()
-        target_by_kind = {layer.name: assignments[layer.name] for layer in layers}
         changed = False
         for p in event.selection.points:
             cd = p.get("customdata")
             if not cd:
                 continue
             seq, kind = cd[0], cd[1]
-            target = target_by_kind.get(kind)
+            target = assignments.get(kind)
             if target is not None and seq in target and target[seq] != active_split:
                 target[seq] = active_split
                 changed = True
