@@ -4,20 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "irap-data"
-version = "0.1.0"
-description = "IRAP road-attribute dataset loaders and an interactive dataset viewer."
+version = "0.2.0"
+description = "IRAP road-attribute dataset metadata, loaders and an interactive dataset viewer."
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
-    "torch",
-    "torchvision",
-    "tqdm",
-    "pillow",
-    "opencv-python",
 ]
 
 [project.optional-dependencies]
-viewer = ["streamlit"]
+torch = ["torch", "torchvision", "tqdm", "pillow", "opencv-python"]
+viewer = ["irap-data[torch]", "streamlit"]
+test = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["irap_data*"]

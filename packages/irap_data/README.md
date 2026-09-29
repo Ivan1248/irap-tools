@@ -1,18 +1,25 @@
 # irap_data
 
-Standalone Python package for loading the iRAP road-attribute datasets (iRAP-BiH, iRAP-Vietnam) and an interactive Streamlit-based viewer. This code is based on code by Marin Kačan: see [docs/differences-to-the-original-dataset-code.md](docs/differences-to-the-original-dataset-code.md) for a comparison.
+Standalone Python package for loading the iRAP road-attribute datasets (iRAP-BiH, iRAP-Vietnam) and their metadata, and an interactive Streamlit-based viewer. This code is based on code by Marin Kačan: see [docs/differences-to-the-original-dataset-code.md](docs/differences-to-the-original-dataset-code.md) for a comparison.
 
 
 ## Installation
 
-From the repository checkout:
+From the irap-tools checkout:
 
 ```bash
-uv pip install -e ./irap_data            # core (loaders only)
-uv pip install -e ./irap_data[viewer]    # adds streamlit for the dataset viewer
+uv pip install -e packages/irap_data           # metadata API only (numpy)
+uv pip install -e packages/irap_data[torch]    # adds the dataset classes and image utilities
+uv pip install -e packages/irap_data[viewer]   # adds streamlit for the dataset viewer
 ```
 
-Runtime dependencies: `opencv-python` (image loading and viewer resize) and `torchvision` (`irap_data.jitter` color-jitter augmentation, also used by the viewer).
+From another project, without a checkout:
+
+```bash
+uv pip install "irap-data[torch] @ git+https://github.com/Ivan1248/irap-tools#subdirectory=packages/irap_data"
+```
+
+The metadata API – `irap_data.metadata` (class vocabularies, labels, split and context selection) and `irap_data.attrs` – needs only numpy, and `import irap_data` does not import torch. The dataset classes (`IRAPDataset`, `make_*_data`, `InferenceImageDataset`), `irap_data.jitter` and the viewer need the `torch` extra.
 
 ## Data layout
 
@@ -31,9 +38,13 @@ Required metadata files (in the metadata dir):
 
 ### Context-window filtering
 
-Every loader drops segments whose context window (per `context_offsets`) would step off the end of its sequence in `road_id_to_segment_id_sequence.json`, or whose context frames have no image on disk. This is the only context filter `make_vietnam_data()` applies.
+`irap_data.metadata.select_split_segments` implements the segment selection of every loader. It drops segments whose context window (per `context_offsets`) would step off the end of its sequence in `road_id_to_segment_id_sequence.json`, or whose context frames have no image on disk. This is the only context filter `make_vietnam_data()` applies.
 
 `make_bih_data()` additionally restricts segments to the precomputed BiH subsets in `seg_to_res/{train,val,test}.pickle`. These pickles retain only segments that have at least 10 valid context frames on each side within their road sequence, so the labeled-set size is stable for any `max(abs(context_offsets)) ≤ 10`. Pass `use_ncontext_filter=False` to skip the pre-computed filter. The iRAP-Vietnam dataset does not provide such a filter.
+
+### Reference context
+
+`DATASET_PRESETS` holds the loading defaults of each release, including `reference_context_offsets`. The reference set of a split is the segments whose context window with these offsets is complete (`select_preset_split_segments(metadata, name, split)`). A model whose context offsets lie within the reference window can predict every reference segment, so all such models can be scored on the same segments.
 
 ### Unlabeled splits
 
@@ -63,6 +74,16 @@ example = train[0]
 vn = make_vietnam_data(dataset_dir="/data/IRAP_Vietnam")
 ```
 
+Labels and segment selection without loading images (no torch needed):
+
+```python
+from irap_data import load_irap_metadata, select_preset_split_segments
+
+metadata = load_irap_metadata("/data/IRAP_Vietnam")
+val = select_preset_split_segments(metadata, "vietnam", "val", context_offsets=(0, -1, -4))
+print(len(val.segment_ids), metadata.vocabulary.class_counts)
+```
+
 Inference on a folder of images (no labels required):
 
 ```python
@@ -78,7 +99,7 @@ ds = InferenceImageDataset.from_folder(
 ## Dataset viewer
 
 ```bash
-IRAP_HOME=/path/to/IRAP_HOME streamlit run irap_data/irap_data/dataset_viewer.py
+IRAP_HOME=/path/to/IRAP_HOME streamlit run packages/irap_data/irap_data/dataset_viewer.py
 ```
 
 Or, once `irap_data` is installed:
@@ -93,9 +114,10 @@ The viewer auto-detects which datasets exist under `$IRAP_HOME`, exposes per-att
 
 ```
 irap_data/
-├── __init__.py                # Public API
+├── __init__.py                # Public API (torch-based names are imported on first access)
+├── metadata.py                # ClassVocabulary, IRAPMetadata, labels, split and context selection, DATASET_PRESETS
 ├── dataset.py                 # Dataset base class + transformations (map/filter/zip/...)
-├── irap_dataset.py            # IRAPDataset, make_bih_data, make_vietnam_data, IGNORE_LABEL_INDEX
+├── irap_dataset.py            # IRAPDataset, make_bih_data, make_vietnam_data
 ├── inference_dataset.py       # InferenceImageDataset (label-free folder loader)
 ├── attrs.py                   # IRAP_BH_ATTRS_TO_INCLUDE + name-to-index helpers
 ├── attribute_frequencies.py   # AttributeFrequencyStats, compute_attribute_frequency_stats
@@ -108,6 +130,7 @@ irap_data/
 
 ## Conventions
 
-- All public constants for normalization (`RGB_MEAN`, `RGB_STD`, `INPUT_DIM`) and the ignore sentinel (`IGNORE_LABEL_INDEX = -1`) live in `irap_data.irap_dataset`.
+- The normalization constants (`RGB_MEAN`, `RGB_STD`, `INPUT_DIM`) live in `irap_data.irap_dataset`, and the ignore sentinel (`IGNORE_LABEL_INDEX = -1`) in `irap_data.metadata`.
+- Class indices follow the value order of `attribute_value_to_irap_number` in `attribute_metadata.json` (see `ClassVocabulary`). IRAP codes are parsed to ints, whether the metadata stores them as ints (Vietnam) or strings (BiH).
 - `Dataset.info` is a `LazyDict` with attribute access – both `info["class_counts"]` and `info.class_counts` work. Entries wrapped in `Lazy(...)` are computed on first access.
 - Targets use `-1` as the ignore index (matches `torch.nn.CrossEntropyLoss(ignore_index=-1)`).
