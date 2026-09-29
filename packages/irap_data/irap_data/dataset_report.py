@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import report_document as rd
 from .dataset_statistics import (
     ATTRIBUTE_ORDERS,
     CLASS_ORDERS,
@@ -42,6 +43,10 @@ from .metadata import (
 #: The columns of `to_class_frequency_rows`.
 CLASS_FREQUENCY_COLUMNS = ("dataset", "selection", "split", "attribute", "class_index", "value",
                            "irap_code", "num_segments", "num_sequences", "share", "share_labeled")
+
+#: The default plot format of each report format: HTML embeds an SVG plot, and Markdown links a
+#: PDF plot, which many Markdown viewers do not render as an image.
+_REPORT_FORMAT_TO_PLOT_FORMAT = {"html": "svg", "md": "pdf"}
 
 
 # Formatting helpers ###############################################################################
@@ -97,30 +102,22 @@ def _format_class_count(n: int, share: float | None = None) -> str:
     return _format_count(n) if share is None else f"{_format_count(n)} ({_format_share(share)})"
 
 
-def _to_markdown_table(header: T.Sequence[str], rows: T.Iterable[T.Sequence[str]],
-                       alignment: str) -> str:
-    """A GitHub-flavored Markdown table. `alignment` has 'l' or 'r' for each column."""
-    rule = [":---" if a == "l" else "---:" for a in alignment]
-    lines = [header, rule, *rows]
-    return "\n".join("| " + " | ".join(cell.replace("|", r"\|") for cell in cells) + " |"
-                     for cells in lines)
-
-
 def _to_json_float(x: float) -> float | None:
     return None if np.isnan(x) else float(x)
 
 
-# Markdown report ##################################################################################
+# Report ###########################################################################################
 
-def to_markdown(
+def compose_report(
     statistics: DatasetStatistics,
     selection: SelectionKind,
     *,
     report_date: str,
     rare_fraction: float,
     split_to_figure_path: T.Mapping[str, str] | None = None,
-) -> str:
-    """Formats a Markdown report of one selection of segments.
+) -> list[rd.Block]:
+    """Composes the report of one selection of segments, to be rendered with
+    `report_document.to_html` or `report_document.to_markdown`.
 
     The class balance is measured on the base split, the first split of `statistics` with
     segments in the selection, and the other splits are compared to it.
@@ -133,47 +130,47 @@ def to_markdown(
             report.
     """
     split_distributions = statistics.get_split_distributions(selection)
-    sections = [_format_header(statistics, selection, report_date),
-                _format_overview(statistics, selection)]
+    blocks = [*_compose_header(statistics, selection, report_date),
+              *_compose_overview(statistics, selection)]
     if not split_distributions:
-        return "\n\n".join([*sections, "No split has segments in this selection."]) + "\n"
+        return [*blocks, rd.Paragraph("No split has segments in this selection.")]
     num_attributes = len(next(iter(split_distributions.values())))
     attribute_indices = [i for i in range(num_attributes)
                          if any(ds[i].is_labeled for ds in split_distributions.values())]
-    sections += [
-        _format_label_coverage(split_distributions, attribute_indices),
-        _format_class_balance(split_distributions, attribute_indices),
-        _format_rare_classes(split_distributions, attribute_indices, rare_fraction),
-        _format_missing_classes(split_distributions, attribute_indices),
-        _format_class_frequencies(split_distributions, attribute_indices,
-                                  split_to_figure_path or {}),
+    return [
+        *blocks,
+        *_compose_label_coverage(split_distributions, attribute_indices),
+        *_compose_class_balance(split_distributions, attribute_indices),
+        *_compose_rare_classes(split_distributions, attribute_indices, rare_fraction),
+        *_compose_missing_classes(split_distributions, attribute_indices),
+        *_compose_class_frequencies(split_distributions, attribute_indices,
+                                    split_to_figure_path or {}),
     ]
-    return "\n\n".join(sections) + "\n"
 
 
-def _format_header(statistics: DatasetStatistics, selection: SelectionKind,
-                   report_date: str) -> str:
+def _compose_header(statistics: DatasetStatistics, selection: SelectionKind,
+                    report_date: str) -> list[rd.Block]:
     preset = statistics.preset
     description = _describe_selection(selection, statistics.get_context_offsets(selection))
-    lines = [
-        f"# Dataset statistics of {statistics.dataset}: {description}",
-        "",
-        f"- Metadata directory: `{statistics.metadata_dir}`",
-        f"- Date: {report_date}",
-        f"- Selection: {selection}. {SELECTION_DESCRIPTIONS[selection]}",
-        "- A segment with a missing attribute code is "
+    items = [
+        f"Metadata directory: `{statistics.metadata_dir}`",
+        f"Date: {report_date}",
+        f"Selection: {selection}. {SELECTION_DESCRIPTIONS[selection]}",
+        "A segment with a missing attribute code is "
         + ("kept without a label for the attribute." if preset.allow_missing_attributes
            else "left out."),
     ]
     if preset.use_ncontext_filter and selection != "labeled":
-        lines.append("- The segments are restricted to the precomputed N-context subsets"
+        items.append("The segments are restricted to the precomputed N-context subsets"
                      " (`seg_to_res`).")
-    return "\n".join(lines)
+    return [rd.Heading(f"Dataset statistics of {statistics.dataset}: {description}", 1),
+            rd.BulletList(tuple(items))]
 
 
-def _format_overview(statistics: DatasetStatistics, selection: SelectionKind) -> str:
+def _compose_overview(statistics: DatasetStatistics,
+                      selection: SelectionKind) -> list[rd.Block]:
     selections = statistics.selections
-    funnel = _to_markdown_table(
+    funnel = rd.make_table(
         ["split", "listed", "with image", *selections],
         [[s.split, _format_count(s.num_listed), _format_count(s.num_with_image),
           *(_format_count(s.selections[k].num_segments) if s.selections else ""
@@ -188,26 +185,29 @@ def _format_overview(statistics: DatasetStatistics, selection: SelectionKind) ->
                 f"{lengths.min()} / {np.median(lengths):g} / {lengths.max()}" if lengths.size
                 else "", f"{s.road_length_m / 1000:,.1f}"]
 
-    segments = _to_markdown_table(
+    segments = rd.make_table(
         ["split", "segments", "without any label", "sequences", "without sequence",
          "segments per sequence (min / median / max)", "road length (km)"],
         [format_segments_row(s.split, s.selections[selection])
          for s in statistics.splits if s.selections],
         "lrrrrrr")
-    return "\n\n".join([
-        "## Overview",
-        ("The number of segments of each split: listed in `splits.json`, with an image, and in"
-         " each selection. Unlabeled splits are not in any selection."),
+    return [
+        rd.Heading("Overview", 2),
+        rd.Paragraph("The number of segments of each split: listed in `splits.json`, with an"
+                     " image, and in each selection. Unlabeled splits are not in any selection."),
         funnel,
-        (f"The {_describe_selection(selection, statistics.get_context_offsets(selection))} of"
-         " each split. The road sequences are those of"
-         " `road_id_to_segment_id_sequence.json`, and a segment that is in none is a sequence"
-         " of its own. The road length is summed over the segments that have road data."),
-        segments])
+        rd.Paragraph(
+            f"The {_describe_selection(selection, statistics.get_context_offsets(selection))} of"
+            " each split. The road sequences are those of"
+            " `road_id_to_segment_id_sequence.json`, and a segment that is in none is a sequence"
+            " of its own. The road length is summed over the segments that have road data."),
+        segments]
 
 
-def _format_label_coverage(split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
-                           attribute_indices: T.Sequence[int]) -> str:
+def _compose_label_coverage(
+    split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
+    attribute_indices: T.Sequence[int],
+) -> list[rd.Block]:
     def format_cell(d: AttributeDistribution) -> str:
         if not d.num_missing:
             return _format_count(d.num_labeled)
@@ -215,24 +215,26 @@ def _format_label_coverage(split_distributions: T.Mapping[str, T.Sequence[Attrib
                 f" ({_format_share(d.num_missing / d.num_total)} missing)")
 
     distributions_seq = list(split_distributions.values())
-    table = _to_markdown_table(
+    table = rd.make_table(
         ["attribute", *split_distributions],
         [[distributions_seq[0][i].attribute, *(format_cell(ds[i]) for ds in distributions_seq)]
          for i in attribute_indices],
         "l" + "r" * len(split_distributions))
-    parts = ["## Label coverage",
-             ("The number of labeled segments of each attribute, and the share of the segments"
-              " without a label."),
-             table]
+    blocks = [rd.Heading("Label coverage", 2),
+              rd.Paragraph("The number of labeled segments of each attribute, and the share of"
+                           " the segments without a label."),
+              table]
     if unlabeled := [d.attribute for i, d in enumerate(distributions_seq[0])
                      if i not in attribute_indices]:
-        parts.append(f"Attributes without a label in any split, left out below"
-                     f" ({len(unlabeled)}): {', '.join(unlabeled)}.")
-    return "\n\n".join(parts)
+        blocks.append(rd.Paragraph(f"Attributes without a label in any split, left out below"
+                                   f" ({len(unlabeled)}): {', '.join(unlabeled)}."))
+    return blocks
 
 
-def _format_class_balance(split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
-                          attribute_indices: T.Sequence[int]) -> str:
+def _compose_class_balance(
+    split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
+    attribute_indices: T.Sequence[int],
+) -> list[rd.Block]:
     base_split, *other_splits = split_distributions
     base = split_distributions[base_split]
 
@@ -246,7 +248,7 @@ def _format_class_balance(split_distributions: T.Mapping[str, T.Sequence[Attribu
                 "" if np.isnan(d.effective_num_classes) else f"{d.effective_num_classes:.1f}",
                 *(_format_share(x) for comparison in comparisons for x in comparison)]
 
-    table = _to_markdown_table(
+    table = rd.make_table(
         ["attribute", "classes", "absent", "majority share", "max:min", "effective classes",
          *(f"{name} {s}" for s in other_splits for name in ("TVD", "majority accuracy"))],
         map(format_row, attribute_indices),
@@ -263,18 +265,21 @@ def _format_class_balance(split_distributions: T.Mapping[str, T.Sequence[Attribu
             f" and of {base_split}: the share of labels that would have to change class for them"
             f" to match. *Majority accuracy* is the accuracy on a split of predicting the most"
             f" frequent class of {base_split}.")
-    return "\n\n".join(["## Class balance", legend, table])
+    return [rd.Heading("Class balance", 2), rd.Paragraph(legend), table]
 
 
-def _format_rare_classes(split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
-                         attribute_indices: T.Sequence[int], rare_fraction: float) -> str:
+def _compose_rare_classes(
+    split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
+    attribute_indices: T.Sequence[int],
+    rare_fraction: float,
+) -> list[rd.Block]:
     base_split = next(iter(split_distributions))
     base = split_distributions[base_split]
     distributions_seq = list(split_distributions.values())
     rare = sorted(((i, c) for i in attribute_indices for c in range(base[i].num_classes)
                    if 0 < base[i].labeled_shares[c] < rare_fraction),
                   key=lambda item: (base[item[0]].num_segments[item[1]], base[item[0]].attribute))
-    table = _to_markdown_table(
+    table = rd.make_table(
         ["attribute", "class", "IRAP code", *(f"{s} segments" for s in split_distributions),
          f"{base_split} share", f"{base_split} sequences"],
         [[base[i].attribute, base[i].values[c], str(base[i].irap_codes[c]),
@@ -282,16 +287,19 @@ def _format_rare_classes(split_distributions: T.Mapping[str, T.Sequence[Attribut
           _format_share(base[i].labeled_shares[c]), _format_count(base[i].num_sequences[c])]
          for i, c in rare],
         "llr" + "r" * len(split_distributions) + "rr")
-    return "\n\n".join([
-        "## Rare classes",
-        (f"The classes with less than {rare_fraction:.1%} of the labeled segments of their"
-         f" attribute in {base_split}, rarest first, with their number of segments in each split."
-         f" Classes without a segment are in the next section."),
-        table if rare else "None."])
+    return [
+        rd.Heading("Rare classes", 2),
+        rd.Paragraph(
+            f"The classes with less than {rare_fraction:.1%} of the labeled segments of their"
+            f" attribute in {base_split}, rarest first, with their number of segments in each"
+            f" split. Classes without a segment are in the next section."),
+        table if rare else rd.Paragraph("None.")]
 
 
-def _format_missing_classes(split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
-                            attribute_indices: T.Sequence[int]) -> str:
+def _compose_missing_classes(
+    split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
+    attribute_indices: T.Sequence[int],
+) -> list[rd.Block]:
     base_split = next(iter(split_distributions))
     distributions_seq = list(split_distributions.values())
     rows = [[d.attribute, d.values[c], str(d.irap_codes[c]),
@@ -299,32 +307,32 @@ def _format_missing_classes(split_distributions: T.Mapping[str, T.Sequence[Attri
             for i in attribute_indices for d in [distributions_seq[0][i]]
             for c in range(d.num_classes)
             if any(ds[i].num_segments[c] == 0 for ds in distributions_seq)]
-    table = _to_markdown_table(["attribute", "class", "IRAP code", *split_distributions], rows,
-                               "llr" + "r" * len(split_distributions))
-    return "\n\n".join([
-        "## Missing classes",
-        (f"The classes without a segment in at least one split. A class that is missing from"
-         f" {base_split} cannot be learned from it, and the recall of a class that is missing"
-         f" from another split cannot be measured on it."),
-        table if rows else "None."])
+    table = rd.make_table(["attribute", "class", "IRAP code", *split_distributions], rows,
+                          "llr" + "r" * len(split_distributions))
+    return [
+        rd.Heading("Missing classes", 2),
+        rd.Paragraph(
+            f"The classes without a segment in at least one split. A class that is missing from"
+            f" {base_split} cannot be learned from it, and the recall of a class that is missing"
+            f" from another split cannot be measured on it."),
+        table if rows else rd.Paragraph("None.")]
 
 
-def _format_class_frequencies(
+def _compose_class_frequencies(
     split_distributions: T.Mapping[str, T.Sequence[AttributeDistribution]],
     attribute_indices: T.Sequence[int],
     split_to_figure_path: T.Mapping[str, str],
-) -> str:
-    parts = ["## Class frequencies",
-             ("The number of segments of each class, with its share of the labeled segments of"
-              " the attribute, and the number of road sequences that contain the class.")]
-    # Markdown viewers do not render a PDF as an image, so a PDF plot is linked.
-    parts += [f"[Class frequencies of {split} (PDF)]({path})" if path.endswith(".pdf")
-              else f"![Class frequencies of {split}]({path})"
-              for split, path in split_to_figure_path.items()]
+) -> list[rd.Block]:
+    blocks = [rd.Heading("Class frequencies", 2),
+              rd.Paragraph("The number of segments of each class, with its share of the labeled"
+                           " segments of the attribute, and the number of road sequences that"
+                           " contain the class.")]
+    blocks += [rd.Figure(path, f"Class frequencies of {split}")
+               for split, path in split_to_figure_path.items()]
     distributions_seq = list(split_distributions.values())
     for i in attribute_indices:
         first = distributions_seq[0][i]
-        table = _to_markdown_table(
+        table = rd.make_table(
             ["class", "IRAP code",
              *(name for s in split_distributions for name in (s, f"{s} sequences"))],
             [[first.values[c], str(first.irap_codes[c]),
@@ -333,8 +341,8 @@ def _format_class_frequencies(
                              _format_count(ds[i].num_sequences[c])))]
              for c in range(first.num_classes)],
             "lr" + "rr" * len(split_distributions))
-        parts += [f"### {first.attribute}", table]
-    return "\n\n".join(parts)
+        blocks += [rd.Heading(first.attribute, 3), table]
+    return blocks
 
 
 # JSON and CSV #####################################################################################
@@ -381,8 +389,9 @@ def to_json_dict(statistics: DatasetStatistics, *, report_date: str) -> dict[str
     }
 
 
-def to_class_frequency_rows(statistics: DatasetStatistics) -> list[dict[str, T.Any]]:
-    """One row per (selection, split with segments in it, attribute, class), with the columns
+def to_class_frequency_rows(statistics: DatasetStatistics,
+                            selection: SelectionKind) -> list[dict[str, T.Any]]:
+    """One row per (split with segments in the selection, attribute, class), with the columns
     `CLASS_FREQUENCY_COLUMNS`. `share` is the share of all segments of the split, and
     `share_labeled` the share of its labeled segments of the attribute, None for an attribute
     without a label."""
@@ -391,7 +400,6 @@ def to_class_frequency_rows(statistics: DatasetStatistics) -> list[dict[str, T.A
              "irap_code": d.irap_codes[c], "num_segments": int(d.num_segments[c]),
              "num_sequences": int(d.num_sequences[c]), "share": _to_json_float(d.shares[c]),
              "share_labeled": _to_json_float(d.labeled_shares[c])}
-            for selection in statistics.selections
             for split, distributions in statistics.get_split_distributions(selection).items()
             for d in distributions for c in range(d.num_classes)]
 
@@ -438,6 +446,7 @@ def run_report(args: argparse.Namespace) -> None:
                                             model_context_offsets=args.context_offsets)
     # Imported before anything is written, so that a missing matplotlib leaves no partial report.
     class_frequency_plot = _import_class_frequency_plot() if args.plots else None
+    plot_format = args.plot_format or _REPORT_FORMAT_TO_PLOT_FORMAT[args.format]
     report_date = date.today().isoformat()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -457,29 +466,30 @@ def run_report(args: argparse.Namespace) -> None:
             selected = split.selections.get(selection)
             if selected is None or not any(d.is_labeled for d in selected.distributions):
                 continue
-            path = out_dir / f"{stem}_{split.split}_class_frequencies.{args.plot_format}"
+            path = out_dir / f"{stem}_{split.split}_class_frequencies.{plot_format}"
             class_frequency_plot.write_class_frequency_plot(
                 path, selected.distributions, dpi=args.dpi,
                 title=_format_plot_title(args.dataset, split.split, description,
                                          selected.num_segments))
             split_to_figure_path[split.split] = path.name
             written.append(path)
-        path = out_dir / f"{stem}.md"
-        path.write_text(to_markdown(statistics, selection, report_date=report_date,
-                                    rare_fraction=args.rare_fraction,
-                                    split_to_figure_path=split_to_figure_path),
+        blocks = compose_report(statistics, selection, report_date=report_date,
+                                rare_fraction=args.rare_fraction,
+                                split_to_figure_path=split_to_figure_path)
+        path = out_dir / f"{stem}.{args.format}"
+        path.write_text(rd.to_html(blocks) if args.format == "html" else rd.to_markdown(blocks),
                         encoding="utf-8")
+        written.append(path)
+        path = out_dir / f"{stem}_class_frequencies.csv"
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CLASS_FREQUENCY_COLUMNS)
+            writer.writeheader()
+            writer.writerows(to_class_frequency_rows(statistics, selection))
         written.append(path)
 
     path = out_dir / f"{args.dataset}_statistics.json"
     path.write_text(json.dumps(to_json_dict(statistics, report_date=report_date), indent=2,
                                ensure_ascii=False, allow_nan=False), encoding="utf-8")
-    written.append(path)
-    path = out_dir / f"{args.dataset}_class_frequencies.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CLASS_FREQUENCY_COLUMNS)
-        writer.writeheader()
-        writer.writerows(to_class_frequency_rows(statistics))
     written.append(path)
     print("\n".join(f"Wrote {p}." for p in written))
 
@@ -524,10 +534,14 @@ def make_argument_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     report = commands.add_parser(
-        "report", help="Write a Markdown report of each selection of segments, with plots, and a"
-                       " JSON document and a CSV table of the class frequencies.")
+        "report", help="Write an HTML or Markdown report and a CSV table of the class"
+                       " frequencies of each selection of segments, with plots, and a JSON"
+                       " document of all statistics.")
     _add_common_arguments(report)
     report.add_argument("-o", "--out", type=Path, required=True, help="Output directory.")
+    report.add_argument("--format", choices=list(_REPORT_FORMAT_TO_PLOT_FORMAT), default="html",
+                        help="The file format of the reports: an HTML page or GitHub-flavored"
+                             " Markdown. Default: html.")
     report.add_argument("--splits", nargs="+", default=None,
                         help="Default: all splits in splits.json. The first split with segments"
                              " is the base of the comparisons.")
@@ -540,8 +554,10 @@ def make_argument_parser() -> argparse.ArgumentParser:
                              " attribute. Default: 0.01.")
     report.add_argument("--no-plots", dest="plots", action="store_false",
                         help="Leave out the plots, which need matplotlib.")
-    report.add_argument("--plot-format", choices=("pdf", "png", "svg"), default="pdf",
-                        help="The file format of the plots. Default: pdf.")
+    report.add_argument("--plot-format", choices=("pdf", "png", "svg"), default=None,
+                        help="The file format of the plots. A PDF plot is linked from the report"
+                             " and the others are embedded. Default: svg for an HTML report and"
+                             " pdf for a Markdown report.")
     report.set_defaults(run=run_report)
 
     plot = commands.add_parser("plot", help="Plot the class frequencies of one split.")

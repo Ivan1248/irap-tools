@@ -1,6 +1,7 @@
 """Class frequencies and other statistics of the splits of an IRAP release, from metadata only.
 
-`dataset_report` formats them as Markdown, JSON and CSV, and `class_frequency_plot` plots them.
+`dataset_report` formats them as HTML or Markdown, JSON and CSV, and `class_frequency_plot` plots
+them.
 """
 
 import dataclasses as dc

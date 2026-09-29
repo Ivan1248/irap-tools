@@ -130,12 +130,12 @@ The statistics are computed for each selection of segments (see `SELECTION_DESCR
 
 | File | Content |
 |---|---|
-| `<report>.md` | The report of a selection (see below): `<dataset>_labeled_segments.md`, `<dataset>_labeled_segments_with_context.md` for the reference selection, and `<dataset>_labeled_segments_with_context_<offsets>.md` for the model selection, e.g. `vietnam_labeled_segments_with_context_0,-1,-4.md`. A model selection with the same segments as the reference one is not written. |
-| `<report>_<split>_class_frequencies.pdf` | The class frequencies of all attributes of a split, linked from the report (`--plot-format png` or `svg` embeds them as images, `--no-plots` leaves them out) |
+| `<report>.html` | The report of a selection (see below), an HTML page, or GitHub-flavored Markdown (`<report>.md`) with `--format md`: `<dataset>_labeled_segments.html`, `<dataset>_labeled_segments_with_context.html` for the reference selection, and `<dataset>_labeled_segments_with_context_<offsets>.html` for the model selection, e.g. `vietnam_labeled_segments_with_context_0,-1,-4.html`. A model selection with the same segments as the reference one is not written. |
+| `<report>_<split>_class_frequencies.svg` | The class frequencies of all attributes of a split, embedded in the report. The default format is SVG for an HTML report and PDF, which the report links, for a Markdown report. `--plot-format` selects the format and `--no-plots` leaves the plots out. |
+| `<report>_class_frequencies.csv` | The class frequencies of a selection, one row per (split, attribute, class): the number of segments and of road sequences, the share of all segments of the split (`share`) and the share of the labeled segments of the attribute (`share_labeled`). The `dataset` and `selection` columns identify the rows when the tables are concatenated. |
 | `<dataset>_statistics.json` | All statistics of all selections and splits |
-| `<dataset>_class_frequencies.csv` | One row per (selection, split, attribute, class): the number of segments and of road sequences, the share of all segments of the split (`share`) and the share of the labeled segments of the attribute (`share_labeled`) |
 
-A Markdown report has these sections:
+A report has these sections:
 
 1. Overview – the number of segments of each split at each selection stage, and the number of road sequences and the road length.
 2. Label coverage – the number of labeled segments of each attribute. Attributes without a label in any split are named once and left out of the other sections.
@@ -159,7 +159,8 @@ irap_data/
 ├── __init__.py                # Public API (torch-based names are imported on first access)
 ├── metadata.py                # ClassVocabulary, IRAPMetadata, labels, split and context selection, DATASET_PRESETS
 ├── dataset_statistics.py      # Class frequencies and other split statistics (numpy only)
-├── dataset_report.py          # irap-dataset-stats: Markdown, JSON and CSV reports
+├── dataset_report.py          # irap-dataset-stats: HTML or Markdown, JSON and CSV reports
+├── report_document.py         # Report blocks rendered as HTML or Markdown
 ├── class_frequency_plot.py    # Class-frequency bar chart (matplotlib)
 ├── dataset.py                 # Dataset base class + transformations (map/filter/zip/...)
 ├── irap_dataset.py            # IRAPDataset, make_bih_data, make_vietnam_data
