@@ -142,7 +142,8 @@ def test_select_split_segments(metadata_dir):
 
 def test_select_preset_split_segments_uses_reference_offsets(metadata_dir):
     metadata = load_irap_metadata(metadata_dir)
-    # r0 is too short for the ±4 Vietnam reference window.
+    # The -4..0 Vietnam reference window of S4 and S5 includes S3, which has no image, and r1 is
+    # too short.
     assert select_preset_split_segments(metadata, "vietnam", "val").segment_ids == ()
     model = select_preset_split_segments(metadata, "vietnam", "val", context_offsets=(0,))
     assert model.segment_ids == ("S0", "S1", "S2", "S4", "S5", "T0", "T1")

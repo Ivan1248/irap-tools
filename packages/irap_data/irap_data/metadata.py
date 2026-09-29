@@ -56,10 +56,10 @@ DATASET_PRESETS: dict[str, DatasetPreset] = {
     # The N-context subsets already require 10 labeled neighbours on each side.
     "bih": DatasetPreset(allow_missing_attributes=False, use_ncontext_filter=True,
                          reference_context_offsets=tuple(range(-10, 11))),
-    # Vietnam road sequences are short (median 29 segments in the 2026-07-31 metadata): a ±4
-    # window keeps 81 % of the labeled validation segments, a ±10 window only 57 %.
+    # Vietnam road sequences are short (median 29 segments in the 2026-07-31 metadata), so the
+    # window holds only the past context that the default model offsets (0, -1, -4) need.
     "vietnam": DatasetPreset(allow_missing_attributes=True, use_ncontext_filter=False,
-                             reference_context_offsets=tuple(range(-4, 5))),
+                             reference_context_offsets=tuple(range(-4, 1))),
 }
 
 
