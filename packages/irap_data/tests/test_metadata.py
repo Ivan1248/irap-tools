@@ -4,7 +4,9 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from irap_data.metadata import (
@@ -12,6 +14,8 @@ from irap_data.metadata import (
     IGNORE_LABEL_INDEX,
     ClassVocabulary,
     MetaFiles,
+    compute_class_occurrence_counts,
+    compute_num_segments_per_class,
     compute_segment_context_ids,
     compute_segment_labels,
     get_segment_location,
@@ -113,6 +117,18 @@ def test_compute_segment_labels_maps_codes_and_handles_missing(metadata_dir):
     strict = compute_segment_labels(metadata.vocabulary, metadata.segment_id_to_road_data,
                                     segment_ids, allow_missing_attributes=False)
     assert list(strict) == ["S0", "S1"]
+
+
+def test_class_counting_excludes_the_ignore_label():
+    labels = np.array([0, 2, IGNORE_LABEL_INDEX, 2])
+    assert compute_num_segments_per_class(labels, 3).tolist() == [1, 0, 2]
+    with pytest.raises(ValueError, match="outside"):
+        compute_num_segments_per_class(labels, 2)
+    info = SimpleNamespace(segment_ids=["s0", "s1"], class_counts=(2,),
+                           segment_id_to_labels={"s0": [1], "s1": [5], "s2": [0]},
+                           attr_to_value_to_class_idx={"A": {"x": 0, "y": 1}})
+    with pytest.raises(ValueError, match="Attribute 'A'"):
+        compute_class_occurrence_counts(info)
 
 
 def test_context_stays_on_the_road_and_needs_images(metadata_dir):

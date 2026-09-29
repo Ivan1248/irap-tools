@@ -11,6 +11,7 @@ From the irap-tools checkout:
 uv pip install -e packages/irap_data           # metadata API only (numpy)
 uv pip install -e packages/irap_data[torch]    # adds the dataset classes and image utilities
 uv pip install -e packages/irap_data[viewer]   # adds streamlit for the dataset viewer
+uv pip install -e packages/irap_data[report]   # adds matplotlib for the plots of the statistics report
 ```
 
 From another project, without a checkout:
@@ -19,7 +20,7 @@ From another project, without a checkout:
 uv pip install "irap-data[torch] @ git+https://github.com/Ivan1248/irap-tools#subdirectory=packages/irap_data"
 ```
 
-The metadata API – `irap_data.metadata` (class vocabularies, labels, split and context selection) and `irap_data.attrs` – needs only numpy, and `import irap_data` does not import torch. The dataset classes (`IRAPDataset`, `make_*_data`, `InferenceImageDataset`), `irap_data.jitter` and the viewer need the `torch` extra.
+The metadata API – `irap_data.metadata` (class vocabularies, labels, split and context selection), `irap_data.attrs` and `irap_data.dataset_statistics` – needs only numpy, and `import irap_data` does not import torch. The dataset classes (`IRAPDataset`, `make_*_data`, `InferenceImageDataset`), `irap_data.jitter` and the viewer need the `torch` extra.
 
 ## Data layout
 
@@ -110,12 +111,56 @@ python -m streamlit run -m irap_data.dataset_viewer
 
 The viewer auto-detects which datasets exist under `$IRAP_HOME`, exposes per-attribute filtering, navigates by index or random sample, and previews the surrounding road sequence for each segment.
 
+## Dataset statistics report
+
+`irap-dataset-stats` computes the class frequencies of every attribute and other statistics of a release from its metadata only, without images or torch. Plots need the `report` extra.
+
+```bash
+IRAP_HOME=/path/to/IRAP_HOME irap-dataset-stats report vietnam -o reports/vietnam
+irap-dataset-stats report bih --metadata-dir /data/IRAP_BIH_METADATA -o reports/bih --context-offsets 0,-1,-4
+```
+
+The statistics are computed for each selection of segments (see `SELECTION_DESCRIPTIONS` in `irap_data.dataset_statistics`):
+
+- `labeled` – the segments that have an image and labels: the dataset as annotated.
+- `reference` – the reference evaluation set (see [Reference context](#reference-context)): the segments every model is scored on.
+- `model` – with `--context-offsets`: the segments that a model with these offsets is trained and evaluated on.
+
+`report` writes these files to the output directory:
+
+| File | Content |
+|---|---|
+| `<report>.md` | The report of a selection (see below): `<dataset>_labeled_segments.md`, `<dataset>_labeled_segments_with_context.md` for the reference selection, and `<dataset>_labeled_segments_with_context_<offsets>.md` for the model selection, e.g. `vietnam_labeled_segments_with_context_0,-1,-4.md`. A model selection with the same segments as the reference one is not written. |
+| `<report>_<split>_class_frequencies.pdf` | The class frequencies of all attributes of a split, linked from the report (`--plot-format png` or `svg` embeds them as images, `--no-plots` leaves them out) |
+| `<dataset>_statistics.json` | All statistics of all selections and splits |
+| `<dataset>_class_frequencies.csv` | One row per (selection, split, attribute, class): the number of segments and of road sequences, the share of all segments of the split (`share`) and the share of the labeled segments of the attribute (`share_labeled`) |
+
+A Markdown report has these sections:
+
+1. Overview – the number of segments of each split at each selection stage, and the number of road sequences and the road length.
+2. Label coverage – the number of labeled segments of each attribute. Attributes without a label in any split are named once and left out of the other sections.
+3. Class balance – the majority share (the accuracy of predicting the most frequent class), the max:min ratio and the effective number of classes of each attribute in the base split: the first split in `splits.json` order, or in the order of `--splits`. For each other split, the total variation distance to the base split and the accuracy of predicting the most frequent class of the base split.
+4. Rare classes – classes below `--rare-fraction` (default 1 %) of their attribute in the base split, with their number of segments in each split.
+5. Missing classes – classes without a segment in at least one split.
+6. Class frequencies – the plots, and a table for each attribute of the number of segments, their share and the number of road sequences of each class in each split. Consecutive segments of a road are strongly correlated, so the number of sequences is closer to the number of independent examples.
+
+`plot` draws the class frequencies of one split in one figure, in the format of the extension of `-o`, with options for the order of attributes and classes, normalization and a linear axis:
+
+```bash
+irap-dataset-stats plot vietnam --split train --sort-attributes imbalance --sort-classes count -o vietnam_skew.pdf
+```
+
+Classes without a segment are drawn as a short red bar rather than left out: zero has no position on a logarithmic axis and no width on a linear one.
+
 ## Package contents
 
 ```
 irap_data/
 ├── __init__.py                # Public API (torch-based names are imported on first access)
 ├── metadata.py                # ClassVocabulary, IRAPMetadata, labels, split and context selection, DATASET_PRESETS
+├── dataset_statistics.py      # Class frequencies and other split statistics (numpy only)
+├── dataset_report.py          # irap-dataset-stats: Markdown, JSON and CSV reports
+├── class_frequency_plot.py    # Class-frequency bar chart (matplotlib)
 ├── dataset.py                 # Dataset base class + transformations (map/filter/zip/...)
 ├── irap_dataset.py            # IRAPDataset, make_bih_data, make_vietnam_data
 ├── inference_dataset.py       # InferenceImageDataset (label-free folder loader)

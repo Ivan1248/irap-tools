@@ -14,7 +14,11 @@ dependencies = [
 [project.optional-dependencies]
 torch = ["torch", "torchvision", "tqdm", "pillow", "opencv-python"]
 viewer = ["irap-data[torch]", "streamlit"]
+report = ["matplotlib"]
 test = ["pytest"]
+
+[project.scripts]
+irap-dataset-stats = "irap_data.dataset_report:main"
 
 [tool.setuptools.packages.find]
 include = ["irap_data*"]
