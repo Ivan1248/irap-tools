@@ -12,7 +12,9 @@ Writes (into <data_dir>/ directly):
     segment_id_to_data_paths_rel.json
     segment_id_to_road_data.json
     road_id_to_segment_id_sequence.json
-    attribute_metadata.json               (copy of _raw/attribute_metadata.json)
+    attribute_metadata.json               (copy of _raw/attribute_metadata.json with int
+                                           IRAP codes and without the misleading
+                                           attribute_irap_number_to_class_idx)
     unlabeled_segment_ids.json
     unlabeled_sequence_id_to_data.json    (sequence_id -> {segs, centroid}) for editor
     unlabeled_unlocated_segment_ids.json  (seg_ids from image folders with no
@@ -450,7 +452,14 @@ def main(argv: list[str] | None = None) -> int:
     # segment_id_to_road_data.json uses ints (see build_segment_id_to_road_data).
     # BihSequence inverts `attribute_value_to_irap_number` and looks up by the
     # int code, so the two sides must agree.
-    attr_meta_normalized = dict(attr_meta)
+    # `attribute_irap_number_to_class_idx` is dropped. Class indices are the value order of
+    # `attribute_value_to_irap_number` (irap_data.ClassVocabulary, and the original irap_gaim
+    # code, which deletes the field on loading), while this field numbers the classes in IRAP
+    # code order. The two differ for the attributes whose values are not in code order
+    # (both land-use sides and 'Pedestrian crossing - inspected road'), so decoding model
+    # outputs with the field would give the wrong classes.
+    attr_meta_normalized = {k: v for k, v in attr_meta.items()
+                            if k != "attribute_irap_number_to_class_idx"}
     attr_meta_normalized["attribute_value_to_irap_number"] = {
         attr: {value: int(code) for value, code in mapping.items()}
         for attr, mapping in attr_meta["attribute_value_to_irap_number"].items()

@@ -44,7 +44,7 @@ substantial changes.
 11. Splits: per-section assignment; this is the last step.
 12. RGB only.
 13. Image filenames: `f"{section}_seg{seg_id}.png"`. Confirmed.
-14. Attribute metadata: a pre-built `attribute_metadata.json` (with `attribute_to_idx` and `attribute_value_to_irap_number`) is supplied as input and copied verbatim into `IRAP_VIETNAM_METADATA/`. The pipeline validates that all Vietnam attribute columns and observed IRAP codes appear in it.
+14. Attribute metadata: a pre-built `attribute_metadata.json` (with `attribute_to_idx` and `attribute_value_to_irap_number`) is supplied as input and copied into `IRAP_VIETNAM_METADATA/`, with IRAP codes as ints and without `attribute_irap_number_to_class_idx`. That field numbers classes in IRAP-code order, which differs from the class indices (the value order of `attribute_value_to_irap_number`) for both land-use sides and 'Pedestrian crossing - inspected road', so it would decode model outputs wrongly. The pipeline validates that all Vietnam attribute columns and observed IRAP codes appear in it.
 15. Code space: use the full code space from the supplied `attribute_metadata.json`, not restricted to codes observed in Vietnam. Class indices then match BiH for shared attributes, so models can be evaluated across datasets without index remapping.
 
 ### Simplifications vs. BiH
@@ -330,7 +330,7 @@ Steps:
    directory; emit `segment_id_to_data_paths_rel.json`,
    `segment_id_to_road_data.json`, `road_id_to_segment_id_sequence.json`
    (with consecutiveness validation, §3.5), and copy the supplied
-   `attribute_metadata.json` verbatim. No image reading required;
+   `attribute_metadata.json` (see Decision 14). No image reading required;
    idempotent.
 3. **`split_editor.py`** – map GUI for assigning whole sequences to
    train/val/test by drawing boxes; writes `splits.json`. Run last so the
