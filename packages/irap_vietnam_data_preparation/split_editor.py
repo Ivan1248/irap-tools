@@ -3,7 +3,7 @@
 Requires Streamlit >= 1.35 (for on_select="rerun").
 
 Launch:
-    streamlit run irap_vietnam_data_preparation/split_editor.py -- <data_dir>
+    streamlit run split_editor.py -- <data_dir>
 
 Reads ``<data_dir>/{segment_id_to_road_data,road_id_to_segment_id_sequence}.json``;
 writes ``<data_dir>/splits.json``.
@@ -13,9 +13,9 @@ Interaction:
     2. Draw a rectangle on the map – all sequences whose centroid falls
        inside are assigned to the active split.
     3. Undo reverts the last assignment batch; Reset clears all.
-    4. Save writes splits.json (format documented in README.md, "Output format").
+    4. Save writes splits.json (format documented in README.md, "`splits.json` format").
 
-The sidebar reports class coverage per split: how many (attribute, IRAP code)
+The sidebar reports class coverage per split: how many (attribute, iRAP code)
 classes are absent, and how many fall short of a minimum number of *sequences*
 (not segments – consecutive segments of one road are near-duplicates). Classes
 too rare to appear in every split under any assignment are separated out, so
@@ -55,7 +55,7 @@ COLORS: dict[str, str] = {
     "none": "#BBBBBB",
 }
 
-# Class-coverage settings. A "class" is one (attribute, IRAP code) pair.
+# Class-coverage settings. A "class" is one (attribute, iRAP code) pair.
 
 # Support is counted in distinct *sequences*, not segments: consecutive 20 m
 # segments of one road carry near-identical attributes, so 500 segments of a
@@ -117,7 +117,7 @@ class Layer:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("data_dir", type=Path, help="IRAP_Vietnam dataset root.")
+    parser.add_argument("data_dir", type=Path, help="iRAP-Vietnam dataset root.")
     args = parser.parse_args()
     args.metadata_dir = layout.metadata_dir(args.data_dir)
     args.output = layout.splits_path(args.data_dir)
@@ -275,7 +275,7 @@ def load_class_names(metadata_dir: str, fingerprint: tuple) -> dict[tuple[str, i
 
 @dataclass
 class ClassCoverage:
-    """Per-split support for every (attribute, IRAP code) class in the data.
+    """Per-split support for every (attribute, iRAP code) class in the data.
 
     Support is measured in distinct sequences (see :data:`DEFAULT_MIN_SEQ`).
     Classes are partitioned by whether the current assignment can be blamed for
@@ -607,7 +607,7 @@ def _class_list_html(
 ) -> str:
     """Return a compact, scannable list of class descriptions.
 
-    Entries are escaped: IRAP value names routinely contain ``<`` and ``>``
+    Entries are escaped: iRAP value names routinely contain ``<`` and ``>``
     ("Grade = 0% to <2.5%", "Residential access <3"), which the sidebar would
     otherwise render as the start of a tag and swallow the rest of the line.
     """

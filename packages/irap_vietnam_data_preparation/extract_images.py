@@ -23,7 +23,7 @@ prompt.
 Requires ``unrar`` (preferred) or ``7z`` on the PATH.
 
 Usage:
-    python irap_vietnam_data_preparation/extract_images.py <data_dir>
+    python extract_images.py <data_dir>
 
 Reads ``<data_dir>/_raw/image_rars/*.rar``; writes nested images into
 ``<data_dir>/images/<video_dir>/``.
@@ -470,7 +470,7 @@ def _apply_missing_segments(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path,
-                        help="IRAP_Vietnam dataset root.")
+                        help="iRAP-Vietnam dataset root.")
     parser.add_argument("--ignore-duplicates", action="store_true",
                         help="Proceed when archives share post-strip paths "
                              "(first archive wins on extraction).")

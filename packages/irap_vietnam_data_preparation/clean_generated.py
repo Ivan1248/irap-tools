@@ -6,8 +6,7 @@ extraction step (``_raw/``) and its outputs (``FRAMES/`` and
 ``_work/FRAMES_duplicates/``) intact.
 
 Usage:
-    python irap_vietnam_data_preparation/clean_generated.py <data_dir>
-                                                            [--dry-run] [--yes]
+    python clean_generated.py <data_dir> [--dry-run] [--yes]
 """
 
 import argparse
@@ -39,7 +38,7 @@ def _targets(data_dir: Path) -> list[Path]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path,
-                        help="IRAP_Vietnam dataset root.")
+                        help="iRAP-Vietnam dataset root.")
     parser.add_argument("--dry-run", action="store_true",
                         help="List what would be removed without deleting.")
     parser.add_argument("--yes", action="store_true",

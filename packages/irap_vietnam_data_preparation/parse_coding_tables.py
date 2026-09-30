@@ -1,11 +1,11 @@
-"""Parse IRAP-Vietnam coding tables (per-segment iRAP attribute annotations) into a normalized per-segment table.
+"""Parse iRAP-Vietnam coding tables (per-segment iRAP attribute annotations) into a normalized per-segment table.
 
 Usage:
-    python irap_vietnam_data_preparation/parse_coding_tables.py <data_dir>
+    python parse_coding_tables.py <data_dir>
 
 Reads (under ``<data_dir>/_raw/``):
     coding-tables.zip                # re-extracted into _work/coding-tables/
-    attribute_metadata.json         # BiH-compatible: attribute_to_idx +
+    attribute_metadata.json         # BH-compatible: attribute_to_idx +
                                      # attribute_value_to_irap_number
 
 Writes (into ``<data_dir>/_work/``):
@@ -15,16 +15,16 @@ Writes (into ``<data_dir>/_work/``):
 Validation rules (see irap_vietnam_data_preparation/vietnam_data_preparation.md):
 
 - Header lookup is by name (case-insensitive after whitespace strip); column
-  order is not assumed. Table columns are expected to match the BiH attribute
+  order is not assumed. Table columns are expected to match the BH attribute
   metadata names directly.
 - Required scalar columns: Section, Distance, Length, Latitude start,
   Longitude start, Image Reference FPZ, Comments.
 - Required attribute columns: every key of attribute_to_idx in the supplied
   metadata, minus the entries listed in ``incompatible_attributes.json``
   (``ignored_from_bh``). Missing any remaining required column => fatal
-  error. Attributes whose Vietnam table header differs from the BiH name are
+  error. Attributes whose Vietnam table header differs from the BH name are
   resolved via the ``bh_to_table_attribute_name`` map in
-  ``incompatible_attributes.json`` (the output keeps the canonical BiH name).
+  ``incompatible_attributes.json`` (the output keeps the canonical BH name).
 - Files lacking the labeling columns entirely (Section + at least one
   attribute) are skipped as "non-coding files".
 - Rows are dropped (and counted) when:
@@ -39,7 +39,7 @@ Validation rules (see irap_vietnam_data_preparation/vietnam_data_preparation.md)
       attributes are missing and in how many kept rows is reported per file in
       the parse report (attributes with zero non-empty values across the whole
       file are stored as None — a distinct file-level concept),
-    * any attribute IRAP code is not in attribute_value_to_irap_number,
+    * any attribute iRAP code is not in attribute_value_to_irap_number,
     * the optional ``offset_distance_m`` column (distance in meters between the
       row's FPZ image coordinates and its annotation coordinates) is present,
       non-blank, and greater than MAX_ANNOT_LOC_OFFSET_M (rows whose annotation
@@ -148,10 +148,10 @@ def ordered_attribute_names(meta: T.Mapping[str, T.Any]) -> list[str]:
 def load_incompatible_attributes(script_dir: Path) -> tuple[list[str], dict[str, str]]:
     """Load the mapping file in the script dir.
 
-    Returns ``(ignored_from_bh, bh_to_table_attribute_name)``: the BiH attribute
+    Returns ``(ignored_from_bh, bh_to_table_attribute_name)``: the BH attribute
     names to exclude, and ``{bh_attribute_name: vietnam_table_column_name}`` used
     to resolve required columns whose Vietnam header differs from the canonical
-    BiH name (the output keeps the BiH name). Both are empty if the file or key
+    BH name (the output keeps the BH name). Both are empty if the file or key
     is absent.
     """
     path = script_dir / INCOMPATIBLE_ATTRIBUTES_FILE
@@ -254,7 +254,7 @@ def parse_int_code(cell: T.Any) -> int | None:
 
 
 def classify_road_volume(cell: T.Any) -> int | None:
-    """Map a raw intersecting road volume count to an IRAP code.
+    """Map a raw intersecting road volume count to an iRAP code.
 
     Codes match attribute_metadata.json:
         1: ≥15,000 vehicles
@@ -283,7 +283,7 @@ def classify_road_volume(cell: T.Any) -> int | None:
     return 7  # 0 vehicles – not applicable
 
 
-# Attributes whose table cells contain raw values (not IRAP codes) that need
+# Attributes whose table cells contain raw values (not iRAP codes) that need
 # classification into codes.  The classifier is called instead of
 # ``parse_int_code`` and the result is not validated against
 # ``valid_codes_per_attr`` (the classifier itself produces only valid codes).
@@ -335,9 +335,9 @@ def validate_columns(
 
     Header lookup is case-insensitive (after whitespace stripping). Attribute
     columns are looked up by their metadata name directly (table column names
-    are expected to match); when that fails, ``name_mapping`` (BiH name ->
+    are expected to match); when that fails, ``name_mapping`` (BH name ->
     Vietnam table header) provides a fallback so the result still keys on the
-    canonical BiH name.
+    canonical BH name.
 
     Raises ``ValueError`` if any required column is missing. The message lists
     missing required columns next to their closest header found in the file,
@@ -518,7 +518,7 @@ def process_file(
 
     Records are dicts with keys:
         section, distance, length, lat, lon, seg_id, comments, source_file,
-        and one entry per attribute (IRAP code as int).
+        and one entry per attribute (iRAP code as int).
 
     Mutates the per-file and total tallies in ``report`` for the parse report.
     """
@@ -886,7 +886,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 
     parser.add_argument("data_dir", type=Path,
-                        help="IRAP_Vietnam dataset root.")
+                        help="iRAP-Vietnam dataset root.")
     parser.add_argument(
         "--drop-rows-missing-attributes", action="store_true",
         help="Drop rows with any blank attribute cell (old behaviour). "

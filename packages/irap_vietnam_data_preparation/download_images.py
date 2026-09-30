@@ -1,11 +1,11 @@
 """Download all files from a Seafile public share link.
 
-Defaults to the IRAP Vietnam dataset share. Supports resume via HTTP Range and
+Defaults to the iRAP-Vietnam dataset share. Supports resume via HTTP Range and
 skips files whose local size already matches the remote size. Recurses into
 subdirectories.
 
 Usage:
-    python irap_vietnam_data_preparation/download_images.py <data_dir>
+    python download_images.py <data_dir>
 
 Writes to ``<data_dir>/_raw/image_rars/``.
 """
@@ -103,7 +103,7 @@ def download_file(server: str, token: str, remote_path: str, dest: Path,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path,
-                        help="IRAP_Vietnam dataset root.")
+                        help="iRAP-Vietnam dataset root.")
     args = parser.parse_args(argv)
 
     server, token = parse_share_url(DEFAULT_SHARE_URL)

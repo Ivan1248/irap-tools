@@ -1,19 +1,19 @@
-# IRAP-Vietnam data preparation
+# iRAP-Vietnam data preparation
 
 Version: 2026-05-07
 
-End-to-end procedure for turning the raw IRAP-Vietnam release (images on Seafile
+End-to-end procedure for turning the raw iRAP-Vietnam release (images on Seafile
 + iRAP coding tables – per-segment attribute annotations – in
 `coding-tables.zip`) into a dataset usable for training and evaluation through
 `vidlu_irap_gaim/data/bih_dataset.py`.
 
-The goal is to mirror the **IRAP-BiH** metadata layout closely enough that the
+The goal is to mirror the **iRAP-BH** metadata layout closely enough that the
 existing `BihSequence` dataset (or a thin sibling class) can load it without
 substantial changes.
 
 ## Decisions
 
-1. Dataset name: **`IRAP-Vietnam`** (data dir: `IRAP_VIETNAM`, metadata dir:
+1. Dataset name: **`iRAP-Vietnam`** (data dir: `IRAP_VIETNAM`, metadata dir:
    `IRAP_VIETNAM_METADATA`).
 2. `coding-tables.zip` is downloaded manually from Google Drive for now;
    automated download is out of scope.
@@ -35,8 +35,8 @@ substantial changes.
 7. Column order is **not guaranteed**; identify columns by header name.
    **Error** if any required column (or any expected attribute column)
    is missing.
-8. Text labels per IRAP code are provided via the supplied `attribute_metadata.json` (see Decision 14).
-9. Drop rows with any missing required attribute (BiH semantics).
+8. Text labels per iRAP code are provided via the supplied `attribute_metadata.json` (see Decision 14).
+9. Drop rows with any missing required attribute (BH semantics).
 10. `road_id` = section string, except for sections containing a continuity
     violation (Decision 3) which become `<section>__part0`, `<section>__part1`,
     …. `segment_id_to_road_data.json` keeps the original section string per
@@ -44,10 +44,10 @@ substantial changes.
 11. Splits: per-section assignment; this is the last step.
 12. RGB only.
 13. Image filenames: `f"{section}_seg{seg_id}.png"`. Confirmed.
-14. Attribute metadata: a pre-built `attribute_metadata.json` (with `attribute_to_idx` and `attribute_value_to_irap_number`) is supplied as input and copied into `IRAP_VIETNAM_METADATA/`, with IRAP codes as ints and without `attribute_irap_number_to_class_idx`. That field numbers classes in IRAP-code order, which differs from the class indices (the value order of `attribute_value_to_irap_number`) for both land-use sides and 'Pedestrian crossing - inspected road', so it would decode model outputs wrongly. The pipeline validates that all Vietnam attribute columns and observed IRAP codes appear in it.
-15. Code space: use the full code space from the supplied `attribute_metadata.json`, not restricted to codes observed in Vietnam. Class indices then match BiH for shared attributes, so models can be evaluated across datasets without index remapping.
+14. Attribute metadata: a pre-built `attribute_metadata.json` (with `attribute_to_idx` and `attribute_value_to_irap_number`) is supplied as input and copied into `IRAP_VIETNAM_METADATA/`, with iRAP codes as ints and without `attribute_irap_number_to_class_idx`. That field numbers classes in iRAP-code order, which differs from the class indices (the value order of `attribute_value_to_irap_number`) for both land-use sides and 'Pedestrian crossing - inspected road', so it would decode model outputs wrongly. The pipeline validates that all Vietnam attribute columns and observed iRAP codes appear in it.
+15. Code space: use the full code space from the supplied `attribute_metadata.json`, not restricted to codes observed in Vietnam. Class indices then match BH for shared attributes, so models can be evaluated across datasets without index remapping.
 
-### Simplifications vs. BiH
+### Simplifications vs. BH
 
 - Skip `seg_to_res/{train,val,test}.pickle` and the N-context filter; load
   with `use_ncontext_filter=False`.
@@ -56,7 +56,7 @@ substantial changes.
 
 ---
 
-## 1. Target dataset layout (BiH-compatible)
+## 1. Target dataset layout (BH-compatible)
 
 `bih_dataset.py:BihSequence` reads from two sibling directories:
 
@@ -65,7 +65,7 @@ substantial changes.
 <IRAP_HOME>/IRAP_VIETNAM_METADATA/    # JSON metadata (sibling of data root)
 ```
 
-The metadata directory must contain the following files (names match BiH):
+The metadata directory must contain the following files (names match BH):
 
 - **`splits.json`** – `{<split_name>: [seg_id, ...]}` with segment ids as
   strings. Labeled keys: `train`, `val`, `test`. Optional unlabeled keys
@@ -73,10 +73,10 @@ The metadata directory must contain the following files (names match BiH):
   `unlabeled_val`, `unlabeled_test`. An additional `unlabeled_unlocated` key is
   auto-populated from `unlabeled_unlocated_segment_ids.json` (unlabeled segments
   from recordings with no labeled siblings, so no map coordinate is
-  derivable). See the Stage 3c "Output format" section in
+  derivable). See "`splits.json` format" in
   [`README.md`](README.md) for details.
 - **`segment_id_to_data_paths_rel.json`** – `{seg_id: {"rgb": "<rel/path.png>"}}`
-  with paths relative to the data root. BiH also has `"depth"`; we will likely
+  with paths relative to the data root. BH also has `"depth"`; we will likely
   omit it (RGB-only release).
 - **`segment_id_to_road_data.json`** – `{seg_id: {"required_attributes":
   {attr_name: irap_code, ...}, ...}}`. Only `required_attributes` is consumed
@@ -88,7 +88,7 @@ The metadata directory must contain the following files (names match BiH):
     `BihSequence` enumerates the keys of each inner dict to assign class
     indices (`enumerate(... .keys())`), so the **insertion order** of value
     labels defines the class index order. We will populate `value_label` with
-    the human-readable IRAP label (see Q14 for the source of these labels).
+    the human-readable iRAP label (see Q14 for the source of these labels).
 - **`road_id_to_segment_id_sequence.json`** – `{road_id: [seg_id, seg_id, ...]}`,
   ordered along the road. Used for context-window construction (offsets like
   `(0, -1, -4)`) and for N-context filtering.
@@ -112,7 +112,7 @@ Module: `irap_vietnam_data_preparation/download_images.py`
 - Resumes via HTTP `Range`; skips files where local size == remote size.
 - CLI: `--share-url`, `--out`, `--password`, `--dry-run`.
 
-Default share is the IRAP-Vietnam release, which contains 7 RAR archives
+Default share is the iRAP-Vietnam release, which contains 7 RAR archives
 (`split1.rar` … `split7.rar`, ~110 GB total) plus an `.xlsx` index and
 instructions. `coding-tables.zip` is downloaded **manually from Google
 Drive** (Decision 2); we don't automate that.
@@ -155,7 +155,7 @@ segment. Each table has many columns; we use a fixed subset:
 | Latitude start, Longitude start      | For geographic split assignment.                             |
 | Image Reference FPZ                  | Markdown-link cell; extract the trailing integer = `seg_id`. |
 | Comments                             | Kept for traceability (free-text).                            |
-| `Carriageway label` … *up to but not including* `Additional comments` | IRAP attribute values (numeric IRAP codes). Some columns may be missing codes. |
+| `Carriageway label` … *up to but not including* `Additional comments` | iRAP attribute values (numeric iRAP codes). Some columns may be missing codes. |
 | Additional comments                  | Ignored.                                                     |
 
 ### Step 3.1 – Collect labeled rows
@@ -206,11 +206,11 @@ the Vietnam data against it:
   `attribute_value_to_irap_number[attr]`, matching `BihSequence`. Use the
   **full code space** from the supplied file (Decision 15) – codes that
   don't occur in Vietnam still get a class index, so the index space is
-  shared with BiH.
-- For each row, look up each attribute's IRAP code (numeric in the XLS
+  shared with BH.
+- For each row, look up each attribute's iRAP code (numeric in the XLS
   cell) and confirm it appears in
   `attribute_value_to_irap_number[attr].values()`; warn-and-drop the row
-  on unknown codes (matches Decision 9 / BiH semantics).
+  on unknown codes (matches Decision 9 / BH semantics).
 - The validated file is **copied into `IRAP_VIETNAM_METADATA/` verbatim**.
 
 ### Step 3.4 – Build `segment_id_to_road_data.json`
@@ -236,7 +236,7 @@ For each kept segment:
 ```
 
 Rows where any required attribute is missing or `None`/blank get dropped
-(matches BiH semantics in `bih_dataset.py:356-377`).
+(matches BH semantics in `bih_dataset.py:356-377`).
 
 ### Step 3.5 – Build `road_id_to_segment_id_sequence.json`
 
@@ -280,7 +280,7 @@ work.
     road_id_to_segment_id_sequence.json
 ```
 
-The data root is `<IRAP_HOME>/IRAP_VIETNAM`; metadata sibling matches BiH's
+The data root is `<IRAP_HOME>/IRAP_VIETNAM`; metadata sibling matches BH's
 `<root>_METADATA` convention used in `bih_dataset.py:308`.
 
 ---
@@ -290,7 +290,7 @@ The data root is `<IRAP_HOME>/IRAP_VIETNAM`; metadata sibling matches BiH's
 Reuse `BihSequence` directly: the class derives the metadata dir from the
 data dir name (`<root>_METADATA`), and integer-arithmetic context resolution
 works because Vietnam segments are consecutive (Decision 3). Add a thin
-factory `make_vietnam_data` mirroring `make_bih_data` but defaulting to
+factory `make_vietnam_data` mirroring `make_bh_data` but defaulting to
 `use_ncontext_filter=False` and the Vietnam paths.
 
 ---

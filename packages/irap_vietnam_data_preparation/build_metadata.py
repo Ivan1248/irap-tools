@@ -1,7 +1,7 @@
-"""Build the IRAP-Vietnam metadata directory from parsed coding tables (per-segment iRAP attribute annotations).
+"""Build the iRAP-Vietnam metadata directory from parsed coding tables (per-segment iRAP attribute annotations).
 
 Usage:
-    python irap_vietnam_data_preparation/build_metadata.py <data_dir>
+    python build_metadata.py <data_dir>
 
 Reads (under <data_dir>):
     _raw/attribute_metadata.json
@@ -13,7 +13,7 @@ Writes (into <data_dir>/ directly):
     segment_id_to_road_data.json
     road_id_to_segment_id_sequence.json
     attribute_metadata.json               (copy of _raw/attribute_metadata.json with int
-                                           IRAP codes and without the misleading
+                                           iRAP codes and without the misleading
                                            attribute_irap_number_to_class_idx)
     unlabeled_segment_ids.json
     unlabeled_sequence_id_to_data.json    (sequence_id -> {segs, centroid}) for editor
@@ -338,7 +338,7 @@ def interleave_unlabeled_into_road_sequences(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path,
-                        help="IRAP_Vietnam dataset root.")
+                        help="iRAP-Vietnam dataset root.")
     args = parser.parse_args(argv)
 
     data_dir: Path = args.data_dir
@@ -498,14 +498,14 @@ def main(argv: list[str] | None = None) -> int:
     _dump(layout.segment_id_to_data_paths_rel_path(data_dir), seg_to_paths)
     _dump(layout.segment_id_to_road_data_path(data_dir), seg_to_road)
     _dump(layout.road_id_to_segment_id_sequence_path(data_dir), road_to_seq)
-    # Normalize IRAP codes to int when writing the metadata. The input JSON
+    # Normalize iRAP codes to int when writing the metadata. The input JSON
     # encodes them as strings, but `required_attributes` in
     # segment_id_to_road_data.json uses ints (see build_segment_id_to_road_data).
     # BihSequence inverts `attribute_value_to_irap_number` and looks up by the
     # int code, so the two sides must agree.
     # `attribute_irap_number_to_class_idx` is dropped. Class indices are the value order of
     # `attribute_value_to_irap_number` (irap_data.ClassVocabulary, and the original irap_gaim
-    # code, which deletes the field on loading), while this field numbers the classes in IRAP
+    # code, which deletes the field on loading), while this field numbers the classes in iRAP
     # code order. The two differ for the attributes whose values are not in code order
     # (both land-use sides and 'Pedestrian crossing - inspected road'), so decoding model
     # outputs with the field would give the wrong classes.

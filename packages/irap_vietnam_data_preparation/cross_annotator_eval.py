@@ -1,7 +1,7 @@
 """Cross-annotator evaluation of per-attribute precision, recall and F1.
 
 Usage:
-    python irap_vietnam_data_preparation/cross_annotator_eval.py <data_dir>
+    python cross_annotator_eval.py <data_dir>
 
 Reads (under ``<data_dir>/_raw/``, exactly like parse_coding_tables.py):
     coding-tables.zip                # re-extracted into _work/coding-tables/
@@ -255,7 +255,7 @@ def shared_segment_ranges(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("data_dir", type=Path, help="IRAP_Vietnam dataset root.")
+    parser.add_argument("data_dir", type=Path, help="iRAP-Vietnam dataset root.")
     parser.add_argument(
         "--min-annotators", type=int, default=2,
         help="Only evaluate segments coded by at least this many annotators "
