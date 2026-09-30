@@ -21,4 +21,4 @@ test = ["pytest"]
 irap-dataset-stats = "irap_data.dataset_report:main"
 
 [tool.setuptools.packages.find]
-include = ["irap_data*"]
+where = ["src"]
