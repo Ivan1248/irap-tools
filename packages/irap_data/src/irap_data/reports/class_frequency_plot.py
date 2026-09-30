@@ -11,33 +11,29 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 
-from .dataset_statistics import AttributeDistribution
+from .statistics import AttributeDistribution
 
 #: Alternating shades of the attribute groups, so that group boundaries are visible without
 #: relying on colour vision.
 _GROUP_COLORS = ("#4878a8", "#a0c4e4")
 _ABSENT_COLOR = "#c44e52"
 
-#: Horizontal space for the attribute names, left of the class tick labels. Class names are drawn
-#: at 6 pt, so this leaves space for approximately 25 characters of them.
-_LABEL_GUTTER_PT = 76.0
-
 
 def _get_bar_positions(
     distributions: T.Sequence[AttributeDistribution],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """The y positions of the class bars, one unit apart with a gap of one unit between
-    attributes.
+    """The y positions of the class bars, one unit apart, with a row for the name of each
+    attribute above its bars.
 
     Returns:
-        `(positions, group_starts)`: the position of each class bar and of the first bar of each
+        `(positions, header_positions)`: the position of each class bar and of the name of each
         attribute.
     """
     sizes = np.array([d.num_classes for d in distributions])
-    group_starts = np.concatenate([[0], np.cumsum(sizes[:-1] + 1)])
-    positions = np.concatenate([start + np.arange(size)
-                                for start, size in zip(group_starts, sizes)])
-    return positions, group_starts
+    header_positions = np.concatenate([[0], np.cumsum(sizes[:-1] + 1)])
+    positions = np.concatenate([start + 1 + np.arange(size)
+                                for start, size in zip(header_positions, sizes)])
+    return positions, header_positions
 
 
 def plot_class_frequencies(
@@ -66,7 +62,7 @@ def plot_class_frequencies(
     if not distributions:
         raise ValueError("No labeled attributes to plot.")
 
-    positions, group_starts = _get_bar_positions(distributions)
+    positions, header_positions = _get_bar_positions(distributions)
     values = np.concatenate([d.labeled_shares if normalize else d.num_segments
                              for d in distributions]).astype(float)
     labels = [value for d in distributions for value in d.values]
@@ -77,38 +73,37 @@ def plot_class_frequencies(
     absent_bar_length = positive.min() / 4 if log else values.max() / 200
     drawn = np.where(values > 0, values, absent_bar_length)
 
-    height = max(4.0, 0.16 * len(values) + 2.0)
-    fig = Figure(figsize=(12, height))
+    num_rows = len(values) + len(distributions)
+    height = max(4.0, 0.16 * num_rows + 1.2)
+    # The constrained layout sizes the left margin to the longest class or attribute name.
+    fig = Figure(figsize=(12, height), layout="constrained")
     ax = fig.subplots()
     ax.barh(positions, drawn, height=0.8, color=colors)
     if log:
         ax.set_xscale("log")
         ax.set_xlim(left=absent_bar_length / 3)
 
-    ax.set_yticks(positions, labels, fontsize=6)
-    ax.invert_yaxis()  # The first attribute is at the top.
+    # The attribute names are tick labels of their own rows, so that they cannot overlap the
+    # class names, whatever their length.
+    ticks = np.concatenate([header_positions, positions])
+    ax.set_yticks(ticks, [d.attribute for d in distributions] + labels, fontsize=6)
+    for label in ax.get_yticklabels()[:len(distributions)]:
+        label.set(fontsize=7, fontweight="bold")
+    ax.tick_params(axis="y", length=0)
+    ax.set_ylim(num_rows - 0.5, -0.5)  # The first attribute is at the top, without margins.
     ax.set_xlabel("share of the labeled segments of the attribute" if normalize
                   else "number of segments")
     ax.set_title(title)
     ax.grid(axis="x", which="both", alpha=0.25, linewidth=0.5)
     ax.set_axisbelow(True)
-
-    # The attribute names are offset in points rather than in axes fractions, so that they stay
-    # clear of the class tick labels whatever the figure size.
-    for start, d in zip(group_starts, distributions):
-        ax.annotate(d.attribute, xy=(0, start + (d.num_classes - 1) / 2),
-                    xycoords=ax.get_yaxis_transform(), xytext=(-_LABEL_GUTTER_PT, 0),
-                    textcoords="offset points", ha="right", va="center",
-                    fontsize=7, fontweight="bold")
-    for start, d in zip(group_starts[:-1], distributions[:-1]):
-        ax.axhline(start + d.num_classes - 0.1, color="0.85", linewidth=0.6)
+    for position in header_positions[1:]:
+        ax.axhline(position - 0.5, color="0.85", linewidth=0.6)
 
     if (values == 0).any():
-        # A proxy patch, as the bars do not give the legend an artist of the absent colour.
-        ax.legend(handles=[Patch(color=_ABSENT_COLOR, label="no segment")],
-                  loc="lower right", fontsize=7)
-
-    fig.subplots_adjust(left=0.34, right=0.98, top=1 - 0.55 / height, bottom=0.55 / height)
+        # A proxy patch, as the bars do not give the legend an artist of the absent colour. It
+        # is below the axes, where it covers no bar.
+        fig.legend(handles=[Patch(color=_ABSENT_COLOR, label="no segment")],
+                   loc="outside lower right", fontsize=7)
     return fig
 
 

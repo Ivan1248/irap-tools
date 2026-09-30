@@ -13,50 +13,17 @@ from irap_data.metadata import (
     DATASET_PRESETS,
     IGNORE_LABEL_INDEX,
     ClassVocabulary,
+    IRAPMetadata,
     MetaFiles,
     compute_class_occurrence_counts,
     compute_num_segments_per_class,
     compute_segment_context_ids,
     compute_segment_labels,
     get_segment_location,
-    load_irap_metadata,
     select_preset_split_segments,
     select_split_segments,
     to_irap_code,
 )
-
-ATTRS = ("A", "B")
-# BiH stores codes as strings, and class order is the value order, not the code order.
-ATTRIBUTE_METADATA = {
-    "attribute_to_idx": {"B": 1, "A": 0},
-    "attribute_value_to_irap_number": {"A": {"a20": "20", "a10": "10"},
-                                       "B": {"b1": 1, "b2": 2, "b3": 3}},
-}
-
-
-def _write_json(path: Path, obj) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj), encoding="utf-8")
-
-
-@pytest.fixture
-def metadata_dir(tmp_path: Path) -> Path:
-    """Two roads: r0 = S0..S5 (S3 has no image), r1 = T0..T1. S4 misses the code of B."""
-    road_to_seq = {"r0": [f"S{i}" for i in range(6)], "r1": ["T0", "T1"]}
-    all_segments = [s for seq in road_to_seq.values() for s in seq]
-    codes = {sid: {"A": 10, "B": 2} for sid in all_segments}
-    codes["S1"] = {"A": "20", "B": "3"}
-    codes["S4"] = {"A": 10, "B": -1}
-    _write_json(tmp_path / MetaFiles.ATTRIBUTE_METADATA, ATTRIBUTE_METADATA)
-    _write_json(tmp_path / MetaFiles.SEGMENT_ID_TO_DATA_PATHS,
-                {sid: {"rgb": f"{sid}.png"} for sid in all_segments if sid != "S3"})
-    _write_json(tmp_path / MetaFiles.SEGMENT_ID_TO_ROAD_DATA, {
-        sid: {"section": "r0", "distance_km": 0.02 * i, "length_km": 0.02, "lat": 1.0,
-              "lon": 2.0, "required_attributes": codes[sid]}
-        for i, sid in enumerate(all_segments)})
-    _write_json(tmp_path / MetaFiles.ROAD_ID_TO_SEGMENT_ID_SEQUENCE, road_to_seq)
-    _write_json(tmp_path / MetaFiles.SPLITS, {"val": all_segments, "unlabeled_val": []})
-    return tmp_path
 
 
 def test_to_irap_code():
@@ -77,22 +44,9 @@ def test_vocabulary_equality_depends_on_order():
         hash(vocabulary)
 
 
-def test_metadata_caches_the_sequence_index(metadata_dir):
-    metadata = load_irap_metadata(metadata_dir)
-    assert metadata.sequence_index["S2"] == ("r0", 2)
-    assert metadata.sequence_index is metadata.sequence_index
-
-
-def test_torch_names_are_in_all():
-    import irap_data
-
-    assert {"IRAPDataset", "make_bih_data", "ClassVocabulary"} <= set(irap_data.__all__)
-    assert not {"importlib", "T", "metadata"} & set(irap_data.__all__)
-
-
-def test_vocabulary_follows_attribute_index_and_value_order():
-    vocabulary = ClassVocabulary.from_attribute_metadata(ATTRIBUTE_METADATA)
-    assert vocabulary.attribute_names == ATTRS
+def test_vocabulary_follows_attribute_index_and_value_order(metadata):
+    vocabulary = metadata.vocabulary
+    assert vocabulary.attribute_names == ("A", "B")
     assert vocabulary.get_irap_codes("A") == (20, 10)
     assert vocabulary.get_values("A") == ("a20", "a10")
     assert vocabulary.class_counts == (2, 3)
@@ -107,8 +61,7 @@ def test_vocabulary_rejects_duplicate_codes():
         ClassVocabulary({"A": {"x": 1, "y": 1}})
 
 
-def test_compute_segment_labels_maps_codes_and_handles_missing(metadata_dir):
-    metadata = load_irap_metadata(metadata_dir)
+def test_compute_segment_labels_maps_codes_and_handles_missing(metadata):
     segment_ids = ["S0", "S1", "S4", "unknown"]
     loose = compute_segment_labels(metadata.vocabulary, metadata.segment_id_to_road_data,
                                    segment_ids, allow_missing_attributes=True)
@@ -129,10 +82,14 @@ def test_class_counting_excludes_the_ignore_label():
                            attr_to_value_to_class_idx={"A": {"x": 0, "y": 1}})
     with pytest.raises(ValueError, match="Attribute 'A'"):
         compute_class_occurrence_counts(info)
+    info.segment_id_to_labels["s1"] = [IGNORE_LABEL_INDEX]
+    assert compute_class_occurrence_counts(info)["A"].tolist() == [0, 1]
+    # s2 has labels but is not an example, e.g. for lack of a complete context window.
+    assert compute_class_occurrence_counts(
+        info, segment_ids=list(info.segment_id_to_labels))["A"].tolist() == [1, 1]
 
 
-def test_context_stays_on_the_road_and_needs_images(metadata_dir):
-    metadata = load_irap_metadata(metadata_dir)
+def test_context_stays_on_the_road_and_needs_images(metadata):
     context = compute_segment_context_ids(
         metadata.road_id_to_segment_id_sequence, ["S0", "S1", "S2", "S4", "S5", "T0", "T1"],
         context_offsets=(0, -1), available_segment_ids=metadata.segment_id_to_data_paths_rel)
@@ -141,8 +98,7 @@ def test_context_stays_on_the_road_and_needs_images(metadata_dir):
                        "T1": ("T1", "T0")}
 
 
-def test_select_split_segments(metadata_dir):
-    metadata = load_irap_metadata(metadata_dir)
+def test_select_split_segments(metadata):
     selection = select_split_segments(metadata, "val", context_offsets=(0, -1),
                                       allow_missing_attributes=True)
     assert selection.segment_ids == ("S1", "S2", "S5", "T1")
@@ -156,8 +112,7 @@ def test_select_split_segments(metadata_dir):
                               allow_missing_attributes=True)
 
 
-def test_select_preset_split_segments_uses_reference_offsets(metadata_dir):
-    metadata = load_irap_metadata(metadata_dir)
+def test_select_preset_split_segments_uses_reference_offsets(metadata):
     # The -4..0 Vietnam reference window of S4 and S5 includes S3, which has no image, and r1 is
     # too short.
     assert select_preset_split_segments(metadata, "vietnam", "val").segment_ids == ()
@@ -167,11 +122,10 @@ def test_select_preset_split_segments_uses_reference_offsets(metadata_dir):
         select_preset_split_segments(metadata, "atlantis", "val")
 
 
-def test_select_split_segments_matches_irap_dataset(metadata_dir):
+def test_select_split_segments_matches_irap_dataset(metadata_dir, metadata):
     pytest.importorskip("torch")
     from irap_data import IRAPDataset
 
-    metadata = load_irap_metadata(metadata_dir)
     for offsets in [(0,), (0, -1), (1, 0)]:
         dataset = IRAPDataset(metadata_dir / "images", "val", metadata_dir=metadata_dir,
                               context_offsets=offsets, allow_missing_attributes=True)
@@ -191,16 +145,40 @@ def test_dataset_presets_cover_the_dataset_factories():
 def test_get_segment_location_reads_both_layouts():
     vietnam = get_segment_location({"section": "s", "distance_km": 0.04, "length_km": 0.02,
                                     "lat": 1.5, "lon": 2.5})
-    bih = get_segment_location({"metadata": {"Section": "s", "Distance": "0.04",
-                                             "Length": "0.02", "Latitude": "1.5",
-                                             "Longitude": "2.5"}})
-    assert vietnam == bih
+    bh = get_segment_location({"metadata": {"Section": "s", "Distance": "0.04",
+                                            "Length": "0.02", "Latitude": "1.5",
+                                            "Longitude": "2.5"}})
+    assert vietnam == bh
     assert vietnam.distance_m == pytest.approx(40.0)
     with pytest.raises(ValueError, match="location layout"):
         get_segment_location({"required_attributes": {}})
 
 
+def test_segment_coordinates_interpolate_between_located_segments(tmp_path: Path):
+    def to_road_data(lat, lon):
+        return {"section": "s", "distance_km": 0.0, "length_km": 0.02, "lat": lat, "lon": lon}
+
+    (tmp_path / MetaFiles.UNLABELED_SEGMENT_ID_TO_LOCATION).write_text(json.dumps(
+        {"u5": {"lat": 6.0, "lon": 3.0}, "v": {"lat": 7.0, "lon": 8.0}}), encoding="utf-8")
+    metadata = IRAPMetadata(
+        metadata_dir=tmp_path, vocabulary=ClassVocabulary({"A": {"a": 1}}), splits={},
+        segment_id_to_data_paths_rel={},
+        segment_id_to_road_data={"a": to_road_data(0.0, 0.0), "b": to_road_data(3.0, 6.0),
+                                 "c": to_road_data(9.0, 9.0)},
+        road_id_to_segment_id_sequence={"r": ["u0", "a", "u1", "u2", "b", "u3", "u4", "u5"]})
+    coordinates = metadata.segment_coordinates
+    # u0 is before the located segments of the road, and c and v are on no road.
+    assert set(coordinates) == {"a", "u1", "u2", "b", "u3", "u4", "u5", "c", "v"}
+    assert coordinates["u1"] == pytest.approx((1.0, 2.0))
+    assert coordinates["u2"] == pytest.approx((2.0, 4.0))
+    assert coordinates["u4"] == pytest.approx((5.0, 4.0))
+    assert coordinates["u5"] == (6.0, 3.0)
+    assert coordinates["c"] == (9.0, 9.0)
+    assert coordinates["v"] == (7.0, 8.0)
+
+
 def test_metadata_api_does_not_import_torch():
-    code = ("import sys, irap_data, irap_data.metadata; "
-            "sys.exit(int('torch' in sys.modules))")
+    code = ("import sys, irap_data, irap_data.metadata, irap_data.reports.statistics, "
+            "irap_data.reports.statistics_report; "
+            "sys.exit(int('torch' in sys.modules or 'matplotlib' in sys.modules))")
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0

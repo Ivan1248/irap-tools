@@ -1,5 +1,6 @@
 from pathlib import Path
 import typing as T
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,22 +9,13 @@ import torch
 from .dataset import Dataset
 from .lazy_dict import LazyDict
 from .image_utils import load_image_cv2, center_crop, hwc_to_chw_float_tensor
-from .metadata import (  # noqa: F401 – re-exported for `from irap_data.irap_dataset import …`
+from .metadata import (
     DATASET_PRESETS,
-    IGNORE_LABEL_INDEX,
     IRAPMetadata,
-    MetaFiles,
-    compute_class_occurrence_counts,
-    compute_label_matrix,
-    get_bih_class_counts,
-    get_class_counts,
     get_default_irap_paths,
-    index_road_sequences,
     is_unlabeled_split,
-    load_attribute_metadata,
     load_irap_metadata,
     load_ncontext_segment_ids,
-    resolve_datasets_root,
     resolve_irap_paths,
     select_split_segments,
 )
@@ -77,13 +69,13 @@ def make_irap_data(
     metadata = load_irap_metadata(metadata_dir)
 
     # Unlabeled subsets (`unlabeled_train`, `unlabeled_val`, ...) appear only when the prep
-    # pipeline wrote them; iterating the file rather than a hardcoded tuple makes those splits
+    # pipeline wrote them. Iterating the file rather than a hardcoded tuple makes those splits
     # available transparently.
     split_names = list(metadata.splits)
 
     # Load segment ID filter from precomputed results if requested.
     # The pickle files only cover labeled segments, so this filter is applied
-    # to labeled subsets only; unlabeled subsets skip it.
+    # to labeled subsets only. Unlabeled subsets skip it.
     if use_ncontext_filter and ncontext_segment_id_subset is None:
         ncontext_segment_id_subset = (
             metadata.ncontext_segment_ids if seg_to_res_path is None
@@ -93,7 +85,7 @@ def make_irap_data(
     if transforms is None:
         target_wh = (int(input_dim_rgb[0]), int(input_dim_rgb[1]))
         per_kind: dict[str, T.Callable] = {}
-        # Photometric jittering is handled in TrainerConfig; keep loading deterministic here.
+        # Photometric jittering is handled in TrainerConfig, so loading is deterministic.
         per_kind["rgb"] = lambda img, _twh=target_wh: hwc_to_chw_float_tensor(center_crop(img, _twh))
         transforms = {split: per_kind for split in split_names}
 
@@ -116,19 +108,19 @@ def make_irap_data(
     return LazyDict(out)  # Not (yet) lazy actually. Used only for attribute access syntax.
 
 
-def make_bih_data(
+def make_bh_data(
     *,
     dataset_dir: str | Path | None = None,
     metadata_dir: str | Path | None = None,
-    use_ncontext_filter: bool = DATASET_PRESETS["bih"].use_ncontext_filter,
-    allow_missing_attributes: bool = DATASET_PRESETS["bih"].allow_missing_attributes,
+    use_ncontext_filter: bool = DATASET_PRESETS["bh"].use_ncontext_filter,
+    allow_missing_attributes: bool = DATASET_PRESETS["bh"].allow_missing_attributes,
     **kwargs,
 ):
-    """Builds IRAP-BiH dataset splits.
+    """Builds IRAP-BH dataset splits.
 
     Convenience wrapper around `make_irap_data` with default directories resolved
     from `IRAP_HOME` (`IRAP_BIH` and `IRAP_BIH_METADATA`) and the defaults of
-    `DATASET_PRESETS["bih"]`.
+    `DATASET_PRESETS["bh"]`.
     """
     dataset_dir, metadata_dir = resolve_irap_paths(
         dataset_dir=dataset_dir, metadata_dir=metadata_dir
@@ -138,14 +130,22 @@ def make_bih_data(
         metadata_dir=metadata_dir,
         use_ncontext_filter=use_ncontext_filter,
         allow_missing_attributes=allow_missing_attributes,
-        dataset_name="bih",
+        dataset_name="bh",
         **kwargs,
     )
+
+
+def make_bih_data(**kwargs):
+    """Deprecated: use `make_bh_data`."""
+    warnings.warn("make_bih_data is deprecated. Use make_bh_data.", DeprecationWarning,
+                  stacklevel=2)
+    return make_bh_data(**kwargs)
 
 
 def make_vietnam_data(
     *,
     dataset_dir: str | Path | None = None,
+    metadata_dir: str | Path | None = None,
     use_ncontext_filter: bool = DATASET_PRESETS["vietnam"].use_ncontext_filter,
     allow_missing_attributes: bool = DATASET_PRESETS["vietnam"].allow_missing_attributes,
     **kwargs,
@@ -158,6 +158,8 @@ def make_vietnam_data(
 
     Args:
         dataset_dir: Dataset root directory. If None, resolved from environment.
+        metadata_dir: None or `dataset_dir`, as IRAP-Vietnam keeps its metadata in the dataset
+            directory. It is a parameter for the common interface of `IRAP_DATASET_FACTORIES`.
         use_ncontext_filter: Whether to apply N-context filtering.
         allow_missing_attributes: Whether to retain segments with missing attribute codes
             by assigning `IGNORE_LABEL_INDEX`.
@@ -166,13 +168,12 @@ def make_vietnam_data(
     Returns:
         LazyDict mapping split names to `IRAPDataset` instances.
     """
-    if kwargs.pop("metadata_dir", None) != dataset_dir:
+    if dataset_dir is None:
+        dataset_dir = get_default_irap_paths("vietnam")[0]
+    if metadata_dir is not None and Path(metadata_dir) != Path(dataset_dir):
         raise ValueError(
             "metadata_dir should not be passed explicitly or should be the same as dataset_dir"
         )
-
-    if dataset_dir is None:
-        dataset_dir = get_default_irap_paths("vietnam")[0]
 
     data = make_irap_data(
         dataset_dir=dataset_dir,
@@ -193,13 +194,13 @@ def make_vietnam_data(
 # Registry of IRAP release presets. Single source of truth for the dataset-name
 # strings used by CLI tools (vlm_inference, agent_classify, ...).
 IRAP_DATASET_FACTORIES = {
-    "bih": make_bih_data,
+    "bh": make_bh_data,
     "vietnam": make_vietnam_data,
 }
 
 
 def make_irap_data_by_name(name: str, **kwargs):
-    """Builds an IRAP dataset dict by release name (``"bih"`` / ``"vietnam"``).
+    """Builds an IRAP dataset dict by release name (``"bh"`` / ``"vietnam"``).
 
     Thin dispatch over :data:`IRAP_DATASET_FACTORIES`; forwards ``kwargs`` to the
     selected preset. Raises ``ValueError`` for an unknown name.
@@ -339,7 +340,8 @@ class IRAPDataset(Dataset):
         sid = self.segment_ids[idx]
 
         # Prepare context ids from integer arithmetic (matches original).
-        # All segment_ids are expected to have corresponding context ids; if not, this is an error.
+        # All segment_ids are expected to have corresponding context ids. A missing one is an
+        # error.
         if sid not in self.segment_id_to_context_ids:
             raise KeyError(
                 f"segment_id {sid} missing from segment_id_to_context_ids; dataset filtering should ensure consistency."

@@ -28,7 +28,7 @@ class InferenceImageDataset(Dataset):
         # From folder with context matching IRAPDataset
         ds = InferenceImageDataset.from_folder(
             "/path/to/images",
-            reference_dataset=bih_test,
+            reference_dataset=bh_test,
             context_offsets=(0, -1, -4),
         )
     """

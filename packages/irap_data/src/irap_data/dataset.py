@@ -2,6 +2,8 @@
 Dataset with transformations that create new dataset objects.
 
 Dataset objects should be considered immutable.
+
+Adapted from vidlu: https://github.com/Ivan1248/vidlu/blob/master/vidlu/data/dataset.py
 """
 
 import dataclasses as dc
@@ -230,13 +232,6 @@ class Dataset(abc.Sequence):
         indices = np.random.RandomState(seed=seed).permutation(len(self))
         return self._getitem(indices, subset=F"permute({seed})", **kwargs)
 
-    def repeat(self, number_of_repeats, **kwargs):
-        """Creates a dataset with `number_of_repeats` times the length of the
-        original dataset so that every `number_of_repeats` an element is
-        repeated.
-        """
-        return RepeatDataset(self, number_of_repeats, **kwargs)
-
     def split(self, ratio: float = None, index: int = None):
         if (ratio is None) == (index is None):
             raise ValueError("Either ratio or position needs to be specified.")
@@ -253,12 +248,6 @@ class Dataset(abc.Sequence):
 
     def zip(self, *other, **kwargs):
         return ZipDataset([self] + list(other), **kwargs)
-
-    def sample(self, length, replace=False, seed=53, **kwargs):
-        """Creates a dataset with randomly chosen elements with or without
-        replacement.
-        """
-        return SampleDataset(self, length=length, replace=replace, seed=seed, **kwargs)
 
     def _multi_matching_indices(self, predicates, progress_bar=None):
         """Splits the dataset indices into disjoint subsets matching predicates.
@@ -456,49 +445,6 @@ class SubrangeDataset(Dataset):
 
     def get_example(self, idx):
         return self.data[self.start + self.step * idx]
-
-    def __len__(self):
-        return self._len
-
-
-class RepeatDataset(Dataset):
-    __slots__ = ("number_of_repeats",)
-
-    def __init__(self, dataset, number_of_repeats, **kwargs):
-        name = f"repeat({number_of_repeats})"
-        super().__init__(name=name, data=dataset, data_change=[name], **kwargs)
-        self.number_of_repeats = number_of_repeats
-
-    def get_example(self, idx):
-        return self.data[idx % len(self.data)]
-
-    def __len__(self):
-        return len(self.data) * self.number_of_repeats
-
-
-class SampleDataset(Dataset):
-    __slots__ = ("_indices", "_len")
-
-    def __init__(self, dataset, length=None, replace=False, seed=53, **kwargs):
-        length = length or len(dataset)
-        if length != len(dataset) and not replace:
-            raise ValueError("Cannot sample without replacement if `length` is different from the"
-                             + " original length.")
-        rand = np.random.RandomState(seed=seed)
-        if replace:
-            indices = [rand.randint(0, len(dataset)) for _ in range(len(dataset))]
-        else:
-            indices = rand.permutation(len(dataset))[:length]
-        self._indices = _compress_indices(indices, len(dataset))
-        args = f"{seed}"
-        if length is not None:
-            args += f",{length}"
-        name = f"sample{'_r' if replace else ''}({args})"
-        super().__init__(name=name, data=dataset, data_change=name, **kwargs)
-        self._len = length or len(dataset)
-
-    def get_example(self, idx):
-        return self.data[self._indices[idx]]
 
     def __len__(self):
         return self._len

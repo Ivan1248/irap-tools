@@ -2,7 +2,7 @@
 
 Date: 2026-05-24
 
-This document compares `irap_data/irap_data/irap_dataset.py` (`IRAPDataset` / `make_bih_data`) against the original [`irap_gaim/dataset_wrapper.py`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py) (`DatasetWrapper`), [`image_sequence_dataset.py`](https://github.com/mkacan/irap_gaim/blob/main/image_sequence_dataset.py) (`ImageSequenceDataset`), and the [`train_local_rec.py`](https://github.com/mkacan/irap_gaim/blob/main/train_local_rec.py) driver. The comparison is restricted to the **standard supervised iRAP-BiH configuration** defined by the original [`irap_gaim/config.json`](https://github.com/mkacan/irap_gaim/blob/main/config.json):
+This document compares `irap_data/src/irap_data/irap_dataset.py` (`IRAPDataset` / `make_bh_data`) against the original [`irap_gaim/dataset_wrapper.py`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py) (`DatasetWrapper`), [`image_sequence_dataset.py`](https://github.com/mkacan/irap_gaim/blob/main/image_sequence_dataset.py) (`ImageSequenceDataset`), and the [`train_local_rec.py`](https://github.com/mkacan/irap_gaim/blob/main/train_local_rec.py) driver. The comparison is restricted to the **standard supervised iRAP-BH configuration** defined by the original [`irap_gaim/config.json`](https://github.com/mkacan/irap_gaim/blob/main/config.json):
 
 ```jsonc
 // excerpt
@@ -10,10 +10,10 @@ This document compares `irap_data/irap_data/irap_dataset.py` (`IRAPDataset` / `m
 "data_types":                ["rgb"],
 "input_dim": { "rgb":        [384, 288, 3] },
 "attribute_value_mapping_path": "",        // -> identity mapping branch
-"normalization_statistics":  { "mean": [...BiH...], "std": [...BiH...] }
+"normalization_statistics":  { "mean": [...BH...], "std": [...BH...] }
 ```
 
-`make_bih_data()` with all defaults is the new-code counterpart of that config (`context_offsets = (0, -1, -4)`, `use_ncontext_filter = True`, `allow_missing_attributes = False`, `mean/std = RGB_MEAN/STD`, `input_dim_rgb = (384, 288, 3)`, `transforms = None`).
+`make_bh_data()` with all defaults is the new-code counterpart of that config (`context_offsets = (0, -1, -4)`, `use_ncontext_filter = True`, `allow_missing_attributes = False`, `mean/std = RGB_MEAN/STD`, `input_dim_rgb = (384, 288, 3)`, `transforms = None`).
 
 ## Equivalent behavior
 
@@ -31,10 +31,10 @@ This document compares `irap_data/irap_data/irap_dataset.py` (`IRAPDataset` / `m
 
 [`_remove_filtered_out_segments`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L370-L381) is a no-op under identity remap, so the new version's omission of it is equivalent.
 
-The following differences also have no effect under the standard iRAP-BiH configuration:
+The following differences also have no effect under the standard iRAP-BH configuration:
 
 - **Filtering order.** The original ([`dataset_wrapper.py:13-91`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L13-L91)) filters in the order data paths → context → `ncontext_subset` → label mapping → two more `_filter_segments` passes. The new code filters in the order data paths → label mapping → context → `ncontext_subset`. The final intersection is the same.
-- **Missing-attribute handling.** The original raises a `KeyError` in [`_create_segment_id_to_labels`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L339-L362) when `required_attributes` is incomplete. The new code drops the segment instead (or labels it `-1` when `allow_missing_attributes=True`). iRAP-BiH has complete attribute coverage, so neither branch fires.
+- **Missing-attribute handling.** The original raises a `KeyError` in [`_create_segment_id_to_labels`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L339-L362) when `required_attributes` is incomplete. The new code drops the segment instead (or labels it `-1` when `allow_missing_attributes=True`). iRAP-BH has complete attribute coverage, so neither branch fires.
 - **Sample-dict shape.** The original ([`image_sequence_dataset.py:52-72`](https://github.com/mkacan/irap_gaim/blob/main/image_sequence_dataset.py#L52-L72)) emits `{rgb, target, segment_id}` plus optional `depth`. The new code emits `{rgb, target, segment_id, sequence_id}` and never `depth`. With `data_types: ["rgb"]` the original also never produces `depth`, and `sequence_id` (road id) is purely additive.
 
 ## Behavioral differences
@@ -46,7 +46,7 @@ The following differences also have no effect under the standard iRAP-BiH config
 | Method | integer arithmetic on segment IDs: `str(int(sid) + offset)` | road-sequence lookup via `road_id_to_segment_id_sequence.json` |
 | Validity domain for a context frame | `int(seg_id) ∈ set(map(int, splits['all']))` (i.e. labelled `train ∪ val ∪ test` after the data-path filter) | `cid ∈ seg_to_paths` (every segment with an image on disk) |
 
-The two coincide on iRAP-BiH iff (a) segment IDs are integer-contiguous within each road, (b) IDs across roads are not numerically adjacent, and (c) every `segment_id_to_data_paths_rel.json` entry appears in some labelled split. The road-based lookup cannot pull a frame from a different road, which allows the same code to handle iRAP-Vietnam. Under (a)–(c) the two are expected to match end-to-end, but this has not been verified.
+The two coincide on iRAP-BH iff (a) segment IDs are integer-contiguous within each road, (b) IDs across roads are not numerically adjacent, and (c) every `segment_id_to_data_paths_rel.json` entry appears in some labelled split. The road-based lookup cannot pull a frame from a different road, which allows the same code to handle iRAP-Vietnam. Under (a)–(c) the two are expected to match end-to-end, but this has not been verified.
 
 ### 2. Image resize / crop
 
@@ -57,7 +57,7 @@ The two coincide on iRAP-BiH iff (a) segment IDs are integer-contiguous within e
 
 The `[384, 284, 3]` literal looks like a typo for `288`: `input_dim.rgb` is `[384, 288, 3]`, so the `!=` branch fires and the original does crop.
 
-The new code applies `center_crop` without any prior resize, matching the original. For iRAP-BiH, source images are at exactly `384 × 288`, so the crop is full-bounds and pixels pass through unchanged (the only remaining difference is that the original emits a standardized tensor rather than a `[0, 1]` `float32` — see §3).
+The new code applies `center_crop` without any prior resize, matching the original. For iRAP-BH, source images are at exactly `384 × 288`, so the crop is full-bounds and pixels pass through unchanged (the only remaining difference is that the original emits a standardized tensor rather than a `[0, 1]` `float32` – see §3).
 
 `resize_to_cover` (Lanczos) is available as a separate function and is used by `InferenceImageDataset`, which loads from arbitrary-size inputs.
 
@@ -66,17 +66,17 @@ The new code applies `center_crop` without any prior resize, matching the origin
 The original applies, inside `__getitem__`:
 
 - [`ColorJitter(0.6, 0.3, 0.2, 0.02)`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L139-L140) on the `train` split, and
-- [`Normalize(mean, std)`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L145) on every split, with iRAP-BiH mean/std from [`config.json:11-15`](https://github.com/mkacan/irap_gaim/blob/main/config.json#L11-L15).
+- [`Normalize(mean, std)`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L145) on every split, with iRAP-BH mean/std from [`config.json:11-15`](https://github.com/mkacan/irap_gaim/blob/main/config.json#L11-L15).
 
-`IRAPDataset` does neither: `rgb` is deterministic, unnormalized, `float32` in `[0, 1]`. The iRAP-BiH mean/std are exposed as `RGB_MEAN` / `RGB_STD` and via `info.pixel_stats`, so the caller owns augmentation and standardization. To match the original numerically, the caller must apply that same `ColorJitter` to the "train" split and standardize every split with `info.pixel_stats` — outside `irap_data`'s scope.
+`IRAPDataset` does neither: `rgb` is deterministic, unnormalized, `float32` in `[0, 1]`. The iRAP-BH mean/std are exposed as `RGB_MEAN` / `RGB_STD` and via `info.pixel_stats`, so the caller owns augmentation and standardization. To match the original numerically, the caller must apply that same `ColorJitter` to the "train" split and standardize every split with `info.pixel_stats` – outside `irap_data`'s scope.
 
 ## Bottom line
 
-Under the standard iRAP-BiH config, `IRAPDataset` matches the original in **segment selection, per-attribute labels, class counts, and 3-frame ordering**.
+Under the standard iRAP-BH config, `IRAPDataset` matches the original in **segment selection, per-attribute labels, class counts, and 3-frame ordering**.
 
 Bit-identical sample tensors additionally require:
 
-1. iRAP-BiH segment IDs are integer-contiguous within each road and non-adjacent across roads, so integer arithmetic and road-sequence indexing agree.
+1. iRAP-BH segment IDs are integer-contiguous within each road and non-adjacent across roads, so integer arithmetic and road-sequence indexing agree.
 2. The caller applies `ColorJitter(0.6, 0.3, 0.2, 0.02)` to the train split and standardizes with `info.pixel_stats`.
 
 (1) and (2) are properties of the on-disk release. (3) is outside `irap_data`'s scope.

@@ -11,6 +11,7 @@ import os
 import re
 import pickle
 import typing as T
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,7 @@ class MetaFiles:
     SEGMENT_ID_TO_DATA_PATHS = "segment_id_to_data_paths_rel.json"
     SEGMENT_ID_TO_ROAD_DATA = "segment_id_to_road_data.json"
     ROAD_ID_TO_SEGMENT_ID_SEQUENCE = "road_id_to_segment_id_sequence.json"
+    UNLABELED_SEGMENT_ID_TO_LOCATION = "unlabeled_segment_id_to_location.json"
     NCONTEXT_SUBDIR = "seg_to_res"
 
 
@@ -54,8 +56,8 @@ class DatasetPreset:
 #: Presets by release name, the same names as `irap_dataset.IRAP_DATASET_FACTORIES`.
 DATASET_PRESETS: dict[str, DatasetPreset] = {
     # The N-context subsets already require 10 labeled neighbours on each side.
-    "bih": DatasetPreset(allow_missing_attributes=False, use_ncontext_filter=True,
-                         reference_context_offsets=tuple(range(-10, 11))),
+    "bh": DatasetPreset(allow_missing_attributes=False, use_ncontext_filter=True,
+                        reference_context_offsets=tuple(range(-10, 11))),
     # Vietnam road sequences are short (median 29 segments in the 2026-07-31 metadata), so the
     # window holds only the past context that the default model offsets (0, -1, -4) need.
     "vietnam": DatasetPreset(allow_missing_attributes=True, use_ncontext_filter=False,
@@ -87,7 +89,7 @@ def resolve_datasets_root() -> Path:
 #: Release name -> (dataset directory, metadata directory) under `resolve_datasets_root()`.
 #: The Vietnam images and metadata share a directory.
 _RELEASE_SUBDIRS: dict[str, tuple[str, str]] = {
-    "bih": ("IRAP_BIH", "IRAP_BIH_METADATA"),
+    "bh": ("IRAP_BIH", "IRAP_BIH_METADATA"),
     "vietnam": ("IRAP_Vietnam", "IRAP_Vietnam"),
 }
 
@@ -109,7 +111,7 @@ def resolve_irap_paths(
     dataset_dir: str | Path | None = None,
     metadata_dir: str | Path | None = None,
 ) -> tuple[Path, Path]:
-    """Resolves IRAP-BiH dataset and metadata directories.
+    """Resolves IRAP-BH dataset and metadata directories.
 
     A directory that is not given is resolved with `get_default_irap_paths`.
 
@@ -117,9 +119,9 @@ def resolve_irap_paths(
         Tuple of (dataset_dir, metadata_dir) as Path objects.
     """
     if dataset_dir is None:
-        dataset_dir = get_default_irap_paths("bih")[0]
+        dataset_dir = get_default_irap_paths("bh")[0]
     if metadata_dir is None:
-        metadata_dir = get_default_irap_paths("bih")[1]
+        metadata_dir = get_default_irap_paths("bh")[1]
     return Path(dataset_dir), Path(metadata_dir)
 
 
@@ -128,10 +130,15 @@ def _load_json(path: Path) -> T.Any:
         return json.load(f)
 
 
+def _load_optional_json(path: Path) -> T.Any:
+    """Loads a JSON file, or returns an empty dict if it does not exist."""
+    return _load_json(path) if path.exists() else {}
+
+
 # Class vocabulary #################################################################################
 
 def to_irap_code(value: T.Any) -> int | None:
-    """Parses an IRAP code, which the metadata stores as an int (Vietnam) or a string (BiH).
+    """Parses an IRAP code, which the metadata stores as an int (Vietnam) or a string (BH).
 
     Returns:
         The code, or None for a missing code: None, `'None'` or a negative number (the Vietnam
@@ -292,9 +299,16 @@ def get_class_counts(metadata_dir: str | Path) -> tuple[int, ...]:
     return load_class_vocabulary(metadata_dir).class_counts
 
 
-def get_bih_class_counts(metadata_dir: str | Path | None = None) -> tuple[int, ...]:
+def get_bh_class_counts(metadata_dir: str | Path | None = None) -> tuple[int, ...]:
     _, metadata_dir = resolve_irap_paths(metadata_dir=metadata_dir)
     return get_class_counts(metadata_dir)
+
+
+def get_bih_class_counts(metadata_dir: str | Path | None = None) -> tuple[int, ...]:
+    """Deprecated: use `get_bh_class_counts`."""
+    warnings.warn("get_bih_class_counts is deprecated. Use get_bh_class_counts.",
+                  DeprecationWarning, stacklevel=2)
+    return get_bh_class_counts(metadata_dir)
 
 
 # Metadata files ###################################################################################
@@ -314,9 +328,10 @@ class IRAPMetadata:
         road_id_to_segment_id_sequence: Road ID -> segment IDs in driving order. Empty if the
             file is absent.
 
-    The values derived from the files (`sequence_index`, `ncontext_segment_ids`) are computed
-    on first access and kept, so that the splits and evaluation sets built from one metadata
-    object share them.
+    The files that only some uses need (`unlabeled_segment_id_to_location`,
+    `ncontext_segment_ids`) are read on first access, and the values derived from the files
+    (`sequence_index`, `segment_coordinates`) are computed on first access. Both are kept, so
+    that the splits and evaluation sets built from one metadata object share them.
     """
 
     metadata_dir: Path
@@ -329,7 +344,7 @@ class IRAPMetadata:
     # `cached_property` writes to the instance `__dict__`, which a frozen dataclass allows.
     @functools.cached_property
     def sequence_index(self) -> dict[str, tuple[str, int]]:
-        """Segment ID -> (road ID, position in the road sequence); see `index_road_sequences`."""
+        """Segment ID -> (road ID, position in the road sequence), see `index_road_sequences`."""
         return index_road_sequences(self.road_id_to_segment_id_sequence)
 
     @functools.cached_property
@@ -339,18 +354,50 @@ class IRAPMetadata:
         return load_ncontext_segment_ids(self.metadata_dir / MetaFiles.NCONTEXT_SUBDIR,
                                          self.road_id_to_segment_id_sequence)
 
+    @functools.cached_property
+    def unlabeled_segment_id_to_location(self) -> dict[str, dict[str, float]]:
+        """Segment ID -> `lat` and `lon` in degrees, for the unlabeled segments with a known
+        location. Empty if the file is absent."""
+        return _load_optional_json(self.metadata_dir / MetaFiles.UNLABELED_SEGMENT_ID_TO_LOCATION)
+
+    @functools.cached_property
+    def segment_coordinates(self) -> dict[str, tuple[float, float]]:
+        """Segment ID -> (latitude, longitude) in degrees, for each segment that has a known
+        location or lies between two such segments of its road sequence.
+
+        A segment has a known location if it has road data or an entry in
+        `unlabeled_segment_id_to_location`. A segment between two located segments of its road
+        sequence is placed by linear interpolation in the sequence position, as the segments of
+        a sequence are evenly spaced (20 m in IRAP-Vietnam). A segment before the first or after
+        the last located segment of its sequence is not placed.
+        """
+        coordinates = {}
+        for sid, data in self.segment_id_to_road_data.items():
+            location = get_segment_location(data)
+            coordinates[sid] = (location.latitude_deg, location.longitude_deg)
+        for sid, location in self.unlabeled_segment_id_to_location.items():
+            coordinates[sid] = (float(location["lat"]), float(location["lon"]))
+        for sequence in self.road_id_to_segment_id_sequence.values():
+            located = [i for i, sid in enumerate(sequence) if sid in coordinates]
+            for start, end in zip(located, located[1:]):
+                (lat0, lon0) = coordinates[sequence[start]]
+                (lat1, lon1) = coordinates[sequence[end]]
+                for i in range(start + 1, end):
+                    t = (i - start) / (end - start)
+                    coordinates[sequence[i]] = (lat0 + t * (lat1 - lat0), lon0 + t * (lon1 - lon0))
+        return coordinates
+
 
 def load_irap_metadata(metadata_dir: str | Path) -> IRAPMetadata:
     metadata_dir = Path(metadata_dir)
-    road_sequences_path = metadata_dir / MetaFiles.ROAD_ID_TO_SEGMENT_ID_SEQUENCE
     return IRAPMetadata(
         metadata_dir=metadata_dir,
         vocabulary=load_class_vocabulary(metadata_dir),
         splits=_load_json(metadata_dir / MetaFiles.SPLITS),
         segment_id_to_data_paths_rel=_load_json(metadata_dir / MetaFiles.SEGMENT_ID_TO_DATA_PATHS),
         segment_id_to_road_data=_load_json(metadata_dir / MetaFiles.SEGMENT_ID_TO_ROAD_DATA),
-        road_id_to_segment_id_sequence=(_load_json(road_sequences_path)
-                                        if road_sequences_path.exists() else {}),
+        road_id_to_segment_id_sequence=_load_optional_json(
+            metadata_dir / MetaFiles.ROAD_ID_TO_SEGMENT_ID_SEQUENCE),
     )
 
 
@@ -369,7 +416,7 @@ def get_segment_location(road_data: T.Mapping[str, T.Any]) -> SegmentLocation:
     """Reads the location from one entry of `segment_id_to_road_data.json`.
 
     Two layouts exist: the Vietnam one with top-level `section`, `distance_km`, `length_km`,
-    `lat` and `lon`, and the BiH one with the coding-table fields `Section`, `Distance` and
+    `lat` and `lon`, and the BH one with the coding-table fields `Section`, `Distance` and
     `Length` (in km) and `Latitude` and `Longitude` under `metadata`.
 
     Raises:
@@ -433,19 +480,25 @@ def compute_num_segments_per_class(class_indices: np.ndarray, num_classes: int) 
     return np.bincount(observed, minlength=num_classes)
 
 
-def compute_class_occurrence_counts(info) -> dict[str, np.ndarray]:
+def compute_class_occurrence_counts(
+    info,
+    segment_ids: T.Sequence[str] | None = None,
+) -> dict[str, np.ndarray]:
     """Counts, per attribute, how many of a split's examples are labelled with each class.
 
     Args:
         info: Dataset info carrying `segment_ids`, `segment_id_to_labels`, `class_counts`
-            and `attr_to_value_to_class_idx`. Only the segments in `segment_ids` are counted.
+            and `attr_to_value_to_class_idx`.
+        segment_ids: The segments to count, keys of `info.segment_id_to_labels`. None counts
+            `info.segment_ids`, the examples of the dataset.
 
     Returns:
         Maps each attribute name, in schema order, to the counts of
         `compute_num_segments_per_class`.
     """
-    labels = compute_label_matrix(info.segment_id_to_labels, info.segment_ids,
-                                  len(info.class_counts))
+    labels = compute_label_matrix(
+        info.segment_id_to_labels, info.segment_ids if segment_ids is None else segment_ids,
+        len(info.class_counts))
     counts = {}
     for attr_index, (attr, num_classes) in enumerate(zip(info.attr_to_value_to_class_idx,
                                                           info.class_counts)):
@@ -654,10 +707,12 @@ class SplitSelection:
 
     Attributes:
         segment_ids: The selected segments, in `splits.json` order.
-        segment_id_to_labels: Labels of the selected segments (see `compute_segment_labels`).
+        segment_id_to_labels: Labels of the segments of the split that have an image and labels
+            (see `compute_split_labels`), a superset of `segment_ids`. The context-window and
+            N-context filters do not remove segments from it.
         segment_id_to_context_ids: Context segment IDs of the selected segments.
         attr_to_num_labeled: Number of labeled selected segments per attribute. An attribute can
-            have classes in the vocabulary but no label in a dataset (e.g. the BiH-only
+            have classes in the vocabulary but no label in a dataset (e.g. the BH-only
             attributes of IRAP-Vietnam), which consumers use to leave it out of evaluation.
     """
 

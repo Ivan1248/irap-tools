@@ -6,7 +6,7 @@ import torch
 
 
 def load_image_cv2(path: str) -> np.ndarray:
-    """Load an image as an HWC uint8 RGB ndarray."""
+    """Loads an image as an HWC uint8 RGB ndarray."""
     return cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
 
 

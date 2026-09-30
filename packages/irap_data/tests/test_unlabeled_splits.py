@@ -1,15 +1,17 @@
 """Tests of unlabeled splits and of labeled-sample counts in `IRAPDataset` splits."""
 
 import json
+import shutil
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
-from irap_data import make_bih_data
+from irap_data import make_bh_data, make_vietnam_data
 from irap_data.attrs import filter_labeled_attrs
-from irap_data.irap_dataset import IGNORE_LABEL_INDEX, IRAPDataset, MetaFiles
+from irap_data.irap_dataset import IRAPDataset
+from irap_data.metadata import IGNORE_LABEL_INDEX, MetaFiles
 
 ATTRS = ("A", "B")
 IRAP_CODES = {"A": [10, 20], "B": [30, 40, 50]}
@@ -53,8 +55,8 @@ def write_dataset(root: Path, coded_attrs=ATTRS) -> tuple[Path, Path]:
 def _make_splits(root: Path, coded_attrs=ATTRS, **kwargs):
     data_dir, meta_dir = write_dataset(root, coded_attrs)
     # context_offsets=(0,) keeps the tests independent of road-boundary edge cases.
-    return make_bih_data(dataset_dir=data_dir, metadata_dir=meta_dir, context_offsets=(0,),
-                         use_ncontext_filter=False, input_dim_rgb=(16, 12, 3), **kwargs)
+    return make_bh_data(dataset_dir=data_dir, metadata_dir=meta_dir, context_offsets=(0,),
+                        use_ncontext_filter=False, input_dim_rgb=(16, 12, 3), **kwargs)
 
 
 def test_every_split_is_loaded_including_empty_ones(tmp_path):
@@ -80,8 +82,19 @@ def test_unknown_subset_error_lists_available_splits(tmp_path):
                     context_offsets=(0,))
 
 
-# With every attribute coded, as in IRAP-BiH, filtering keeps every attribute. An attribute that
-# is never coded, like the BiH-only attributes in IRAP-Vietnam, keeps its value vocabulary but
+def test_vietnam_data_reads_the_metadata_from_the_dataset_directory(tmp_path):
+    data_dir, meta_dir = write_dataset(tmp_path)
+    for path in meta_dir.iterdir():
+        shutil.copy(path, data_dir)
+    kwargs = dict(context_offsets=(0,), input_dim_rgb=(16, 12, 3))
+    assert len(make_vietnam_data(dataset_dir=data_dir, **kwargs)["train"]) == 2
+    assert len(make_vietnam_data(dataset_dir=data_dir, metadata_dir=data_dir, **kwargs)) > 0
+    with pytest.raises(ValueError, match="metadata_dir"):
+        make_vietnam_data(dataset_dir=data_dir, metadata_dir=meta_dir, **kwargs)
+
+
+# With every attribute coded, as in IRAP-BH, filtering keeps every attribute. An attribute that
+# is never coded, like the BH-only attributes in IRAP-Vietnam, keeps its value vocabulary but
 # is dropped, since its metrics would be NaN.
 @pytest.mark.parametrize("coded_attrs", [("A", "B"), ("A",)])
 def test_filter_labeled_attrs_keeps_the_coded_attributes(tmp_path, coded_attrs):

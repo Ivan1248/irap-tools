@@ -1,52 +1,39 @@
-"""The `irap-dataset-stats` command: class frequencies and other statistics of an IRAP release.
+"""Reports of the statistics of an IRAP release: HTML pages, CSV and JSON.
 
-The statistics are computed from the metadata only (see `irap_data.dataset_statistics`). Run
-`irap-dataset-stats <command> --help` for the options of each command.
+The statistics come from `irap_data.reports.statistics`. The plots need matplotlib (the `report`
+extra), which is imported only when a plot is written.
 """
 
-import argparse
 import csv
 import dataclasses as dc
 import json
-import sys
 import typing as T
-from datetime import date
 from pathlib import Path
 
 import numpy as np
 
-from . import report_document as rd
-from .dataset_statistics import (
-    ATTRIBUTE_ORDERS,
-    CLASS_ORDERS,
+from . import document as rd
+from . import segment_map
+from ..metadata import IRAPMetadata, get_dataset_preset, is_unlabeled_split
+from .statistics import (
     SELECTION_DESCRIPTIONS,
     AttributeDistribution,
     DatasetStatistics,
     SelectionKind,
     SelectionStatistics,
-    compute_dataset_statistics,
+    SplitStatistics,
     compute_majority_accuracy,
     compute_selection_statistics,
     compute_total_variation_distance,
     select_segments,
     sort_distributions,
 )
-from .metadata import (
-    DATASET_PRESETS,
-    IRAPMetadata,
-    get_dataset_preset,
-    get_default_irap_paths,
-    is_unlabeled_split,
-    load_irap_metadata,
-)
+
+PlotFormat = T.Literal["pdf", "png", "svg"]
 
 #: The columns of `to_class_frequency_rows`.
 CLASS_FREQUENCY_COLUMNS = ("dataset", "selection", "split", "attribute", "class_index", "value",
                            "irap_code", "num_segments", "num_sequences", "share", "share_labeled")
-
-#: The default plot format of each report format: HTML embeds an SVG plot, and Markdown links a
-#: PDF plot, which many Markdown viewers do not render as an image.
-_REPORT_FORMAT_TO_PLOT_FORMAT = {"html": "svg", "md": "pdf"}
 
 
 # Formatting helpers ###############################################################################
@@ -57,6 +44,11 @@ def _format_context_offsets(context_offsets: T.Sequence[int]) -> str:
     if len(context_offsets) > 2 and list(context_offsets) == list(range(first, last + 1)):
         return f"{first}..{last}"
     return ",".join(map(str, context_offsets))
+
+
+def _format_selection_name(selection: SelectionKind) -> str:
+    """The name of a selection in a report, e.g. 'with context' for 'with_context'."""
+    return selection.replace("_", " ")
 
 
 def _describe_selection(selection: SelectionKind,
@@ -71,12 +63,12 @@ def _describe_selection(selection: SelectionKind,
 def _get_report_stem(dataset: str, selection: SelectionKind,
                      context_offsets: T.Sequence[int] | None) -> str:
     """The file name stem of the report of a selection: 'vietnam_labeled_segments',
-    'vietnam_labeled_segments_with_context' for the reference selection, and
+    'vietnam_labeled_segments_with_context' for the with-context selection, and
     'vietnam_labeled_segments_with_context_<context_offsets>' for the model selection."""
     if selection == "labeled":
         return f"{dataset}_labeled_segments"
     stem = f"{dataset}_labeled_segments_with_context"
-    if selection == "reference":
+    if selection == "with_context":
         return stem
     return f"{stem}_{_format_context_offsets(context_offsets)}"
 
@@ -86,7 +78,15 @@ def _format_count(n: int) -> str:
 
 
 def _format_share(x: float) -> str:
-    return "" if np.isnan(x) else f"{x:.1%}"
+    """A share with one decimal, with a bound for a share that would round to 0% or 100%
+    without being either, e.g. 2 missing labels of 10,000."""
+    if np.isnan(x):
+        return ""
+    if 0 < x < 0.0005:
+        return "<0.1%"
+    if 0.9995 <= x < 1:
+        return ">99.9%"
+    return f"{x:.1%}"
 
 
 def _format_ratio(x: float) -> str:
@@ -96,10 +96,10 @@ def _format_ratio(x: float) -> str:
 
 
 def _format_class_count(n: int, share: float | None = None) -> str:
-    """A class count, in bold if zero, as those are the classes to notice."""
-    if n == 0:
-        return "**0**"
-    return _format_count(n) if share is None else f"{_format_count(n)} ({_format_share(share)})"
+    """A class count, with its share if given and the count is not zero."""
+    if n == 0 or share is None:
+        return _format_count(n)
+    return f"{_format_count(n)} ({_format_share(share)})"
 
 
 def _to_json_float(x: float) -> float | None:
@@ -115,9 +115,9 @@ def compose_report(
     report_date: str,
     rare_fraction: float,
     split_to_figure_path: T.Mapping[str, str] | None = None,
+    map_path: str | None = None,
 ) -> list[rd.Block]:
-    """Composes the report of one selection of segments, to be rendered with
-    `report_document.to_html` or `report_document.to_markdown`.
+    """Composes the report of one selection of segments, to be rendered with `document.to_html`.
 
     The class balance is measured on the base split, the first split of `statistics` with
     segments in the selection, and the other splits are compared to it.
@@ -128,10 +128,15 @@ def compose_report(
             which a class is listed as rare.
         split_to_figure_path: Split -> the path of its class-frequency plot, relative to the
             report.
+        map_path: The path of the segment map (`segment_map.to_segment_map_html`), relative to
+            the report, or None for no map.
     """
     split_distributions = statistics.get_split_distributions(selection)
-    blocks = [*_compose_header(statistics, selection, report_date),
-              *_compose_overview(statistics, selection)]
+    context_offsets = statistics.get_context_offsets(selection)
+    description = _describe_selection(selection, context_offsets)
+    blocks = [*_compose_header(statistics, selection, description, report_date),
+              *_compose_overview(statistics, selection, description),
+              *([] if map_path is None else _compose_map(context_offsets, map_path))]
     if not split_distributions:
         return [*blocks, rd.Paragraph("No split has segments in this selection.")]
     num_attributes = len(next(iter(split_distributions.values())))
@@ -148,14 +153,12 @@ def compose_report(
     ]
 
 
-def _compose_header(statistics: DatasetStatistics, selection: SelectionKind,
+def _compose_header(statistics: DatasetStatistics, selection: SelectionKind, description: str,
                     report_date: str) -> list[rd.Block]:
     preset = statistics.preset
-    description = _describe_selection(selection, statistics.get_context_offsets(selection))
     items = [
-        f"Metadata directory: `{statistics.metadata_dir}`",
         f"Date: {report_date}",
-        f"Selection: {selection}. {SELECTION_DESCRIPTIONS[selection]}",
+        f"Selection: {_format_selection_name(selection)}. {SELECTION_DESCRIPTIONS[selection]}",
         "A segment with a missing attribute code is "
         + ("kept without a label for the attribute." if preset.allow_missing_attributes
            else "left out."),
@@ -167,41 +170,65 @@ def _compose_header(statistics: DatasetStatistics, selection: SelectionKind,
             rd.BulletList(tuple(items))]
 
 
-def _compose_overview(statistics: DatasetStatistics,
-                      selection: SelectionKind) -> list[rd.Block]:
+def _compose_overview(statistics: DatasetStatistics, selection: SelectionKind,
+                      description: str) -> list[rd.Block]:
     selections = statistics.selections
-    funnel = rd.make_table(
-        ["split", "listed", "with image", *selections],
-        [[s.split, _format_count(s.num_listed), _format_count(s.num_with_image),
-          *(_format_count(s.selections[k].num_segments) if s.selections else ""
-            for k in selections)]
-         for s in statistics.splits],
-        "l" + "r" * (2 + len(selections)))
 
-    def format_segments_row(split: str, s: SelectionStatistics) -> list[str]:
-        lengths = s.sequence_lengths
-        return [split, _format_count(s.num_segments), _format_count(s.num_unlabeled),
-                _format_count(s.num_sequences), _format_count(s.num_without_sequence),
-                f"{lengths.min()} / {np.median(lengths):g} / {lengths.max()}" if lengths.size
-                else "", f"{s.road_length_m / 1000:,.1f}"]
+    def format_row(name: str, splits: T.Sequence[SplitStatistics]) -> list[str]:
+        """The cells of a split, or the totals of several splits."""
+        def format_total(counts: T.Sequence[int]) -> str:
+            return _format_count(sum(counts)) if counts else ""
 
-    segments = rd.make_table(
-        ["split", "segments", "without any label", "sequences", "without sequence",
-         "segments per sequence (min / median / max)", "road length (km)"],
-        [format_segments_row(s.split, s.selections[selection])
-         for s in statistics.splits if s.selections],
-        "lrrrrrr")
+        selected = [s.selections[selection] for s in splits if s.selections]
+        lengths = np.concatenate([s.sequence_lengths for s in selected] or [[]]).astype(np.int64)
+        sequence_cells = [
+            format_total([s.num_sequences for s in selected]),
+            f"{lengths.min()} / {np.median(lengths):g} / {lengths.max()}" if lengths.size else "",
+            f"{sum(s.road_length_m for s in selected) / 1000:,.1f}"] if selected else [""] * 3
+        return [name, format_total([s.num_listed for s in splits]),
+                format_total([s.num_with_image for s in splits]),
+                *(format_total([s.num_selected[k] for s in splits if k in s.num_selected])
+                  for k in selections),
+                *sequence_cells]
+
+    labeled = [s for s in statistics.splits if not is_unlabeled_split(s.split)]
+    unlabeled = [s for s in statistics.splits if is_unlabeled_split(s.split)]
+    # Subtotals only for a release with both labeled and unlabeled splits.
+    subtotals = ([format_row("labeled splits", labeled),
+                  format_row("unlabeled splits", unlabeled)] if labeled and unlabeled else [])
+    table = rd.make_table(
+        ["split", "listed", "with image", *map(_format_selection_name, selections),
+         "sequences", "segments per sequence (min / median / max)", "road length (km)"],
+        [format_row(s.split, [s]) for s in statistics.splits],
+        "l" + "r" * (5 + len(selections)),
+        footer=[*subtotals, format_row("total", statistics.splits)])
     return [
         rd.Heading("Overview", 2),
-        rd.Paragraph("The number of segments of each split: listed in `splits.json`, with an"
-                     " image, and in each selection. Unlabeled splits are not in any selection."),
-        funnel,
         rd.Paragraph(
-            f"The {_describe_selection(selection, statistics.get_context_offsets(selection))} of"
-            " each split. The road sequences are those of"
-            " `road_id_to_segment_id_sequence.json`, and a segment that is in none is a sequence"
-            " of its own. The road length is summed over the segments that have road data."),
-        segments]
+            "The number of segments of each split: listed in `splits.json`, with an image, and"
+            " in each selection. A selection with context leaves out the segments whose context"
+            " window is incomplete: it reaches beyond the road sequence of the segment, as for"
+            " the first segments of a road with negative offsets, or it has a segment without an"
+            " image. For an unlabeled split, it counts the segments that a dataset of the split"
+            " yields, without the unlabeled segments that are in no road sequence. The last"
+            " three columns describe the"
+            f" {description}: their"
+            " road sequences in `road_id_to_segment_id_sequence.json`, where a segment in none"
+            " is a sequence of its own, and the summed length of those with road data."
+            " The totals add up the splits, so a road sequence with segments in two splits is"
+            " counted once in each."),
+        table]
+
+
+def _compose_map(context_offsets: T.Sequence[int] | None, map_path: str) -> list[rd.Block]:
+    text = ("The segments of each split, labeled and unlabeled, colored by split. The segments of"
+            " an unlabeled split are placed between the labeled segments of their road"
+            " sequence.")
+    if context_offsets is not None:
+        text += (f" The segments that are not in the selection, as their context window"
+                 f" [{_format_context_offsets(context_offsets)}] is incomplete, are faded.")
+    text += " The map loads its basemap and the Leaflet library from the web."
+    return [rd.Heading("Map", 2), rd.Paragraph(text), rd.Figure(map_path, "Segment map")]
 
 
 def _compose_label_coverage(
@@ -383,7 +410,7 @@ def to_json_dict(statistics: DatasetStatistics, *, report_date: str) -> dict[str
                            "context_offsets": get_context_offsets(k)}
                        for k in statistics.selections},
         "splits": [{"split": s.split, "num_listed": s.num_listed,
-                    "num_with_image": s.num_with_image,
+                    "num_with_image": s.num_with_image, "num_selected": dict(s.num_selected),
                     "selections": {k: selection_to_json(v) for k, v in s.selections.items()}}
                    for s in statistics.splits],
     }
@@ -404,16 +431,7 @@ def to_class_frequency_rows(statistics: DatasetStatistics,
             for d in distributions for c in range(d.num_classes)]
 
 
-# Commands #########################################################################################
-
-def _get_metadata_dir(args: argparse.Namespace) -> Path:
-    if args.metadata_dir is not None:
-        return args.metadata_dir
-    try:
-        return get_default_irap_paths(args.dataset)[1]
-    except RuntimeError as e:
-        raise ValueError(f"{e} Alternatively, pass --metadata-dir.") from e
-
+# Files ############################################################################################
 
 def _import_class_frequency_plot():
     try:
@@ -430,170 +448,155 @@ def _format_plot_title(dataset: str, split: str, selection_description: str,
             f" frequencies")
 
 
-def _select_the_same_segments(metadata: IRAPMetadata, statistics: DatasetStatistics,
-                              a: T.Sequence[int], b: T.Sequence[int]) -> bool:
-    """Whether the context offsets `a` and `b` select the same segments in every labeled split
-    of `statistics`."""
-    def select(split: str, context_offsets: T.Sequence[int]) -> list[str]:
-        return list(select_segments(metadata, statistics.dataset, split, "model", context_offsets))
+def write_selection_report(
+    statistics: DatasetStatistics,
+    selection: SelectionKind,
+    out_dir: Path,
+    *,
+    report_date: str,
+    metadata: IRAPMetadata | None = None,
+    plot_format: PlotFormat | None = "svg",
+    rare_fraction: float = 0.01,
+    dpi: int = 200,
+) -> list[Path]:
+    """Writes the HTML report of one selection of segments to `out_dir`, with a class-frequency
+    plot of each labeled split, a CSV table of the class frequencies (`to_class_frequency_rows`)
+    and a map of the segments of all splits of `statistics` (`segment_map`).
 
-    return all(select(s.split, a) == select(s.split, b) for s in statistics.splits if s.selections)
+    Args:
+        report_date: The date of the report, YYYY-MM-DD.
+        metadata: The metadata that `statistics` are computed from, for the map, or None for no
+            map.
+        plot_format: The file format of the plots, or None for no plots. The report shows each
+            format as `document.Figure` describes.
+        rare_fraction: See `compose_report`.
+        dpi: The resolution of raster plots.
 
-
-def run_report(args: argparse.Namespace) -> None:
-    metadata = load_irap_metadata(_get_metadata_dir(args))
-    statistics = compute_dataset_statistics(metadata, args.dataset, splits=args.splits,
-                                            model_context_offsets=args.context_offsets)
-    # Imported before anything is written, so that a missing matplotlib leaves no partial report.
-    class_frequency_plot = _import_class_frequency_plot() if args.plots else None
-    plot_format = args.plot_format or _REPORT_FORMAT_TO_PLOT_FORMAT[args.format]
-    report_date = date.today().isoformat()
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    Returns:
+        The written paths.
+    """
+    class_frequency_plot = None if plot_format is None else _import_class_frequency_plot()
+    context_offsets = statistics.get_context_offsets(selection)
+    stem = _get_report_stem(statistics.dataset, selection, context_offsets)
+    description = _describe_selection(selection, context_offsets)
     written = []
-
-    for selection in statistics.selections:
-        context_offsets = statistics.get_context_offsets(selection)
-        if selection == "model" and _select_the_same_segments(
-                metadata, statistics, context_offsets, statistics.get_context_offsets("reference")):
-            print("The model context offsets select the same segments as the reference ones, so"
-                  " the model report would repeat the reference report and is not written.")
+    split_to_figure_path = {}
+    for split in statistics.splits if class_frequency_plot else ():
+        selected = split.selections.get(selection)
+        if selected is None or not any(d.is_labeled for d in selected.distributions):
             continue
-        stem = _get_report_stem(args.dataset, selection, context_offsets)
-        description = _describe_selection(selection, context_offsets)
-        split_to_figure_path = {}
-        for split in statistics.splits if class_frequency_plot else ():
-            selected = split.selections.get(selection)
-            if selected is None or not any(d.is_labeled for d in selected.distributions):
-                continue
-            path = out_dir / f"{stem}_{split.split}_class_frequencies.{plot_format}"
-            class_frequency_plot.write_class_frequency_plot(
-                path, selected.distributions, dpi=args.dpi,
-                title=_format_plot_title(args.dataset, split.split, description,
-                                         selected.num_segments))
-            split_to_figure_path[split.split] = path.name
-            written.append(path)
-        blocks = compose_report(statistics, selection, report_date=report_date,
-                                rare_fraction=args.rare_fraction,
-                                split_to_figure_path=split_to_figure_path)
-        path = out_dir / f"{stem}.{args.format}"
-        path.write_text(rd.to_html(blocks) if args.format == "html" else rd.to_markdown(blocks),
-                        encoding="utf-8")
-        written.append(path)
-        path = out_dir / f"{stem}_class_frequencies.csv"
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CLASS_FREQUENCY_COLUMNS)
-            writer.writeheader()
-            writer.writerows(to_class_frequency_rows(statistics, selection))
+        path = out_dir / f"{stem}_{split.split}_class_frequencies.{plot_format}"
+        class_frequency_plot.write_class_frequency_plot(
+            path, selected.distributions, dpi=dpi,
+            title=_format_plot_title(statistics.dataset, split.split, description,
+                                     selected.num_segments))
+        split_to_figure_path[split.split] = path.name
         written.append(path)
 
-    path = out_dir / f"{args.dataset}_statistics.json"
+    map_path = None
+    if metadata is not None:
+        path = out_dir / f"{stem}_map.html"
+        split_maps = segment_map.compute_split_segment_maps(metadata, statistics, selection)
+        path.write_text(segment_map.to_segment_map_html(
+            split_maps, title=f"Segment map of {statistics.dataset}: {description}",
+            description=SELECTION_DESCRIPTIONS[selection]), encoding="utf-8")
+        map_path = path.name
+        written.append(path)
+
+    blocks = compose_report(statistics, selection, report_date=report_date,
+                            rare_fraction=rare_fraction, split_to_figure_path=split_to_figure_path,
+                            map_path=map_path)
+    path = out_dir / f"{stem}.html"
+    path.write_text(rd.to_html(blocks), encoding="utf-8")
+    written.append(path)
+
+    path = out_dir / f"{stem}_class_frequencies.csv"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CLASS_FREQUENCY_COLUMNS)
+        writer.writeheader()
+        writer.writerows(to_class_frequency_rows(statistics, selection))
+    written.append(path)
+    return written
+
+
+def write_statistics_reports(
+    statistics: DatasetStatistics,
+    out_dir: Path,
+    *,
+    report_date: str,
+    selections: T.Sequence[SelectionKind] | None = None,
+    **selection_report_kwargs,
+) -> list[Path]:
+    """Writes the report of each selection with `write_selection_report`, and all statistics to
+    `<dataset>_statistics.json` (`to_json_dict`).
+
+    The JSON file is written last. `write_selection_report` imports matplotlib before it writes
+    anything, so a missing matplotlib leaves no partial output.
+
+    Args:
+        report_date: The date of the reports, YYYY-MM-DD.
+        selections: Default: all selections of `statistics`, without 'model' if it repeats
+            'with_context' (see `DatasetStatistics.is_model_selection_same_as_with_context`).
+        **selection_report_kwargs: Passed to `write_selection_report`.
+
+    Returns:
+        The written paths.
+    """
+    if selections is None:
+        selections = tuple(s for s in statistics.selections if not (
+            s == "model" and statistics.is_model_selection_same_as_with_context))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = [path for selection in selections
+               for path in write_selection_report(statistics, selection, out_dir,
+                                                  report_date=report_date,
+                                                  **selection_report_kwargs)]
+    path = out_dir / f"{statistics.dataset}_statistics.json"
     path.write_text(json.dumps(to_json_dict(statistics, report_date=report_date), indent=2,
                                ensure_ascii=False, allow_nan=False), encoding="utf-8")
-    written.append(path)
-    print("\n".join(f"Wrote {p}." for p in written))
+    return [*written, path]
 
 
-def run_plot(args: argparse.Namespace) -> None:
+def write_split_class_frequency_plot(
+    path: Path,
+    metadata: IRAPMetadata,
+    dataset_name: str,
+    split: str,
+    *,
+    selection: SelectionKind = "labeled",
+    context_offsets: T.Sequence[int] | None = None,
+    attribute_order: str = "schema",
+    class_order: str = "schema",
+    normalize: bool = False,
+    log: bool = True,
+    dpi: int = 200,
+) -> None:
+    """Plots the class frequencies of all attributes of one split in one figure, in the format
+    given by the extension of `path`.
+
+    Args:
+        dataset_name: A key of `DATASET_PRESETS`.
+        selection: The segments to count (see `SELECTION_DESCRIPTIONS`).
+        context_offsets: The context offsets of the 'model' selection, and only of it.
+        attribute_order: One of `ATTRIBUTE_ORDERS`.
+        class_order: One of `CLASS_ORDERS`.
+        normalize: Plot the share of the labeled segments of the attribute instead of the number
+            of segments.
+        log: Use a logarithmic value axis.
+        dpi: The resolution of a raster plot.
+
+    Raises:
+        ValueError: For an unlabeled split, and see `select_segments` and `sort_distributions`.
+    """
     class_frequency_plot = _import_class_frequency_plot()
-    if is_unlabeled_split(args.split):
-        raise ValueError(f"The split {args.split!r} has no labels.")
-    metadata = load_irap_metadata(_get_metadata_dir(args))
+    if is_unlabeled_split(split):
+        raise ValueError(f"The split {split!r} has no labels.")
     selected = compute_selection_statistics(metadata, select_segments(
-        metadata, args.dataset, args.split, args.selection, args.context_offsets))
-    context_offsets = (get_dataset_preset(args.dataset).reference_context_offsets
-                       if args.selection == "reference" else args.context_offsets)
-    distributions = sort_distributions(selected.distributions,
-                                       attribute_order=args.sort_attributes,
-                                       class_order=args.sort_classes)
+        metadata, dataset_name, split, selection, context_offsets))
+    if selection == "with_context":
+        context_offsets = get_dataset_preset(dataset_name).reference_context_offsets
+    distributions = sort_distributions(selected.distributions, attribute_order=attribute_order,
+                                       class_order=class_order)
     class_frequency_plot.write_class_frequency_plot(
-        args.output, distributions, normalize=args.normalize, log=not args.linear, dpi=args.dpi,
-        title=_format_plot_title(args.dataset, args.split, _describe_selection(
-            args.selection, context_offsets), selected.num_segments))
-    print(f"Wrote {args.output}.")
-
-
-# Argument parsing #################################################################################
-
-def _parse_context_offsets(text: str) -> tuple[int, ...]:
-    return tuple(int(o) for o in text.split(","))
-
-
-def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("dataset", choices=list(DATASET_PRESETS), help="The release.")
-    parser.add_argument("--metadata-dir", type=Path, default=None,
-                        help="Default: the metadata directory of the release under $IRAP_HOME or"
-                             " $DATASETS_PATH.")
-    parser.add_argument("--dpi", type=int, default=200,
-                        help="The resolution of raster plots. Default: 200.")
-
-
-def make_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="irap-dataset-stats",
-                                     description=__doc__.splitlines()[0])
-    commands = parser.add_subparsers(dest="command", required=True)
-
-    report = commands.add_parser(
-        "report", help="Write an HTML or Markdown report and a CSV table of the class"
-                       " frequencies of each selection of segments, with plots, and a JSON"
-                       " document of all statistics.")
-    _add_common_arguments(report)
-    report.add_argument("-o", "--out", type=Path, required=True, help="Output directory.")
-    report.add_argument("--format", choices=list(_REPORT_FORMAT_TO_PLOT_FORMAT), default="html",
-                        help="The file format of the reports: an HTML page or GitHub-flavored"
-                             " Markdown. Default: html.")
-    report.add_argument("--splits", nargs="+", default=None,
-                        help="Default: all splits in splits.json. The first split with segments"
-                             " is the base of the comparisons.")
-    report.add_argument("--context-offsets", type=_parse_context_offsets, default=None,
-                        metavar="OFFSETS",
-                        help="The context offsets of a model, e.g. 0,-1,-4, for an additional"
-                             " 'model' selection.")
-    report.add_argument("--rare-fraction", type=float, default=0.01,
-                        help="A class is rare below this share of the labeled segments of its"
-                             " attribute. Default: 0.01.")
-    report.add_argument("--no-plots", dest="plots", action="store_false",
-                        help="Leave out the plots, which need matplotlib.")
-    report.add_argument("--plot-format", choices=("pdf", "png", "svg"), default=None,
-                        help="The file format of the plots. A PDF plot is linked from the report"
-                             " and the others are embedded. Default: svg for an HTML report and"
-                             " pdf for a Markdown report.")
-    report.set_defaults(run=run_report)
-
-    plot = commands.add_parser("plot", help="Plot the class frequencies of one split.")
-    _add_common_arguments(plot)
-    plot.add_argument("-o", "--output", type=Path, required=True,
-                      help="The image path. Its extension selects the format, e.g. .pdf or .png.")
-    plot.add_argument("--split", default="train", help="Default: train.")
-    plot.add_argument("--selection", choices=list(SELECTION_DESCRIPTIONS), default="labeled",
-                      help="Default: labeled. 'model' needs --context-offsets.")
-    plot.add_argument("--context-offsets", type=_parse_context_offsets, default=None,
-                      metavar="OFFSETS", help="The context offsets of the 'model' selection.")
-    plot.add_argument("--normalize", action="store_true",
-                      help="Plot the share of the labeled segments of the attribute instead of"
-                           " the number of segments.")
-    plot.add_argument("--linear", action="store_true",
-                      help="Use a linear value axis. Default: logarithmic, as the counts span"
-                           " several orders of magnitude.")
-    plot.add_argument("--sort-attributes", choices=ATTRIBUTE_ORDERS, default="schema",
-                      help="The order of the attributes (see"
-                           " irap_data.dataset_statistics.ATTRIBUTE_ORDERS). Default: schema.")
-    plot.add_argument("--sort-classes", choices=CLASS_ORDERS, default="schema",
-                      help="The order of the classes of an attribute (see"
-                           " irap_data.dataset_statistics.CLASS_ORDERS). Default: schema.")
-    plot.set_defaults(run=run_plot)
-    return parser
-
-
-def main(argv: T.Sequence[str] | None = None) -> int:
-    args = make_argument_parser().parse_args(argv)
-    try:
-        args.run(args)
-    except (ValueError, FileNotFoundError, ModuleNotFoundError) as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        path, distributions, normalize=normalize, log=log, dpi=dpi,
+        title=_format_plot_title(dataset_name, split, _describe_selection(
+            selection, context_offsets), selected.num_segments))

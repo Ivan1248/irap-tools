@@ -1,14 +1,15 @@
-"""Visualization helpers used by the dataset viewer.
+"""Visualization helpers of the dataset viewer app.
 
-Subset of utilities sufficient for `dataset_viewer.py`. Kept minimal so the
-package's runtime dependencies stay light (numpy/torch; OpenCV only when
-multiple context frames need to be composited).
+They need numpy, torch and OpenCV, which the `torch` extra provides.
 """
 
-from dataclasses import dataclass, field
+import typing as T
 
+import cv2
 import numpy as np
 import torch
+
+from irap_data.metadata import IGNORE_LABEL_INDEX
 
 
 # Palette with ~25 distinct colors for good contrast on dark/light backgrounds.
@@ -43,42 +44,26 @@ _CLASS_COLOR_PALETTE = (
 
 
 def get_index_color(idx: int) -> str:
-    """Hex color code for a class index. Index 0 returns gray."""
-    if idx < 0:
+    """Hex color code for a class index, gray for 0 and negative indices."""
+    if idx <= 0:
         return _CLASS_COLOR_PALETTE[0]
-    if idx < len(_CLASS_COLOR_PALETTE):
-        return _CLASS_COLOR_PALETTE[idx]
     return _CLASS_COLOR_PALETTE[1 + (idx - 1) % (len(_CLASS_COLOR_PALETTE) - 1)]
 
 
-@dataclass
-class AttributeMetadataDecoder:
-    """Decodes per-attribute class indices into human-readable strings."""
+def format_class_value(values: T.Sequence[str], class_idx: int) -> str:
+    """'<value> (<class_idx>)', with '(unlabeled)' as the value for `IGNORE_LABEL_INDEX`.
 
-    attr_to_value_to_class_idx: dict[str, dict[str, int]]
-    attr_to_class_idx_to_value: dict[str, dict[int, str]] = field(init=False)
-    ignore_class_idx: int | None = -1
+    Args:
+        values: The values of the attribute, in class-index order.
 
-    def __post_init__(self):
-        self.attr_to_class_idx_to_value = {attr: {i: v for v, i in self.attr_to_value_to_class_idx[attr].items()}
-                                           for attr in self.attr_to_value_to_class_idx.keys()}
-
-    def value_str(self, *, attr: str, class_idx: int) -> str:
-        if self.ignore_class_idx is not None and class_idx == self.ignore_class_idx:
-            return "(unlabeled)"
-        return self.attr_to_class_idx_to_value.get(attr, {}).get(class_idx, "(unknown label)")
-
-    def to_text(self, *, attr: str, class_idx: int) -> str:
-        return f"{attr}: {self.value_str(attr=attr, class_idx=class_idx)} ({class_idx})"
-
-    def decode_label_tensor(self, labels: torch.Tensor) -> dict[str, tuple[str, int]]:
-        res: dict[str, tuple[str, int]] = {}
-        if labels is None or labels.ndim != 1 or len(labels) != len(self.attr_to_class_idx_to_value):
-            return res
-        for i, attr in enumerate(self.attr_to_class_idx_to_value.keys()):
-            class_idx = int(labels[i])
-            res[attr] = (f"{self.value_str(attr=attr, class_idx=class_idx)} ({class_idx})", class_idx)
-        return res
+    Raises:
+        IndexError: For a class index outside `values`.
+    """
+    if class_idx == IGNORE_LABEL_INDEX:
+        return f"(unlabeled) ({class_idx})"
+    if not 0 <= class_idx < len(values):
+        raise IndexError(f"Class index {class_idx} is not in [0, {len(values)}).")
+    return f"{values[class_idx]} ({class_idx})"
 
 
 def tensor_image_to_uint8_np(tensor: torch.Tensor) -> np.ndarray:
@@ -92,7 +77,14 @@ def tensor_image_to_uint8_np(tensor: torch.Tensor) -> np.ndarray:
 
 
 def create_composite_view_strip(images: np.ndarray) -> np.ndarray | None:
-    """Stack the first frame as 'main' on top, the rest as a context strip below."""
+    """The first frame on top of a strip of the other frames, scaled to the width of the first.
+
+    Args:
+        images: (S, H, W, C) frames.
+
+    Returns:
+        The composite image, or None for no frames.
+    """
     if len(images) == 0:
         return None
 
@@ -100,24 +92,10 @@ def create_composite_view_strip(images: np.ndarray) -> np.ndarray | None:
     if len(images) == 1:
         return main_img
 
-    try:
-        import cv2  # type: ignore
-    except Exception as e:
-        raise RuntimeError("OpenCV (cv2) is required for create_composite_view_strip.") from e
-
-    context_imgs = images[1:]
-    ctx_strip = np.concatenate(context_imgs, axis=1)
-
-    h_main, w_main = main_img.shape[:2]
+    ctx_strip = np.concatenate(images[1:], axis=1)
+    w_main = main_img.shape[1]
     h_ctx, w_ctx = ctx_strip.shape[:2]
-
-    if w_ctx > 0:
-        scale = w_main / w_ctx
-        new_w = w_main
-        new_h = int(h_ctx * scale)
-        interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
-        ctx_resized = cv2.resize(ctx_strip, (new_w, new_h), interpolation=interp)
-    else:
-        ctx_resized = ctx_strip
-
+    scale = w_main / w_ctx
+    interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+    ctx_resized = cv2.resize(ctx_strip, (w_main, int(h_ctx * scale)), interpolation=interp)
     return np.concatenate([main_img, ctx_resized], axis=0)

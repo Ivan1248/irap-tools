@@ -24,7 +24,7 @@ def make_sequence_color_jitter(
     hue: float = None,
     preset: dict = None,
 ):
-    """Build a callable that color-jitters the ``rgb`` field of an example.
+    """Builds a callable that color-jitters the ``rgb`` field of an example.
 
     Args:
         brightness, contrast, saturation, hue: Individual parameters (override preset).

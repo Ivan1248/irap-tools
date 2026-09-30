@@ -1,7 +1,7 @@
 """Class frequencies and other statistics of the splits of an IRAP release, from metadata only.
 
-`dataset_report` formats them as HTML or Markdown, JSON and CSV, and `class_frequency_plot` plots
-them.
+`irap_data.reports.statistics_report` formats them as HTML, JSON and CSV, and
+`irap_data.reports.class_frequency_plot` plots them.
 """
 
 import dataclasses as dc
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .metadata import (
+from ..metadata import (
     IGNORE_LABEL_INDEX,
     ClassVocabulary,
     DatasetPreset,
@@ -26,16 +26,19 @@ from .metadata import (
 
 # Segment selections ###############################################################################
 
-SelectionKind = T.Literal["labeled", "reference", "model"]
+SelectionKind = T.Literal["labeled", "with_context", "model"]
 
 #: What each selection counts of a split.
 SELECTION_DESCRIPTIONS: dict[SelectionKind, str] = {
     "labeled": "The segments that have an image and labels, as the loading preset of the release"
                " requires them (see `irap_data.metadata.compute_split_labels`): the dataset as"
                " annotated.",
-    "reference": "The reference evaluation set: the labeled segments whose context window with"
-                 " the reference context offsets of the release is complete (see"
-                 " `irap_data.DatasetPreset`). Every model is scored on these segments.",
+    "with_context": "The labeled segments whose context window with the context offsets of the"
+                    " release (`irap_data.DatasetPreset.reference_context_offsets`) is complete:"
+                    " every offset stays inside the road sequence of the segment and has an"
+                    " image. The segments near the ends of a road sequence are left out. A model"
+                    " whose context offsets lie within the window can be scored on all of"
+                    " them, so they are an evaluation set common to such models.",
     "model": "The labeled segments whose context window with the context offsets of a model is"
              " complete: the segments that the model is trained and evaluated on.",
 }
@@ -67,7 +70,7 @@ def select_segments(
         return compute_split_labels(
             metadata, split,
             allow_missing_attributes=get_dataset_preset(dataset_name).allow_missing_attributes)
-    if selection in ("reference", "model"):
+    if selection in ("with_context", "model"):
         selected = select_preset_split_segments(metadata, dataset_name, split, context_offsets)
         return {sid: selected.segment_id_to_labels[sid] for sid in selected.segment_ids}
     raise ValueError(f"Unknown selection {selection!r}. Choose from {list(SELECTION_DESCRIPTIONS)}.")
@@ -351,12 +354,20 @@ class SplitStatistics:
         num_listed: The number of segments of the split in `splits.json`.
         num_with_image: The number of those that have an image.
         selections: Selection -> statistics. Empty for an unlabeled split.
+        selection_to_segment_ids: Selection -> the segments in it, as a dataset of the split
+            yields them, in `splits.json` order. An unlabeled split has no 'labeled' selection,
+            and its selections with context hold its segments with a complete context window.
     """
 
     split: str
     num_listed: int
     num_with_image: int
     selections: T.Mapping[SelectionKind, SelectionStatistics]
+    selection_to_segment_ids: T.Mapping[SelectionKind, tuple[str, ...]]
+
+    @property
+    def num_selected(self) -> dict[SelectionKind, int]:
+        return {k: len(v) for k, v in self.selection_to_segment_ids.items()}
 
 
 @dc.dataclass(frozen=True)
@@ -384,8 +395,17 @@ class DatasetStatistics:
 
     def get_context_offsets(self, selection: SelectionKind) -> tuple[int, ...] | None:
         """The context offsets that `selection` requires a complete window for, if any."""
-        return {"labeled": None, "reference": self.preset.reference_context_offsets,
+        return {"labeled": None, "with_context": self.preset.reference_context_offsets,
                 "model": self.model_context_offsets}[selection]
+
+    @property
+    def is_model_selection_same_as_with_context(self) -> bool:
+        """Whether there is a 'model' selection and it has the same segments as the
+        'with_context' selection in every labeled split, so that its statistics repeat those of
+        'with_context'."""
+        return self.model_context_offsets is not None and all(
+            s.selection_to_segment_ids["model"] == s.selection_to_segment_ids["with_context"]
+            for s in self.splits if not is_unlabeled_split(s.split))
 
     def get_split_distributions(
         self, selection: SelectionKind,
@@ -402,8 +422,8 @@ def compute_dataset_statistics(
     splits: T.Sequence[str] | None = None,
     model_context_offsets: T.Sequence[int] | None = None,
 ) -> DatasetStatistics:
-    """Computes the statistics of the splits of a release in the 'labeled' and 'reference'
-    selections, and in the 'model' selection if `model_context_offsets` are given.
+    """Computes the statistics of the splits of a release in the 'labeled' and
+    'with_context' selections, and in the 'model' selection if `model_context_offsets` are given.
 
     Args:
         dataset_name: A key of `DATASET_PRESETS`.
@@ -424,14 +444,20 @@ def compute_dataset_statistics(
 
     def compute_split_statistics(split: str) -> SplitStatistics:
         listed = metadata.splits[split]
-        selections = {} if is_unlabeled_split(split) else {
-            selection: compute_selection_statistics(metadata, select_segments(
-                metadata, dataset_name, split, selection,
-                model_context_offsets if selection == "model" else None))
-            for selection in _get_selections(model_context_offsets)}
+        is_unlabeled = is_unlabeled_split(split)
+        selection_to_segments = {
+            selection: select_segments(metadata, dataset_name, split, selection,
+                                       model_context_offsets if selection == "model" else None)
+            for selection in _get_selections(model_context_offsets)
+            if not (is_unlabeled and selection == "labeled")}
+        selections = {} if is_unlabeled else {
+            selection: compute_selection_statistics(metadata, segment_id_to_labels)
+            for selection, segment_id_to_labels in selection_to_segments.items()}
         return SplitStatistics(split=split, num_listed=len(listed),
                                num_with_image=sum(sid in paths for sid in listed),
-                               selections=selections)
+                               selections=selections,
+                               selection_to_segment_ids={
+                                   k: tuple(v) for k, v in selection_to_segments.items()})
 
     return DatasetStatistics(dataset=dataset_name, metadata_dir=metadata.metadata_dir,
                              preset=preset, model_context_offsets=model_context_offsets,
@@ -439,4 +465,4 @@ def compute_dataset_statistics(
 
 
 def _get_selections(model_context_offsets: tuple[int, ...] | None) -> tuple[SelectionKind, ...]:
-    return ("labeled", "reference") + (() if model_context_offsets is None else ("model",))
+    return ("labeled", "with_context") + (() if model_context_offsets is None else ("model",))

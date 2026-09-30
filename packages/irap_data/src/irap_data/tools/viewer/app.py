@@ -1,32 +1,24 @@
-"""Streamlit-based IRAP dataset viewer.
+"""The Streamlit app of the IRAP dataset viewer.
 
-Requires the package to be installed (``pip install -e .[viewer]`` from the
-``irap-data`` directory).
-
-Run with (Streamlit >= 1.41)::
-
-    streamlit run -m irap_data.dataset_viewer
-
-or, on any Streamlit version (the file uses absolute imports, so it works as a
-plain script as long as ``irap_data`` is importable)::
-
-    streamlit run <path-to>/irap_data/dataset_viewer.py
+Needs the `viewer` extra. Run it with the `irap-dataset-viewer` command (see
+`irap_data.tools.viewer`), or with ``streamlit run <path-to>/irap_data/tools/viewer/app.py``.
+The file uses absolute imports, so that Streamlit can run it as a script.
 """
 
 import dataclasses as dc
-import os
 import random
 from pathlib import Path
 import typing as T
 
+import numpy as np
 import streamlit as st
 
-from irap_data import make_bih_data, make_vietnam_data
-from irap_data.irap_dataset import IGNORE_LABEL_INDEX
+from irap_data import IRAP_DATASET_FACTORIES
 from irap_data.jitter import make_sequence_color_jitter, JITTER_STANDARD, JITTER_STRONG
-from irap_data.vis_utils import (
-    AttributeMetadataDecoder,
+from irap_data.metadata import compute_label_matrix, resolve_datasets_root
+from irap_data.tools.viewer.vis_utils import (
     create_composite_view_strip,
+    format_class_value,
     get_index_color,
     tensor_image_to_uint8_np,
 )
@@ -34,18 +26,26 @@ from irap_data.vis_utils import (
 
 # Constants ####################################################################
 
-DATASET_NAMES = ("IRAP_BIH", "IRAP_Vietnam")
+#: Release name (a key of `IRAP_DATASET_FACTORIES`) -> (dataset directory, metadata directory)
+#: under the datasets directory.
+_RELEASE_TO_SUBDIRS = {
+    "bh": ("IRAP_BIH", "IRAP_BIH_METADATA"),
+    "vietnam": ("IRAP_Vietnam", "IRAP_Vietnam"),
+}
 
 _DATASETS_DIR_HELP = (
     "Parent directory containing one or more IRAP datasets.\n\n"
     "Expected layout:\n"
-    "- IRAP-BiH:   <datasets_dir>/IRAP_BIH/ (data)\n"
+    "- IRAP-BH:    <datasets_dir>/IRAP_BIH/ (data)\n"
     "              <datasets_dir>/IRAP_BIH_METADATA/ (metadata)\n"
     "- IRAP-Vietnam: <datasets_dir>/IRAP_Vietnam/ (data + metadata together)\n\n"
-    "Default is read from $IRAP_HOME, then $DATASETS_DIR."
+    "Default is read from $IRAP_HOME, then $DATASETS_PATH."
 )
 
-_JITTER_OPTIONS = ["None", "Standard", "Strong (semi-supervised)"]
+#: ColorJitter option label -> jitter preset, None for no jitter.
+_JITTER_PRESETS = {"None": None, "Standard": JITTER_STANDARD, "Strong (semi-supervised)": JITTER_STRONG}
+
+_NEIGHBOR_RADIUS = 8
 
 _VIEWER_CSS = """
 <style>
@@ -112,9 +112,13 @@ _VIEWER_CSS = """
 # Configuration ################################################################
 
 
-@dc.dataclass
+@dc.dataclass(frozen=True)
 class ViewerConfig:
-    """User-facing sidebar settings (pending or active)."""
+    """The sidebar settings that the loaded dataset depends on (pending or active).
+
+    Attributes:
+        dataset_name: The release name, a key of `IRAP_DATASET_FACTORIES`.
+    """
 
     dataset_name: str
     ds_dir: Path
@@ -124,147 +128,112 @@ class ViewerConfig:
 
     @property
     def load_key(self) -> tuple:
-        """Hashable key for dataset loading (excludes display-only settings like jitter)."""
+        """The settings as a tuple of strings and integers, a key for the Streamlit caches."""
         return (self.dataset_name, str(self.ds_dir), str(self.md_dir), self.split, self.context_offsets)
 
 
 # Dataset detection and loading ################################################
 
 
-def _detect_datasets(datasets_dir: Path) -> list[str]:
-    return [name for name in DATASET_NAMES if (datasets_dir / name).is_dir()]
+def _detect_releases(datasets_dir: Path) -> list[str]:
+    return [name for name, (ds_subdir, _) in _RELEASE_TO_SUBDIRS.items() if (datasets_dir / ds_subdir).is_dir()]
 
 
-def _resolve_paths(datasets_dir: Path, dataset_name: str) -> tuple[Path, Path]:
-    """Return (dataset_dir, metadata_dir) for the chosen dataset."""
-    ds_dir = datasets_dir / dataset_name
-    if dataset_name == "IRAP_BIH":
-        # BiH ships metadata as a sibling directory.
-        md_dir = datasets_dir / "IRAP_BIH_METADATA"
-    else:
-        # Vietnam stores metadata inside the dataset root.
-        md_dir = ds_dir
-    return ds_dir, md_dir
-
-
-@st.cache_data(max_entries=256)
+@st.cache_resource(max_entries=64)
 def load_example(_ds, idx: int, cache_key: tuple) -> dict:
-    """Cache `ds[idx]` so Prev/Next revisits don't re-decode PNGs.
+    """`ds[idx]`, cached so that revisits do not decode the images again.
 
-    `cache_key` is the active load key; it invalidates the cache when the
-    user switches dataset/split/context. The `_ds` underscore prefix tells
-    Streamlit to skip hashing the IRAPDataset (already identified by cache_key).
+    `cache_key` is the active load key, which identifies `_ds` (Streamlit does not hash
+    arguments with a leading underscore). The cached example is shared, not copied, so callers
+    do not modify it.
     """
-    return dict(_ds[idx])  # Convert to dict in case of lazy fields
+    return _ds[idx]
 
 
 @st.cache_resource(hash_funcs={Path: str})
-def load_dataset(dataset_name: str, dataset_dir: Path, metadata_dir: Path, split: str, context_offsets: tuple):
-    if dataset_name == "IRAP_Vietnam":
-        splits = make_vietnam_data(
-            dataset_dir=dataset_dir,
-            metadata_dir=metadata_dir,
-            context_offsets=context_offsets,
-        )
-    else:
-        splits = make_bih_data(
-            dataset_dir=dataset_dir,
-            metadata_dir=metadata_dir,
-            context_offsets=context_offsets,
-        )
-    return splits[split]
+def load_splits(dataset_name: str, dataset_dir: Path, metadata_dir: Path, context_offsets: tuple):
+    """The datasets of all splits of a release, cached so that a split change does not rebuild them."""
+    return IRAP_DATASET_FACTORIES[dataset_name](
+        dataset_dir=dataset_dir, metadata_dir=metadata_dir, context_offsets=context_offsets
+    )
 
 
 # Filtering ####################################################################
 
 
+@st.cache_resource(max_entries=4)
+def get_label_matrix(_ds, cache_key: tuple) -> np.ndarray:
+    """The `(N, A)` label matrix of `_ds` (see `compute_label_matrix`), cached per load key."""
+    return compute_label_matrix(_ds.segment_id_to_labels, _ds.segment_ids, len(_ds.info.attr_to_value_to_class_idx))
+
+
 def compute_filtered_indices(
-    ds,
-    decoder: AttributeMetadataDecoder,
-    filters: dict[str, set[str]],
+    label_matrix: np.ndarray,
+    attr_to_value_to_class_idx: T.Mapping[str, T.Mapping[str, int]],
+    filters: T.Mapping[str, T.Collection[str]],
 ) -> list[int]:
-    """Indices in `ds` whose label satisfies the per-attribute allow-sets.
+    """The rows of `label_matrix` whose labels are in the per-attribute allowed values.
 
-    Empty allow-set for an attribute = no constraint on that attribute.
+    An attribute without allowed values in `filters` is not constrained.
     """
-    if not any(filters.values()):
-        return list(range(len(ds)))
-
-    val_to_idx = decoder.attr_to_value_to_class_idx
-    allowed_idx_by_attr = {a: {val_to_idx[a][v] for v in vs} for a, vs in filters.items() if vs}
-    attr_pos = {a: i for i, a in enumerate(val_to_idx.keys())}
-
-    out = []
-    for i, sid in enumerate(ds.segment_ids):
-        lbls = ds.segment_id_to_labels[sid]
-        if all(lbls[attr_pos[a]] in allowed for a, allowed in allowed_idx_by_attr.items()):
-            out.append(i)
-    return out
-
-
-def _filters_key(filters: dict[str, set[str]]) -> frozenset:
-    return frozenset((a, frozenset(vs)) for a, vs in filters.items() if vs)
+    is_match = np.ones(len(label_matrix), dtype=bool)
+    for attr_idx, (attr, value_to_class_idx) in enumerate(attr_to_value_to_class_idx.items()):
+        if allowed_values := filters.get(attr):
+            allowed_class_indices = [value_to_class_idx[v] for v in allowed_values]
+            is_match &= np.isin(label_matrix[:, attr_idx], allowed_class_indices)
+    return np.flatnonzero(is_match).tolist()
 
 
 # Neighbor sequence display ####################################################
 
 
 def get_context_rgb_relpaths(ds, center_sid: str) -> list[tuple[int, str | None]]:
-    """List of (offset, relpath-or-None) in context_offsets order."""
-    ctx_ids = ds.segment_id_to_context_ids.get(center_sid)
-    if ctx_ids is None:
-        return []
+    """(offset, relative RGB path or None) of the context frames, in `context_offsets` order."""
     out = []
-    for offset, sid in zip(ds.context_offsets, ctx_ids):
-        p = ds.seg_to_paths.get(sid, {}).get("rgb")
+    for offset, sid in zip(ds.context_offsets, ds.segment_id_to_context_ids[center_sid]):
+        p = ds.seg_to_paths[sid].get("rgb")
         out.append((offset, p.relative_to(ds.root).as_posix() if p is not None else None))
     return out
 
 
-def get_neighbor_labels(ds, ordered_attrs: list[str], center_sid: str, radius: int = 5) -> dict:
-    """Map offset -> {attr: class_idx} for neighbors within +/-radius along the road.
+def get_neighbor_labels(ds, center_sid: str, radius: int) -> dict[int, T.Sequence[int]]:
+    """Offset -> labels of the segments within `radius` positions of a segment along its road.
 
-    Uses the dataset's road-sequence index for correct neighbor resolution
-    across multi-road datasets (e.g. Vietnam), instead of integer arithmetic
-    on segment IDs.
+    Neighbors without labels in `ds` (for example, from another split) are left out.
     """
-    if center_sid not in ds.seq_index:
-        return {}
-
     road_id, pos = ds.seq_index[center_sid]
     seq = ds.road_to_seq[road_id]
-    sid_to_labels = ds.segment_id_to_labels
-
     neighbors = {}
     for offset in range(-radius, radius + 1):
-        if offset == 0:
-            continue
         neighbor_pos = pos + offset
-        if 0 <= neighbor_pos < len(seq):
-            neighbor_sid = seq[neighbor_pos]
-            if neighbor_sid in sid_to_labels:
-                raw_labels = sid_to_labels[neighbor_sid]
-                if len(raw_labels) == len(ordered_attrs):
-                    neighbors[offset] = {a: raw_labels[i] for i, a in enumerate(ordered_attrs)}
+        if offset != 0 and 0 <= neighbor_pos < len(seq):
+            labels = ds.segment_id_to_labels.get(seq[neighbor_pos])
+            if labels is not None:
+                neighbors[offset] = labels
     return neighbors
 
 
 def generate_sequence_html(
-    attr_values: dict[str, list[str]],
-    neighbors: dict,
-    attr_key: str,
+    values: T.Sequence[str],
+    neighbors: T.Mapping[int, T.Sequence[int]],
+    attr_idx: int,
     offsets: T.Iterable[int],
 ) -> str:
+    """HTML squares colored by the neighbors' class of an attribute, transparent without a neighbor.
+
+    Args:
+        values: The values of the attribute, in class-index order.
+        neighbors: Offset -> labels (see `get_neighbor_labels`).
+        attr_idx: The index of the attribute in the labels.
+    """
     squares = []
     for offset in offsets:
-        if offset in neighbors and attr_key in neighbors[offset]:
-            n_idx = neighbors[offset][attr_key]
-            n_color = get_index_color(n_idx)
-            sign = "+" if offset > 0 else ""
-            tooltip = f"Offset {sign}{offset}: {n_idx}"
-            if attr_key in attr_values and 0 <= n_idx < len(attr_values[attr_key]):
-                tooltip = f"{attr_values[attr_key][n_idx]} ({n_idx})"
-            squares.append(f'<div class="seq-square" style="background-color:{n_color};" title="{tooltip}"></div>')
+        if offset in neighbors:
+            class_idx = neighbors[offset][attr_idx]
+            squares.append(
+                f'<div class="seq-square" style="background-color:{get_index_color(class_idx)};"'
+                f' title="{format_class_value(values, class_idx)}"></div>'
+            )
         else:
             squares.append('<div class="seq-square" style="background-color:transparent;"></div>')
     return "".join(squares)
@@ -274,29 +243,31 @@ def generate_sequence_html(
 
 
 def _render_sidebar_config() -> ViewerConfig | None:
-    """Render sidebar input widgets and return the pending configuration.
+    """Renders sidebar input widgets and returns the pending configuration.
 
     Returns None if the inputs are invalid or incomplete (error already shown).
     """
-    default_datasets_dir = os.environ.get("IRAP_HOME") or os.environ.get("DATASETS_DIR") or ""
+    try:
+        default_datasets_dir = str(resolve_datasets_root())
+    except RuntimeError:
+        default_datasets_dir = ""
     datasets_dir_input = st.sidebar.text_input(
         "Datasets directory",
         value=default_datasets_dir,
         help=_DATASETS_DIR_HELP,
     )
     if not datasets_dir_input:
-        st.error("Set $IRAP_HOME or $DATASETS_DIR, or enter a path in the sidebar.")
+        st.error("Set $IRAP_HOME or $DATASETS_PATH, or enter a path in the sidebar.")
         return None
     datasets_dir = Path(datasets_dir_input).expanduser()
 
-    # Dataset selector — only datasets that exist under datasets_dir are offered.
-    detected = _detect_datasets(datasets_dir)
-    if not detected:
-        st.error(f"No datasets found under {datasets_dir}. Looked for: {', '.join(DATASET_NAMES)}.")
+    releases = _detect_releases(datasets_dir)
+    if not releases:
+        looked_for = ", ".join(ds_subdir for ds_subdir, _ in _RELEASE_TO_SUBDIRS.values())
+        st.error(f"No datasets found under {datasets_dir}. Looked for: {looked_for}.")
         return None
-    dataset_name = st.sidebar.selectbox("Dataset", detected, index=0)
-
-    ds_dir, md_dir = _resolve_paths(datasets_dir, dataset_name)
+    dataset_name = st.sidebar.selectbox("Dataset", releases, format_func=lambda r: _RELEASE_TO_SUBDIRS[r][0])
+    ds_subdir, md_subdir = _RELEASE_TO_SUBDIRS[dataset_name]
 
     split = st.sidebar.selectbox("Split", ["train", "val", "test"])
 
@@ -309,63 +280,51 @@ def _render_sidebar_config() -> ViewerConfig | None:
 
     return ViewerConfig(
         dataset_name=dataset_name,
-        ds_dir=ds_dir,
-        md_dir=md_dir,
+        ds_dir=datasets_dir / ds_subdir,
+        md_dir=datasets_dir / md_subdir,
         split=split,
         context_offsets=context_offsets,
     )
 
 
-def _ensure_dataset_loaded(config: ViewerConfig):
-    """Handle the deferred-load button and return (ds, active_config) or None.
+def _ensure_dataset_loaded(config: ViewerConfig) -> tuple[T.Any, ViewerConfig] | None:
+    """Renders the load button and returns the loaded dataset with its configuration.
 
-    Uses session state to avoid reloading the dataset on every widget change.
-    The user must click the button to trigger loading/reloading.
+    The dataset is loaded or reloaded only on a click, not on every widget change, so pending
+    settings can differ from the active ones.
+
+    Returns:
+        (dataset, active configuration), or None before the first load or for an empty dataset.
     """
-    pending_load = config.load_key
-    active_load = st.session_state.get("active_load")
-    stale = active_load != pending_load
+    active_config = st.session_state.get("active_config")
+    # Compares the load keys, as each rerun of the script defines a new `ViewerConfig` class, which
+    # makes the dataclass equality with a stored configuration false.
+    is_stale = active_config is not None and active_config.load_key != config.load_key
 
-    if active_load is None:
-        load_label = "Load dataset"
-    elif stale:
-        load_label = "Reload (settings changed)"
-    else:
-        load_label = None
-
-    if load_label is not None:
+    if active_config is None or is_stale:
+        load_label = "Load dataset" if active_config is None else "Reload (settings changed)"
         if st.sidebar.button(load_label, width="stretch", type="primary"):
-            st.session_state.active_load = pending_load
-            active_load = pending_load
-            stale = False
+            st.session_state.active_config = active_config = config
+            st.session_state.cursor = 0
+            is_stale = False
 
-    if active_load is None:
+    if active_config is None:
         st.info("Configure the sidebar settings and click **Load dataset** to begin.")
         return None
 
-    # Reconstruct active config from the stored load key.
-    a_name, a_ds_dir, a_md_dir, a_split, a_ctx_seq = active_load
-    active_config = ViewerConfig(
-        dataset_name=a_name,
-        ds_dir=Path(a_ds_dir),
-        md_dir=Path(a_md_dir),
-        split=a_split,
-        context_offsets=a_ctx_seq,
-    )
+    if is_stale:
+        st.sidebar.warning("Settings changed – showing previously loaded data. Click Reload to apply.")
 
-    if stale:
-        st.sidebar.warning("Settings changed — showing previously loaded data. Click Reload to apply.")
-
-    with st.spinner(f"Loading {active_config.dataset_name} / {active_config.split}..."):
-        ds = load_dataset(
+    with st.spinner(f"Loading {active_config.ds_dir.name} / {active_config.split}..."):
+        splits = load_splits(
             active_config.dataset_name,
             active_config.ds_dir,
             active_config.md_dir,
-            active_config.split,
             active_config.context_offsets,
         )
+    ds = splits[active_config.split]
 
-    if not ds or len(ds) == 0:
+    if len(ds) == 0:
         st.warning("Dataset is empty.")
         return None
 
@@ -374,52 +333,25 @@ def _ensure_dataset_loaded(config: ViewerConfig):
 
 def _render_filters_and_navigation(
     ds,
-    decoder: AttributeMetadataDecoder,
     load_key: tuple,
-    ordered_attrs: list[str],
     attr_values: dict[str, list[str]],
-) -> tuple[int, int, list[int]] | None:
-    """Render filter widgets and navigation controls in the sidebar.
+) -> int | None:
+    """Renders filter widgets and navigation controls in the sidebar.
 
-    Returns (cursor, ds_idx, filtered) or None if no examples match.
+    Returns:
+        The dataset index of the selected example, or None if no examples match.
     """
-    # --- Filtering UI ---
-    if "filters" not in st.session_state:
-        st.session_state.filters = {}
-
-    # When the dataset (name + split) changes, reset filters and cursor.
-    ds_key = load_key
-    if st.session_state.get("ds_key") != ds_key:
-        st.session_state.ds_key = ds_key
-        st.session_state.filters = {a: [] for a in ordered_attrs}
-        st.session_state.cursor = 0
-
-    # Ensure filter dict matches current attributes.
-    for a in ordered_attrs:
-        st.session_state.filters.setdefault(a, [])
-
+    # The load key in the widget keys gives each loaded dataset its own, initially empty, filters.
+    filter_widget_keys = {a: f"filter_{hash(load_key)}_{a}" for a in attr_values}
     with st.sidebar.expander("Filter by attributes", expanded=False):
         if st.button("Clear filters", width="stretch"):
-            for a in ordered_attrs:
-                st.session_state.filters[a] = []
-        for a in ordered_attrs:
-            st.session_state.filters[a] = st.multiselect(
-                a,
-                attr_values[a],
-                default=st.session_state.filters.get(a, []),
-                key=f"filter_{hash(load_key)}_{a}",
-            )
+            for widget_key in filter_widget_keys.values():
+                st.session_state[widget_key] = []
+        filters = {a: st.multiselect(a, attr_values[a], key=widget_key) for a, widget_key in filter_widget_keys.items()}
 
-    # Active filters dict[attr, set[str]]
-    active_filters = {a: set(v) for a, v in st.session_state.filters.items() if v}
-
-    # Cache filtered indices by filter signature.
-    fkey = (ds_key, _filters_key(active_filters))
-    cache = st.session_state.setdefault("_filtered_cache", {})
-    if fkey not in cache:
-        cache.clear()  # keep cache small — only the latest filter result
-        cache[fkey] = compute_filtered_indices(ds, decoder, active_filters)
-    filtered = cache[fkey]
+    filtered = compute_filtered_indices(
+        get_label_matrix(ds, cache_key=load_key), ds.info.attr_to_value_to_class_idx, filters
+    )
 
     st.sidebar.write(f"Size: {len(ds)} segments, {len(filtered)} matching")
 
@@ -427,84 +359,67 @@ def _render_filters_and_navigation(
         st.warning("No examples match the current filters.")
         return None
 
-    num_filtered = len(filtered)
+    # Wraps the index at the boundaries and converts negative indices to positive.
+    st.session_state.cursor = st.session_state.get("cursor", 0) % len(filtered)
 
-    # Normalize cursor: wrap at boundaries, convert negative indices to positive.
-    if "cursor" not in st.session_state:
-        st.session_state.cursor = 0
-    else:
-        st.session_state.cursor = st.session_state.cursor % num_filtered
-
-    # Navigation
     if st.sidebar.button("Random", width="stretch"):
-        st.session_state.cursor = random.randint(0, num_filtered - 1)
+        st.session_state.cursor = random.randint(0, len(filtered) - 1)
 
     cursor = st.sidebar.number_input(
         "Index (within filtered)",
-        min_value=-num_filtered,
-        max_value=num_filtered,
+        min_value=-len(filtered),
+        max_value=len(filtered),
         step=1,
         key="cursor",
     )
-    cursor = cursor % num_filtered
-    ds_idx = filtered[cursor]
+    ds_idx = filtered[cursor % len(filtered)]
     st.sidebar.caption(f"Dataset index: {ds_idx}")
 
-    return cursor, ds_idx, filtered
+    return ds_idx
 
 
 # Main content columns #########################################################
 
 
-def _render_image_column(data: dict, ds, context_offsets: tuple[int, ...], jitter_selection: str) -> None:
-    """Render the image column: composite view strip with optional jitter preview."""
-    rgb = data.get("rgb")
-    if rgb is None:
-        return
+def _render_image_column(data: dict, ds, jitter_selection: str) -> None:
+    """Renders the image column: composite view strip with optional jitter preview."""
+    rgb = data["rgb"]
 
     jitter_caption_suffix = ""
-    if jitter_selection != "None":
-        preset = JITTER_STANDARD if jitter_selection == "Standard" else JITTER_STRONG
-        rgb = make_sequence_color_jitter(preset=preset)(dict(rgb=rgb))["rgb"]
+    if (jitter_preset := _JITTER_PRESETS[jitter_selection]) is not None:
+        rgb = make_sequence_color_jitter(preset=jitter_preset)(dict(rgb=rgb))["rgb"]
         jitter_caption_suffix = f" [{jitter_selection.lower().split()[0]} jitter]"
 
     imgs_np = tensor_image_to_uint8_np(rgb)
     final_img = create_composite_view_strip(imgs_np)
 
-    caption = f"Segment: {data.get('segment_id', 'Unknown')}{jitter_caption_suffix}"
+    caption = f"Segment: {data['segment_id']}{jitter_caption_suffix}"
     if len(imgs_np) > 1:
-        caption += f" | Context offsets: {', '.join(map(str, context_offsets))}"
+        caption += f" | Context offsets: {', '.join(map(str, ds.context_offsets))}"
 
     st.image(final_img, caption=caption, width="stretch")
 
-    paths = get_context_rgb_relpaths(ds, data.get("segment_id"))
-    if paths:
-        lines = [f"{('+' if off > 0 else '')}{off}: {rel if rel is not None else '(missing)'}" for off, rel in paths]
-        st.markdown(
-            "<div style='font-family:monospace;font-size:75%;line-height:1.2;"
-            "white-space:nowrap;overflow-x:auto;'>" + "<br>".join(lines) + "</div>",
-            unsafe_allow_html=True,
-        )
+    lines = [
+        f"{('+' if off > 0 else '')}{off}: {rel if rel is not None else '(missing)'}"
+        for off, rel in get_context_rgb_relpaths(ds, data["segment_id"])
+    ]
+    st.markdown(
+        "<div style='font-family:monospace;font-size:75%;line-height:1.2;"
+        "white-space:nowrap;overflow-x:auto;'>" + "<br>".join(lines) + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
-def _render_attribute_column(
-    data: dict, ds, decoder: AttributeMetadataDecoder, ordered_attrs: list[str], attr_values: dict[str, list[str]]
-) -> None:
-    """Render the attribute column: decoded labels with neighbor sequence squares."""
-    target = data.get("target")
-    if target is None:
-        st.info("No attributes")
-        return
-
-    decoded = decoder.decode_label_tensor(target)
-    radius = 8
-    neighbors = get_neighbor_labels(ds, ordered_attrs, data.get("segment_id"), radius=radius)
+def _render_attribute_column(data: dict, ds, attr_values: dict[str, list[str]]) -> None:
+    """Renders the attribute column: decoded labels with neighbor sequence squares."""
+    neighbors = get_neighbor_labels(ds, data["segment_id"], radius=_NEIGHBOR_RADIUS)
 
     html_lines = []
-    for k, (v_str, v_idx) in decoded.items():
+    for attr_idx, (k, v_idx) in enumerate(zip(attr_values, map(int, data["target"]), strict=True)):
+        v_str = format_class_value(attr_values[k], v_idx)
         color = get_index_color(v_idx)
-        pre_html = generate_sequence_html(attr_values, neighbors, k, range(-radius, 0))
-        post_html = generate_sequence_html(attr_values, neighbors, k, range(1, radius + 1))
+        pre_html = generate_sequence_html(attr_values[k], neighbors, attr_idx, range(-_NEIGHBOR_RADIUS, 0))
+        post_html = generate_sequence_html(attr_values[k], neighbors, attr_idx, range(1, _NEIGHBOR_RADIUS + 1))
         html_lines.append(
             f"""
             <div class="attributes-text">
@@ -533,28 +448,23 @@ def main():
         return
     ds, active_config = result
 
-    # Decoder built from the dataset's authoritative metadata
-    decoder = AttributeMetadataDecoder(ds.info.attr_to_value_to_class_idx, ignore_class_idx=IGNORE_LABEL_INDEX)
-    ordered_attrs = list(decoder.attr_to_value_to_class_idx.keys())
-    attr_values = {a: list(decoder.attr_to_value_to_class_idx[a].keys()) for a in ordered_attrs}
+    # Attributes and their values, in class-index order.
+    attr_values = {a: list(v_to_idx) for a, v_to_idx in ds.info.attr_to_value_to_class_idx.items()}
 
-    nav = _render_filters_and_navigation(ds, decoder, active_config.load_key, ordered_attrs, attr_values)
-    if nav is None:
+    ds_idx = _render_filters_and_navigation(ds, active_config.load_key, attr_values)
+    if ds_idx is None:
         return
-    cursor, ds_idx, filtered = nav
 
-    # Load example (cached — see load_example).
     try:
         data = load_example(ds, ds_idx, cache_key=active_config.load_key)
     except Exception as e:
         st.error(f"Error reading item {ds_idx}: {e}")
         return
 
-    # Jitter selection at the bottom of the sidebar
+    # Rendered after the navigation widgets, so that it is at the bottom of the sidebar.
     jitter_selection = st.sidebar.selectbox(
         "ColorJitter",
-        _JITTER_OPTIONS,
-        index=0,
+        list(_JITTER_PRESETS),
         help="Preview ColorJitter augmentation as used during training.",
     )
 
@@ -563,10 +473,10 @@ def main():
     col_imgs, col_attrs = st.columns([1, 1])
 
     with col_imgs:
-        _render_image_column(data, ds, active_config.context_offsets, jitter_selection)
+        _render_image_column(data, ds, jitter_selection)
 
     with col_attrs:
-        _render_attribute_column(data, ds, decoder, ordered_attrs, attr_values)
+        _render_attribute_column(data, ds, attr_values)
 
     with st.expander("Raw Dictionary"):
         st.write({k: (str(v.shape) if hasattr(v, "shape") else v) for k, v in data.items()})

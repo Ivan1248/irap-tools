@@ -2,7 +2,9 @@
 
 The metadata API (`attrs`, `metadata`, `lazy_dict`) needs only numpy. The dataset classes and
 image utilities need the `torch` extra and are imported on first access, so that importing
-`irap_data` does not import torch.
+`irap_data` does not import torch. `reports` computes the dataset statistics and writes their
+report, and `tools` holds the command-line tools and the dataset viewer. The library imports
+neither.
 """
 
 import importlib
@@ -28,6 +30,7 @@ from .metadata import (
     compute_num_segments_per_class,
     compute_segment_labels,
     compute_split_labels,
+    get_bh_class_counts,
     get_bih_class_counts,
     get_class_counts,
     get_dataset_preset,
@@ -45,13 +48,11 @@ from .metadata import (
 
 # Name -> submodule, for the names that need torch.
 _TORCH_NAME_TO_MODULE = {
-    "AttributeFrequencyStats": "attribute_frequencies",
-    "compute_attribute_frequency_stats": "attribute_frequencies",
-    "frequency_stats_to_attr_to_default_class_idx": "attribute_frequencies",
     "Dataset": "dataset",
     "InferenceImageDataset": "inference_dataset",
     "IRAP_DATASET_FACTORIES": "irap_dataset",
     "IRAPDataset": "irap_dataset",
+    "make_bh_data": "irap_dataset",
     "make_bih_data": "irap_dataset",
     "make_irap_data": "irap_dataset",
     "make_irap_data_by_name": "irap_dataset",
