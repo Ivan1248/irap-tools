@@ -72,7 +72,7 @@ The metadata directory must contain the following files (names match BiH):
   (present when `unlabeled_sequence_id_to_data.json` exists): `unlabeled_train`,
   `unlabeled_val`, `unlabeled_test`. An additional `unlabeled_unlocated` key is
   auto-populated from `unlabeled_unlocated_segment_ids.json` (unlabeled segments
-  from image folders with no labeled siblings, so no map coordinate is
+  from recordings with no labeled siblings, so no map coordinate is
   derivable). See the Stage 3c "Output format" section in
   [`README.md`](README.md) for details.
 - **`segment_id_to_data_paths_rel.json`** – `{seg_id: {"rgb": "<rel/path.png>"}}`

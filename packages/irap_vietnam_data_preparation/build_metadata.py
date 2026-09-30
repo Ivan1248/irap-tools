@@ -17,7 +17,7 @@ Writes (into <data_dir>/ directly):
                                            attribute_irap_number_to_class_idx)
     unlabeled_segment_ids.json
     unlabeled_sequence_id_to_data.json    (sequence_id -> {segs, centroid}) for editor
-    unlabeled_unlocated_segment_ids.json  (seg_ids from image folders with no
+    unlabeled_unlocated_segment_ids.json  (seg_ids from recordings with no
                                            labeled siblings, so no map coordinate
                                            is derivable; written only when
                                            non-empty, and deleted if a previous
@@ -63,6 +63,10 @@ from parse_coding_tables import ordered_attribute_names
 # two coded rows shows up as step 4, etc.
 SEG_ID_STEP_TO_KM = 0.010
 ADJACENCY_TOLERANCE_KM = 0.0025  # ±2.5 m
+# A larger seg_id step between the images of a folder starts a new recording
+# (see split_folders_into_recordings). 100 m allows for a few missing images;
+# the recordings of the Vietnam "nan" folder are 89 or more seg_ids apart.
+MAX_SEG_ID_STEP_WITHIN_RECORDING = 10
 
 # Captures the integer N in any "..._segN.png" filename.
 SEG_ID_FROM_FILENAME_RE = re.compile(r"_seg(\d+)\.png$", re.IGNORECASE)
@@ -256,12 +260,44 @@ def build_road_sequences_and_validate(
     return road_to_seq, violations, sections_split
 
 
+def split_folders_into_recordings(seg_to_folder: dict[str, str]) -> dict[str, str]:
+    """Map each seg_id to its recording: its image folder, or a run of it.
+
+    seg_ids count up by 1 every 10 m within a recording and jump between
+    recordings. An image folder usually holds one recording, but a folder whose
+    video name was lost upstream (``FRAMES/nan/nan_seg*.png``) holds several,
+    from different roads. Such a folder is split wherever consecutive seg_ids
+    are more than ``MAX_SEG_ID_STEP_WITHIN_RECORDING`` apart, so that each
+    recording is placed on the map and assigned to a split on its own.
+
+    Returns:
+        ``seg_id -> recording``, where the recording is the folder name for a
+        folder with one run and ``"<folder>@<first seg_id of the run>"``
+        otherwise.
+    """
+    folder_to_seg_ids: dict[str, list[int]] = defaultdict(list)
+    for sid, folder in seg_to_folder.items():
+        folder_to_seg_ids[folder].append(int(sid))
+    seg_to_recording: dict[str, str] = {}
+    for folder, seg_ids in folder_to_seg_ids.items():
+        seg_ids.sort()
+        runs = [[seg_ids[0]]]
+        for prev, curr in zip(seg_ids, seg_ids[1:]):
+            if curr - prev > MAX_SEG_ID_STEP_WITHIN_RECORDING:
+                runs.append([])
+            runs[-1].append(curr)
+        for run in runs:
+            recording = folder if len(runs) == 1 else f"{folder}@{run[0]}"
+            seg_to_recording.update((str(sid), recording) for sid in run)
+    return seg_to_recording
+
+
 def interleave_unlabeled_into_road_sequences(
     road_to_seq: dict[str, list[str]],
-    seg_to_folder: dict[str, str],
-    folder_to_unlabeled_seg_ids: dict[str, list[str]],
+    seg_to_recording: dict[str, str],
+    recording_to_unlabeled_seg_ids: dict[str, list[str]],
 ) -> dict[str, list[str]]:
-    """Inject unlabeled siblings between adjacent labeled segments from the same folder.
+    """Inject unlabeled siblings between adjacent labeled segments from the same recording.
 
     `build_road_sequences_and_validate` lists only labeled segments, so consecutive
     entries in a road sequence are typically 20 m apart (seg_id step 2). Cameras
@@ -269,12 +305,13 @@ def interleave_unlabeled_into_road_sequences(
     For the loader to use those as context frames (e.g. context_sequence=(0,-1,-2,…)),
     they must appear in the road sequence at the right position.
 
-    We only inject between two labeled neighbours from the same image folder
-    (recording session), which is where the "1 seg_id = 10 m" invariant holds.
+    We only inject between two labeled neighbours from the same recording (see
+    `split_folders_into_recordings`), which is where the "1 seg_id = 10 m"
+    invariant holds.
     """
-    folder_to_sorted_ids = {
-        folder: sorted(int(s) for s in seg_ids)
-        for folder, seg_ids in folder_to_unlabeled_seg_ids.items()
+    recording_to_sorted_ids = {
+        recording: sorted(int(s) for s in seg_ids)
+        for recording, seg_ids in recording_to_unlabeled_seg_ids.items()
     }
     enriched: dict[str, list[str]] = {}
     for road_id, seq in road_to_seq.items():
@@ -283,12 +320,12 @@ def interleave_unlabeled_into_road_sequences(
             continue
         out = [seq[0]]
         for prev, curr in zip(seq, seq[1:]):
-            f_prev = seg_to_folder.get(prev)
-            f_curr = seg_to_folder.get(curr)
-            if f_prev is not None and f_prev == f_curr:
+            r_prev = seg_to_recording.get(prev)
+            r_curr = seg_to_recording.get(curr)
+            if r_prev is not None and r_prev == r_curr:
                 p_int, c_int = int(prev), int(curr)
                 lo, hi = min(p_int, c_int), max(p_int, c_int)
-                ids = folder_to_sorted_ids.get(f_prev, [])
+                ids = recording_to_sorted_ids.get(r_prev, [])
                 in_between = ids[bisect.bisect_right(ids, lo):bisect.bisect_left(ids, hi)]
                 if c_int < p_int:
                     in_between = in_between[::-1]
@@ -348,49 +385,63 @@ def main(argv: list[str] | None = None) -> int:
     }
     all_seg_to_path = {**seg_to_path, **unlabeled_seg_to_path}
     seg_to_folder = {sid: Path(rel).parent.name for sid, rel in all_seg_to_path.items()}
+    seg_to_recording = split_folders_into_recordings(seg_to_folder)
     print(f"  Images under FRAMES: {num_images_total} total = "
           f"{len(seg_to_path)} labeled (matched to a parquet row) + "
           f"{len(unlabeled_seg_ids)} unlabeled (no parquet row).")
+    folder_to_recordings: dict[str, set[str]] = defaultdict(set)
+    for sid, recording in seg_to_recording.items():
+        folder_to_recordings[seg_to_folder[sid]].add(recording)
+    folders_split_into_recordings = {
+        folder: sorted(recordings, key=lambda r: int(r.rsplit("@", 1)[1]))
+        for folder, recordings in sorted(folder_to_recordings.items()) if len(recordings) > 1
+    }
+    if folders_split_into_recordings:
+        print(f"  Split {len(folders_split_into_recordings)} image folder(s) holding several "
+              f"recordings (seg_id steps > {MAX_SEG_ID_STEP_WITHIN_RECORDING}): "
+              + ", ".join(f"{folder!r} into {len(recordings)}"
+                          for folder, recordings in folders_split_into_recordings.items())
+              + ".")
 
-    # Group unlabeled seg_ids by image folder, and compute a centroid for each
-    # folder from labeled siblings in the same folder so they can be placed on
-    # the map by the split editor.
-    labeled_folder_to_seg_ids: dict[str, list[str]] = defaultdict(list)
+    # Group unlabeled seg_ids by recording, and compute a centroid for each
+    # recording from labeled siblings in the same recording so they can be
+    # placed on the map by the split editor.
+    labeled_recording_to_seg_ids: dict[str, list[str]] = defaultdict(list)
     for sid in seg_to_path:
-        labeled_folder_to_seg_ids[seg_to_folder[sid]].append(sid)
+        labeled_recording_to_seg_ids[seg_to_recording[sid]].append(sid)
     labeled_seg_to_latlon = dict(zip(
         df["seg_id"].astype(str),
         zip(df["lat"].astype(float), df["lon"].astype(float)),
     ))
-    unlabeled_folder_to_seg_ids: dict[str, list[str]] = defaultdict(list)
+    unlabeled_recording_to_seg_ids: dict[str, list[str]] = defaultdict(list)
     for sid in unlabeled_seg_ids:
-        unlabeled_folder_to_seg_ids[seg_to_folder[sid]].append(sid)
+        unlabeled_recording_to_seg_ids[seg_to_recording[sid]].append(sid)
 
     unlabeled_sequence_id_to_data: dict[str, dict] = {}
     unplaceable_unlabeled_seg_ids: list[str] = []
-    for folder, segs in unlabeled_folder_to_seg_ids.items():
-        labeled_siblings = labeled_folder_to_seg_ids.get(folder, [])
+    for recording, segs in unlabeled_recording_to_seg_ids.items():
+        labeled_siblings = labeled_recording_to_seg_ids.get(recording, [])
         sibling_coords = [labeled_seg_to_latlon[s] for s in labeled_siblings]
         if not sibling_coords:
             unplaceable_unlabeled_seg_ids.extend(segs)
             continue
         lats = [c[0] for c in sibling_coords]
         lons = [c[1] for c in sibling_coords]
-        unlabeled_sequence_id_to_data[folder] = {
+        unlabeled_sequence_id_to_data[recording] = {
             "segs": sorted(segs, key=int),
             "centroid": [float(np.median(lats)), float(np.median(lons))],
         }
     num_placeable_unlabeled = len(unlabeled_seg_ids) - len(unplaceable_unlabeled_seg_ids)
-    print("  Unlabeled image partition (by image folder):")
+    print("  Unlabeled image partition (by recording):")
     print(f"    {num_placeable_unlabeled}/{len(unlabeled_seg_ids)} placeable on the map "
-          f"(folder has ≥1 labeled sibling; centroid = median of sibling lat/lon; "
+          f"(recording has ≥1 labeled sibling; centroid = median of sibling lat/lon; "
           f"selectable in split editor under unlabeled_train/val/test).")
     if unplaceable_unlabeled_seg_ids:
         # TODO: once per-segment geolocation is available for unlabeled images,
         # emit these as standalone road_to_seq entries so they're reachable as
         # context frames around future labeled additions.
         print(f"    {len(unplaceable_unlabeled_seg_ids)}/{len(unlabeled_seg_ids)} unlocated "
-              f"(folder has no labeled sibling, no map coordinate derivable; "
+              f"(recording has no labeled sibling, no map coordinate derivable; "
               f"auto-assigned to unlabeled_unlocated split).", file=sys.stderr)
 
     print("Building segment_id_to_data_paths_rel...")
@@ -401,14 +452,14 @@ def main(argv: list[str] | None = None) -> int:
     road_to_seq, violations, sections_split = build_road_sequences_and_validate(df)
     num_labeled_in_sequences = sum(len(seq) for seq in road_to_seq.values())
     road_to_seq = interleave_unlabeled_into_road_sequences(
-        road_to_seq, seg_to_folder, unlabeled_folder_to_seg_ids,
+        road_to_seq, seg_to_recording, unlabeled_recording_to_seg_ids,
     )
     num_unlabeled_inserted_into_sequences = (
         sum(len(seq) for seq in road_to_seq.values()) - num_labeled_in_sequences
     )
     print(f"  Interleaved {num_unlabeled_inserted_into_sequences}/{num_placeable_unlabeled} "
           f"placeable-unlabeled segments between adjacent labeled segments from the same "
-          f"image folder (the rest fall outside any labeled span).")
+          f"recording (the rest fall outside any labeled span).")
     if violations:
         by_section: dict[str, list[dict]] = defaultdict(list)
         for v in violations:
@@ -483,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
         "unlabeled_examples": unlabeled_seg_ids[:20],
         "num_unlabeled_inserted_into_sequences": num_unlabeled_inserted_into_sequences,
         "num_unlabeled_sequences_placed": len(unlabeled_sequence_id_to_data),
+        "folders_split_into_recordings": folders_split_into_recordings,
         "num_unplaceable_unlabeled_seg_ids": len(unplaceable_unlabeled_seg_ids),
         "unplaceable_unlabeled_examples": unplaceable_unlabeled_seg_ids[:20],
         "num_sections": df["section"].nunique() if not df.empty else 0,
