@@ -1,4 +1,4 @@
-"""Torch-free access to IRAP dataset metadata: class vocabularies, labels and segment selection.
+"""Torch-free access to iRAP dataset metadata: class vocabularies, labels and segment selection.
 
 `IRAPDataset` is built on these functions, and so are tools that need the labels of a split
 without loading images, such as offline evaluation.
@@ -35,7 +35,7 @@ class MetaFiles:
 
 @dc.dataclass(frozen=True)
 class DatasetPreset:
-    """Loading defaults of an IRAP release.
+    """Loading defaults of an iRAP release.
 
     Attributes:
         allow_missing_attributes: Whether a segment with a missing or unknown attribute code is
@@ -69,7 +69,7 @@ def get_dataset_preset(dataset_name: str) -> DatasetPreset:
     try:
         return DATASET_PRESETS[dataset_name]
     except KeyError:
-        raise ValueError(f"Unknown IRAP dataset {dataset_name!r}."
+        raise ValueError(f"Unknown iRAP dataset {dataset_name!r}."
                          f" Choose from {sorted(DATASET_PRESETS)}.") from None
 
 
@@ -111,7 +111,7 @@ def resolve_irap_paths(
     dataset_dir: str | Path | None = None,
     metadata_dir: str | Path | None = None,
 ) -> tuple[Path, Path]:
-    """Resolves IRAP-BH dataset and metadata directories.
+    """Resolves iRAP-BH dataset and metadata directories.
 
     A directory that is not given is resolved with `get_default_irap_paths`.
 
@@ -138,7 +138,7 @@ def _load_optional_json(path: Path) -> T.Any:
 # Class vocabulary #################################################################################
 
 def to_irap_code(value: T.Any) -> int | None:
-    """Parses an IRAP code, which the metadata stores as an int (Vietnam) or a string (BH).
+    """Parses an iRAP code, which the metadata stores as an int (Vietnam) or a string (BH).
 
     Returns:
         The code, or None for a missing code: None, `'None'` or a negative number (the Vietnam
@@ -155,13 +155,13 @@ def to_irap_code(value: T.Any) -> int | None:
     elif isinstance(value, str) and re.fullmatch(r"\s*-?\d+\s*", value):
         code = int(value)
     else:
-        raise ValueError(f"Not an IRAP code: {value!r}. Codes are ints or digit strings, and"
+        raise ValueError(f"Not an iRAP code: {value!r}. Codes are ints or digit strings, and"
                          f" None, 'None' or a negative number mark a missing code.")
     return code if code >= 0 else None
 
 
 def validate_irap_codes(attribute: str, codes: T.Sequence[int]) -> None:
-    """Checks the IRAP codes of the classes of an attribute.
+    """Checks the iRAP codes of the classes of an attribute.
 
     Raises:
         ValueError: If there are no codes, a code is not an int, or two codes are equal.
@@ -169,9 +169,9 @@ def validate_irap_codes(attribute: str, codes: T.Sequence[int]) -> None:
     if not codes:
         raise ValueError(f"Attribute {attribute!r} has no classes.")
     if not all(isinstance(c, int) and not isinstance(c, bool) for c in codes):
-        raise ValueError(f"Attribute {attribute!r} has IRAP codes that are not ints: {codes}.")
+        raise ValueError(f"Attribute {attribute!r} has iRAP codes that are not ints: {codes}.")
     if len(set(codes)) != len(codes):
-        raise ValueError(f"Attribute {attribute!r} has duplicate IRAP codes: {codes}.")
+        raise ValueError(f"Attribute {attribute!r} has duplicate iRAP codes: {codes}.")
 
 
 def _get_ordered_attributes(attr_meta: T.Mapping[str, T.Any]) -> list[str]:
@@ -185,18 +185,18 @@ class ClassVocabulary:
     """The attributes of a dataset and the classes of each, in class-index order.
 
     Class `i` of attribute `a` is the `i`-th entry of `attribute_to_value_to_irap_code[a]`: a
-    value name and its IRAP code. Attributes are in the canonical order (`attribute_to_idx` of
+    value name and its iRAP code. Attributes are in the canonical order (`attribute_to_idx` of
     `attribute_metadata.json`), and classes in the order of `attribute_value_to_irap_number`,
     which is the order of the class indices in `IRAPDataset` targets. The
     `attribute_irap_number_to_class_idx` mapping that some metadata files also contain is not
-    read: it numbers classes in IRAP-code order, which differs for the attributes whose values
+    read: it numbers classes in iRAP-code order, which differs for the attributes whose values
     are not in code order (both land-use sides and 'Pedestrian crossing - inspected road').
 
     Two vocabularies are equal if they have the same attributes, values and codes in the same
     order, since the class order is the column order of predicted probabilities.
 
     Raises:
-        ValueError: If an attribute has no classes or two classes with the same IRAP code.
+        ValueError: If an attribute has no classes or two classes with the same iRAP code.
     """
 
     attribute_to_value_to_irap_code: T.Mapping[str, T.Mapping[str, int]]
@@ -223,7 +223,7 @@ class ClassVocabulary:
         def parse_code(attr, value, raw_code):
             code = to_irap_code(raw_code)
             if code is None:
-                raise ValueError(f"Attribute {attr!r} value {value!r} has an invalid IRAP code"
+                raise ValueError(f"Attribute {attr!r} value {value!r} has an invalid iRAP code"
                                  f" {raw_code!r}.")
             return code
 
@@ -241,7 +241,7 @@ class ClassVocabulary:
 
     @property
     def attribute_to_irap_codes(self) -> dict[str, tuple[int, ...]]:
-        """Attribute -> the IRAP codes of its classes, in class-index order."""
+        """Attribute -> the iRAP codes of its classes, in class-index order."""
         return {attr: tuple(value_to_code.values())
                 for attr, value_to_code in self.attribute_to_value_to_irap_code.items()}
 
@@ -275,14 +275,14 @@ class ClassVocabulary:
 def load_attribute_metadata(
     metadata_dir: str | Path,
 ) -> tuple[list[str], dict[str, dict[str, T.Any]]]:
-    """Loads IRAP attribute metadata and returns attributes in canonical order.
+    """Loads iRAP attribute metadata and returns attributes in canonical order.
 
     Args:
         metadata_dir: Metadata directory.
 
     Returns:
         ordered_attrs: Attribute names ordered by their index in the metadata.
-        attribute_value_to_irap_number: Mapping attr -> {value -> irap_number}, with the IRAP
+        attribute_value_to_irap_number: Mapping attr -> {value -> irap_number}, with the iRAP
             numbers as stored in the file. `ClassVocabulary` parses them.
     """
     attr_meta = _load_json(Path(metadata_dir) / MetaFiles.ATTRIBUTE_METADATA)
@@ -324,7 +324,7 @@ class IRAPMetadata:
         segment_id_to_data_paths_rel: Segment ID -> modality -> path relative to the dataset
             directory, or `'NONE'`.
         segment_id_to_road_data: Segment ID -> road data, whose `required_attributes` holds the
-            IRAP code of each attribute. Unlabeled segments have no entry.
+            iRAP code of each attribute. Unlabeled segments have no entry.
         road_id_to_segment_id_sequence: Road ID -> segment IDs in driving order. Empty if the
             file is absent.
 
@@ -368,7 +368,7 @@ class IRAPMetadata:
         A segment has a known location if it has road data or an entry in
         `unlabeled_segment_id_to_location`. A segment between two located segments of its road
         sequence is placed by linear interpolation in the sequence position, as the segments of
-        a sequence are evenly spaced (20 m in IRAP-Vietnam). A segment before the first or after
+        a sequence are evenly spaced (20 m in iRAP-Vietnam). A segment before the first or after
         the last located segment of its sequence is not placed.
         """
         coordinates = {}
@@ -515,7 +515,7 @@ def compute_segment_labels(
     segment_ids: T.Iterable[str],
     allow_missing_attributes: bool,
 ) -> dict[str, list[int]]:
-    """Maps the IRAP codes of each segment to class indices in `vocabulary` order.
+    """Maps the iRAP codes of each segment to class indices in `vocabulary` order.
 
     A code is missing if the segment has no road data, the attribute has no code, or the code
     is not a class of the attribute (see `to_irap_code`).
@@ -713,7 +713,7 @@ class SplitSelection:
         segment_id_to_context_ids: Context segment IDs of the selected segments.
         attr_to_num_labeled: Number of labeled selected segments per attribute. An attribute can
             have classes in the vocabulary but no label in a dataset (e.g. the BH-only
-            attributes of IRAP-Vietnam), which consumers use to leave it out of evaluation.
+            attributes of iRAP-Vietnam), which consumers use to leave it out of evaluation.
     """
 
     segment_ids: tuple[str, ...]

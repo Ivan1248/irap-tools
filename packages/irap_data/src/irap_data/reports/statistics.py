@@ -1,4 +1,4 @@
-"""Class frequencies and other statistics of the splits of an IRAP release, from metadata only.
+"""Class frequencies and other statistics of the splits of an iRAP release, from metadata only.
 
 `irap_data.reports.statistics_report` formats them as HTML, JSON and CSV, and
 `irap_data.reports.class_frequency_plot` plots them.
@@ -129,7 +129,7 @@ class AttributeDistribution:
     Attributes:
         attribute: The attribute name.
         values: (K,) the value names of the classes.
-        irap_codes: (K,) the IRAP codes of the classes.
+        irap_codes: (K,) the iRAP codes of the classes.
         num_segments: (K,) int64, the number of segments of each class.
         num_sequences: (K,) int64, the number of road sequences that contain each class.
             Consecutive segments of a sequence are strongly correlated, so this is closer to the

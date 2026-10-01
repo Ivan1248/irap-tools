@@ -1,4 +1,4 @@
-"""Reports of the statistics of an IRAP release: HTML pages, CSV and JSON.
+"""Reports of the statistics of an iRAP release: HTML pages, CSV and JSON.
 
 The statistics come from `irap_data.reports.statistics`. The plots need matplotlib (the `report`
 extra), which is imported only when a plot is written.
@@ -307,7 +307,7 @@ def _compose_rare_classes(
                    if 0 < base[i].labeled_shares[c] < rare_fraction),
                   key=lambda item: (base[item[0]].num_segments[item[1]], base[item[0]].attribute))
     table = rd.make_table(
-        ["attribute", "class", "IRAP code", *(f"{s} segments" for s in split_distributions),
+        ["attribute", "class", "iRAP code", *(f"{s} segments" for s in split_distributions),
          f"{base_split} share", f"{base_split} sequences"],
         [[base[i].attribute, base[i].values[c], str(base[i].irap_codes[c]),
           *(_format_class_count(ds[i].num_segments[c]) for ds in distributions_seq),
@@ -334,7 +334,7 @@ def _compose_missing_classes(
             for i in attribute_indices for d in [distributions_seq[0][i]]
             for c in range(d.num_classes)
             if any(ds[i].num_segments[c] == 0 for ds in distributions_seq)]
-    table = rd.make_table(["attribute", "class", "IRAP code", *split_distributions], rows,
+    table = rd.make_table(["attribute", "class", "iRAP code", *split_distributions], rows,
                           "llr" + "r" * len(split_distributions))
     return [
         rd.Heading("Missing classes", 2),
@@ -360,7 +360,7 @@ def _compose_class_frequencies(
     for i in attribute_indices:
         first = distributions_seq[0][i]
         table = rd.make_table(
-            ["class", "IRAP code",
+            ["class", "iRAP code",
              *(name for s in split_distributions for name in (s, f"{s} sequences"))],
             [[first.values[c], str(first.irap_codes[c]),
               *(cell for ds in distributions_seq

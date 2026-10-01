@@ -1,4 +1,4 @@
-"""The `irap-dataset-stats` command: class frequencies and other statistics of an IRAP release.
+"""The `irap-dataset-stats` command: class frequencies and other statistics of an iRAP release.
 
 The statistics are computed from the metadata only (see `irap_data.reports.statistics`), and the
 reports are written by `irap_data.reports.statistics_report`. Run

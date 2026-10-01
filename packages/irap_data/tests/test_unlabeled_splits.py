@@ -93,8 +93,8 @@ def test_vietnam_data_reads_the_metadata_from_the_dataset_directory(tmp_path):
         make_vietnam_data(dataset_dir=data_dir, metadata_dir=meta_dir, **kwargs)
 
 
-# With every attribute coded, as in IRAP-BH, filtering keeps every attribute. An attribute that
-# is never coded, like the BH-only attributes in IRAP-Vietnam, keeps its value vocabulary but
+# With every attribute coded, as in iRAP-BH, filtering keeps every attribute. An attribute that
+# is never coded, like the BH-only attributes in iRAP-Vietnam, keeps its value vocabulary but
 # is dropped, since its metrics would be NaN.
 @pytest.mark.parametrize("coded_attrs", [("A", "B"), ("A",)])
 def test_filter_labeled_attrs_keeps_the_coded_attributes(tmp_path, coded_attrs):

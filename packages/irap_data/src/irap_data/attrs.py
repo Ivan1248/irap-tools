@@ -1,5 +1,5 @@
 """
-Canonical attribute subset definitions and helpers for IRAP GAIM experiments.
+Canonical attribute subset definitions and helpers for iRAP GAIM experiments.
 """
 
 from typing import Sequence
@@ -51,7 +51,7 @@ IRAP_BH_ATTRS_TO_INCLUDE = (
     "School zone crossing supervisor",
 )
 
-# IRAP-Vietnam attributes that are present in iRAP-BH.
+# iRAP-Vietnam attributes that are present in iRAP-BH.
 IRAP_VIETNAM_ATTRS_SHARED = (
     "Speed management / traffic calming",
     "Number of lanes",
@@ -89,7 +89,7 @@ IRAP_VIETNAM_ATTRS_SHARED = (
     "School zone crossing supervisor",
 )
 
-# All IRAP-Vietnam attributes: the shared subset plus attributes not present in iRAP-BH.
+# All iRAP-Vietnam attributes: the shared subset plus attributes not present in iRAP-BH.
 IRAP_VIETNAM_ATTRS_ALL = IRAP_VIETNAM_ATTRS_SHARED + (
     "Carriageway label",
     "Speed limit",

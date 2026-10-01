@@ -1,4 +1,4 @@
-"""The Streamlit app of the IRAP dataset viewer.
+"""The Streamlit app of the iRAP dataset viewer.
 
 Needs the `viewer` extra. Run it with the `irap-dataset-viewer` command (see
 `irap_data.tools.viewer`), or with ``streamlit run <path-to>/irap_data/tools/viewer/app.py``.
@@ -34,11 +34,11 @@ _RELEASE_TO_SUBDIRS = {
 }
 
 _DATASETS_DIR_HELP = (
-    "Parent directory containing one or more IRAP datasets.\n\n"
+    "Parent directory containing one or more iRAP datasets.\n\n"
     "Expected layout:\n"
-    "- IRAP-BH:    <datasets_dir>/IRAP_BIH/ (data)\n"
+    "- iRAP-BH:    <datasets_dir>/IRAP_BIH/ (data)\n"
     "              <datasets_dir>/IRAP_BIH_METADATA/ (metadata)\n"
-    "- IRAP-Vietnam: <datasets_dir>/IRAP_Vietnam/ (data + metadata together)\n\n"
+    "- iRAP-Vietnam: <datasets_dir>/IRAP_Vietnam/ (data + metadata together)\n\n"
     "Default is read from $IRAP_HOME, then $DATASETS_PATH."
 )
 
@@ -437,7 +437,7 @@ def _render_attribute_column(data: dict, ds, attr_values: dict[str, list[str]]) 
 
 
 def main():
-    st.set_page_config(layout="wide", page_title="IRAP Dataset Viewer")
+    st.set_page_config(layout="wide", page_title="iRAP Dataset Viewer")
 
     config = _render_sidebar_config()
     if config is None:

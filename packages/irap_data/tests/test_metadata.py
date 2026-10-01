@@ -31,7 +31,7 @@ def test_to_irap_code():
            [3, 3, 7, None, None, None, None]
     # A value no writer should produce is an error rather than a silently dropped label.
     for value in (True, 2.0, "2.0", "N/A", ""):
-        with pytest.raises(ValueError, match="Not an IRAP code"):
+        with pytest.raises(ValueError, match="Not an iRAP code"):
             to_irap_code(value)
 
 
@@ -118,7 +118,7 @@ def test_select_preset_split_segments_uses_reference_offsets(metadata):
     assert select_preset_split_segments(metadata, "vietnam", "val").segment_ids == ()
     model = select_preset_split_segments(metadata, "vietnam", "val", context_offsets=(0,))
     assert model.segment_ids == ("S0", "S1", "S2", "S4", "S5", "T0", "T1")
-    with pytest.raises(ValueError, match="Unknown IRAP dataset"):
+    with pytest.raises(ValueError, match="Unknown iRAP dataset"):
         select_preset_split_segments(metadata, "atlantis", "val")
 
 

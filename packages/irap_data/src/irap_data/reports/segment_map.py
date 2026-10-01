@@ -1,4 +1,4 @@
-"""Maps of the segments of the splits of an IRAP release, as interactive HTML pages.
+"""Maps of the segments of the splits of an iRAP release, as interactive HTML pages.
 
 A map shows where the segments of each split are, labeled and unlabeled, and which of them a
 selection of segments leaves out (see `irap_data.reports.statistics.SELECTION_DESCRIPTIONS`),

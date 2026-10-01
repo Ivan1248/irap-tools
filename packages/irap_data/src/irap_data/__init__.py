@@ -1,4 +1,4 @@
-"""IRAP road-attribute datasets.
+"""iRAP road-attribute datasets.
 
 The metadata API (`attrs`, `metadata`, `lazy_dict`) needs only numpy. The dataset classes and
 image utilities need the `torch` extra and are imported on first access, so that importing
