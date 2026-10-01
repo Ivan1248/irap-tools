@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "irap-evaluation"
 version = "0.1.0"
-description = "Saved IRAP model predictions: file format, evaluation, ensembling, reports and coding-table export"
+description = "Saved iRAP model predictions: file format, evaluation, ensembling, reports and coding-table export"
 requires-python = ">=3.10"
 dependencies = [
     "irap-data",

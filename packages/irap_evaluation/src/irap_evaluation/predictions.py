@@ -1,6 +1,6 @@
-"""Model predictions for IRAP road segments: the `Predictions` datatype and conversions.
+"""Model predictions for iRAP road segments: the `Predictions` datatype and conversions.
 
-Classes are identified by IRAP code, not by class index, so predictions of models trained with
+Classes are identified by iRAP code, not by class index, so predictions of models trained with
 differently ordered metadata can be compared and combined (see `align_classes`).
 """
 
@@ -17,7 +17,7 @@ from irap_data.metadata import IGNORE_LABEL_INDEX, validate_irap_codes
 OutputKind = T.Literal["probs", "hard"]
 OUTPUT_KINDS: tuple[str, ...] = T.get_args(OutputKind)
 
-#: The IRAP code of an invalid prediction in `Predictions.from_irap_codes` and `to_irap_codes`.
+#: The iRAP code of an invalid prediction in `Predictions.from_irap_codes` and `to_irap_codes`.
 INVALID_IRAP_CODE = -1
 
 #: Tolerance of the sum of a stored float32 distribution.
@@ -56,7 +56,7 @@ class PredictionHeader:
     """The origin of a set of predictions: the method and the segments it was run on.
 
     Attributes:
-        dataset: The IRAP release, a key of `irap_data.DATASET_PRESETS` ('bh', 'vietnam').
+        dataset: The iRAP release, a key of `irap_data.DATASET_PRESETS` ('bh', 'vietnam').
         split: The split the segments come from, e.g. 'val'.
         method: See `MethodInfo`.
         context_offsets: The distinct positions of the segments whose images the model reads,
@@ -105,7 +105,7 @@ class Predictions:
     Attributes:
         header: See `PredictionHeader`.
         output_kind: See `OutputKind`.
-        attribute_to_irap_codes: Attribute -> the IRAP codes of its classes, in the column order
+        attribute_to_irap_codes: Attribute -> the iRAP codes of its classes, in the column order
             of `probs`, which need not match the dataset's order (see
             `ClassVocabulary.attribute_to_irap_codes`). Its keys are the predicted attributes.
         segment_ids: (N,) unique segment IDs, the row order of `probs`.
@@ -238,11 +238,11 @@ class Predictions:
         segment_ids: T.Sequence[str],
         irap_codes: T.Mapping[str, np.ndarray],
     ) -> "Predictions":
-        """Builds 'hard' predictions from (N,) IRAP codes per attribute.
+        """Builds 'hard' predictions from (N,) iRAP codes per attribute.
 
         Args:
             attribute_to_irap_codes: See `Predictions`. The classes the model chooses from.
-            irap_codes: Attribute -> (N,) integer IRAP codes of the predicted classes,
+            irap_codes: Attribute -> (N,) integer iRAP codes of the predicted classes,
                 `INVALID_IRAP_CODE` for an invalid prediction.
 
         Raises:
@@ -257,10 +257,10 @@ class Predictions:
                 raise PredictionFormatError(f"{attr!r}: {INVALID_IRAP_CODE} is the code of a"
                                             f" class, so it cannot mark invalid predictions.")
             distinct_codes, inverse = np.unique(
-                _to_integer_array(attr, irap_codes[attr], "IRAP codes"), return_inverse=True)
+                _to_integer_array(attr, irap_codes[attr], "iRAP codes"), return_inverse=True)
             distinct_codes = distinct_codes.tolist()
             if unknown := sorted(set(distinct_codes) - set(code_to_index) - {INVALID_IRAP_CODE}):
-                raise PredictionFormatError(f"{attr!r}: IRAP codes {unknown} are not among the"
+                raise PredictionFormatError(f"{attr!r}: iRAP codes {unknown} are not among the"
                                             f" codes of the attribute, {sorted(code_to_index)}.")
             distinct_indices = [code_to_index.get(c, IGNORE_LABEL_INDEX) for c in distinct_codes]
             return np.array(distinct_indices, dtype=np.int64)[inverse.reshape(-1)]
@@ -375,7 +375,7 @@ def to_class_indices(predictions: Predictions) -> dict[str, np.ndarray]:
 
 
 def to_irap_codes(predictions: Predictions) -> dict[str, np.ndarray]:
-    """Attribute -> (N,) int64 IRAP codes of the argmax classes, `INVALID_IRAP_CODE` where
+    """Attribute -> (N,) int64 iRAP codes of the argmax classes, `INVALID_IRAP_CODE` where
     invalid."""
     return {attr: np.where(indices == IGNORE_LABEL_INDEX, INVALID_IRAP_CODE,
                            np.asarray(predictions.attribute_to_irap_codes[attr])[indices])
@@ -386,11 +386,11 @@ def align_classes(predictions: Predictions,
                   attribute_to_irap_codes: T.Mapping[str, T.Sequence[int]]) -> Predictions:
     """The predictions of the attributes of `attribute_to_irap_codes`, in its class order.
 
-    Classes are matched by IRAP code. `ClassVocabulary.attribute_to_irap_codes` gives the class
+    Classes are matched by iRAP code. `ClassVocabulary.attribute_to_irap_codes` gives the class
     codes of a vocabulary.
 
     Raises:
-        PredictionFormatError: If an attribute is not predicted, or its predicted IRAP codes
+        PredictionFormatError: If an attribute is not predicted, or its predicted iRAP codes
             differ from those of `attribute_to_irap_codes`.
     """
     predicted = predictions.attribute_to_irap_codes
@@ -404,7 +404,7 @@ def align_classes(predictions: Predictions,
         codes = attribute_to_irap_codes[attr]
         if len(codes) != len(code_to_index) or set(codes) != set(code_to_index):
             raise PredictionFormatError(
-                f"{attr!r}: the predicted IRAP codes {sorted(code_to_index)} differ from"
+                f"{attr!r}: the predicted iRAP codes {sorted(code_to_index)} differ from"
                 f" {sorted(codes)}.")
         return np.array([code_to_index[c] for c in codes])
 

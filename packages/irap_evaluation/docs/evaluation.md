@@ -15,7 +15,7 @@ The runs of a method are then combined by their mean ([methods](#methods)). `com
 
 - **Method** and **run**: a file holds the predictions of one run of a method, e.g. one training seed. Files with the same `method.name` are runs of one method and are told apart by `method.seed` ([format](prediction_format.md#method)). A method with a single run needs no seed.
 - **Road sequence**: the segments of one road in driving order, one entry of `road_id_to_segment_id_sequence.json`.
-- **Class index**: the position of a value in `attribute_value_to_irap_number` of `attribute_metadata.json`. It need not follow IRAP code order. Class 0 is the first value.
+- **Class index**: the position of a value in `attribute_value_to_irap_number` of `attribute_metadata.json`. It need not follow iRAP code order. Class 0 is the first value.
 - **Cell**: the predicted distribution of one attribute for one segment. It is invalid if the model gave no usable prediction (null in the file, see [Invalid cells](#invalid-cells)).
 
 ## Evaluation sets
@@ -23,7 +23,7 @@ The runs of a method are then combined by their mean ([methods](#methods)). `com
 For context offsets $o_1, \ldots, o_m$, the evaluation set of a split holds its segments that pass all of these filters (`irap_data.select_split_segments`):
 
 1. **Image**: the segment has an entry in `segment_id_to_data_paths_rel.json`.
-2. **Labels**: each IRAP code is mapped to its class index. A code is missing if it is absent, None, `'None'`, negative, or not a class of the attribute. Vietnam leaves the attribute unlabeled for that segment. BH drops the segment if any attribute is missing. Any other value, e.g. a float, is an error.
+2. **Labels**: each iRAP code is mapped to its class index. A code is missing if it is absent, None, `'None'`, negative, or not a class of the attribute. Vietnam leaves the attribute unlabeled for that segment. BH drops the segment if any attribute is missing. Any other value, e.g. a float, is an error.
 3. **Context**: for a segment at position $p$ of a sequence of length $L$, every $p + o_j$ lies in $[0, L)$, and the segment there has an image. Context segments need no label.
 4. **N-context (BH only)**: the segment and the 10 segments on each side of it in its sequence are all in the same `seg_to_res/<split>.pickle` (train, val or test).
 
@@ -45,7 +45,7 @@ The scored attributes are the canonical iRAP subset (`irap_data.attrs.get_attrs_
 ## Matching
 
 - Every segment of the set must have a prediction. Extra predictions are ignored.
-- Classes are matched by IRAP code. The file must predict exactly the dataset's codes of each attribute, in any order.
+- Classes are matched by iRAP code. The file must predict exactly the dataset's codes of each attribute, in any order.
 - The predicted class of a cell is the argmax of its distribution. On ties, it is the first maximum in dataset class order.
 
 ## Invalid cells

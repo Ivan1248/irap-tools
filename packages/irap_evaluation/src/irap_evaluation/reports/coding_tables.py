@@ -27,7 +27,7 @@ class CodingTableTemplate:
     Attributes:
         columns: The column headers, in order.
         field_to_column: Each of `CODING_TABLE_FIELDS` -> its column.
-        attribute_to_column: Attribute -> the column that receives its predicted IRAP code.
+        attribute_to_column: Attribute -> the column that receives its predicted iRAP code.
 
     Raises:
         ValueError: If a field is not mapped, or a field or attribute is mapped to a column that
@@ -133,7 +133,7 @@ def predictions_to_coding_table(
     coder_name: str,
     coding_date: str,
 ) -> pd.DataFrame:
-    """One coding-table row per predicted segment, with the argmax IRAP code per attribute.
+    """One coding-table row per predicted segment, with the argmax iRAP code per attribute.
 
     Rows are ordered by road sequence and position. The end coordinates are the start of the
     next segment with road data if it starts where the segment ends, else blank. Invalid

@@ -1,8 +1,8 @@
-# IRAP evaluation
+# iRAP evaluation
 
-Evaluation of saved IRAP model predictions, without the model code:
+Evaluation of saved iRAP model predictions:
 
-- a prediction file format for full class distributions or hard predictions, with classes identified by IRAP code ([format](docs/prediction_format.md)),
+- a prediction file format for full class distributions or hard predictions, with classes identified by iRAP code ([format](docs/prediction_format.md)),
 - the iRAP metrics, equal to those of the training-time evaluation in `vidlu_irap_gaim` ([definitions](docs/evaluation.md)),
 - confidence intervals and comparisons of methods with a bootstrap over road sequences that includes the spread of a method's runs (e.g. training seeds),
 - ensembling,
@@ -71,7 +71,7 @@ irap-eval export-coding-table $DATA ensemble.predictions.parquet -o ensemble.xls
 | `averages_<dataset>_<split>_<set>.csv` | Run rows × attribute-average columns. |
 | `method_averages_<dataset>_<split>_<set>.csv` | For methods with several runs, only with `--null-policy first_class`: method rows × the number of runs, the null policy and the means over runs of the attribute averages, with confidence bounds that include the spread of the runs. |
 | `per_attribute_<metric>_<dataset>_<split>_<set>.csv` | Attribute rows × run columns, with the average last. |
-| `<run>/metrics_<set>.json` | All metrics, intervals, and per attribute the IRAP codes of the classes and, in their order, the per-class precision, recall, F1 and support and the confusion matrix (rows = ground truth). Undefined values are `null`. The directory is the run name with `/` replaced by `_`. |
+| `<run>/metrics_<set>.json` | All metrics, intervals, and per attribute the iRAP codes of the classes and, in their order, the per-class precision, recall, F1 and support and the confusion matrix (rows = ground truth). Undefined values are `null`. The directory is the run name with `/` replaced by `_`. |
 
 A run is named `<method>` or `<method>/seed<seed>`. Run `irap-eval <command> --help` for all options.
 
@@ -117,4 +117,4 @@ evaluation_report.write_evaluation_reports([result], "results/", table_metrics=[
 
 ## Coding tables
 
-`export-coding-table` (`irap_evaluation.reports.coding_tables`) writes one row per predicted segment in the iRAP coding-table layout of `src/irap_evaluation/reports/data/coding_table_template.json`, or of `--template`. The attribute columns hold the IRAP code of the most probable class. The location columns come from the dataset metadata, and the end coordinates from the adjacent next segment. The other columns stay blank, and the `_comment` of the template says why.
+`export-coding-table` (`irap_evaluation.reports.coding_tables`) writes one row per predicted segment in the iRAP coding-table layout of `src/irap_evaluation/reports/data/coding_table_template.json`, or of `--template`. The attribute columns hold the iRAP code of the most probable class. The location columns come from the dataset metadata, and the end coordinates from the adjacent next segment. The other columns stay blank, and the `_comment` of the template says why.

@@ -174,7 +174,7 @@ def evaluate_predictions(
         ValueError: For probabilistic metrics of hard predictions, per-class metric names,
             attributes that are not in the dataset, or if there is no attribute to score.
         PredictionFormatError: If the release or split differ, an attribute is not predicted,
-            the predicted IRAP codes of an attribute differ from the dataset's, or a segment of
+            the predicted iRAP codes of an attribute differ from the dataset's, or a segment of
             the evaluation set has no prediction.
     """
     header = predictions.header
@@ -233,7 +233,7 @@ class ClassMetrics:
     """Per-class metrics of one attribute on an evaluation set, in vocabulary class order.
 
     Attributes:
-        irap_codes: (K,) the IRAP code of each class.
+        irap_codes: (K,) the iRAP code of each class.
         values: (K,) the class values, e.g. 'Wide (>= 3.25m)'.
         support: (K,) int64 number of labeled segments per class.
         confusion_matrix: (K, K) int64 counts, rows = ground truth, columns = prediction.

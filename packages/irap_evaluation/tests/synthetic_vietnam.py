@@ -1,4 +1,4 @@
-"""Builders of a small synthetic IRAP-Vietnam metadata directory and of predictions for it."""
+"""Builders of a small synthetic iRAP-Vietnam metadata directory and of predictions for it."""
 
 import json
 from pathlib import Path

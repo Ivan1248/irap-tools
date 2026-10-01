@@ -85,7 +85,7 @@ def _from_header_json_dict(d: T.Any) -> tuple[PredictionHeader, dict[str, list]]
     if not (isinstance(attribute_to_irap_codes, dict)
             and all(isinstance(codes, list) for codes in attribute_to_irap_codes.values())):
         raise PredictionFormatError("'attribute_to_irap_codes' must map attributes to arrays of"
-                                    " IRAP codes.")
+                                    " iRAP codes.")
     header = PredictionHeader(dataset=d["dataset"], split=d["split"],
                               method=MethodInfo(name=method["name"], seed=method.get("seed"),
                                                 details=method.get("details")),

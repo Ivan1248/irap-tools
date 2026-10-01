@@ -58,7 +58,7 @@ def ensemble_predictions(
     """The weighted mean of the distributions of several members (methods or runs) of the same
     attributes, release and split. For hard predictions, it gives weighted vote shares.
 
-    Classes are matched by IRAP code, and the output uses the class order of the first member.
+    Classes are matched by iRAP code, and the output uses the class order of the first member.
     A cell that is invalid in a member is left out of that cell's mean, and it is invalid in the
     ensemble only if it is invalid in every member. The context offsets of the ensemble are the
     union of the members' offsets, since it reads every frame a member reads, or None if the
@@ -73,7 +73,7 @@ def ensemble_predictions(
             rather than requiring the same segments.
 
     Raises:
-        PredictionFormatError: If the members differ in release, split, attributes or IRAP codes,
+        PredictionFormatError: If the members differ in release, split, attributes or iRAP codes,
             or in segments without `intersect_segments`.
         ValueError: For no members or invalid weights.
     """

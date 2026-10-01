@@ -1,4 +1,4 @@
-"""Saved predictions of IRAP road-attribute methods: file format, evaluation and ensembling.
+"""Saved predictions of iRAP road-attribute methods: file format, evaluation and ensembling.
 
 The tables and JSON documents of results and the coding-table export are in
 `irap_evaluation.reports`, and the `irap-eval` command is in `irap_evaluation.tools`. This package

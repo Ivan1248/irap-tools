@@ -115,7 +115,7 @@ def to_average_table(long_table: pd.DataFrame, with_intervals: bool = False) -> 
 
 
 def to_class_table(class_metrics: ClassMetrics) -> pd.DataFrame:
-    """Class rows (indexed by IRAP code) with the class value, support and each metric."""
+    """Class rows (indexed by iRAP code) with the class value, support and each metric."""
     return pd.DataFrame(
         {"value": class_metrics.values, "support": class_metrics.support,
          **class_metrics.metrics},
@@ -217,7 +217,7 @@ def _to_json_value(value: T.Any) -> T.Any:
 
 def to_json_dict(result: EvaluationResult) -> dict[str, T.Any]:
     """A JSON-compatible document of a result, including per-class scores and confusion
-    matrices (rows = ground truth) keyed by IRAP code.
+    matrices (rows = ground truth) keyed by iRAP code.
 
     Undefined values (NaN, e.g. the MCC of an attribute with one class) are None."""
     evaluation_set = result.evaluation_set

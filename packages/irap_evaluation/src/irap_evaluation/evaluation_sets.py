@@ -24,7 +24,7 @@ class EvaluationSet:
     """The labels of the segments that predictions are scored on.
 
     Attributes:
-        dataset: The IRAP release, a key of `irap_data.DATASET_PRESETS`.
+        dataset: The iRAP release, a key of `irap_data.DATASET_PRESETS`.
         split: The split, e.g. 'val'.
         name: Identifies the set in reports, e.g. 'reference' (`get_reference_set`) or 'model'
             for a model set.

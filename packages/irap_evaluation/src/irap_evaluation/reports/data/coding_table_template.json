@@ -1,5 +1,5 @@
 {
-  "_comment": "iRAP coding-table layout (header received from Shanna, 2026-09). `attribute_to_column` maps an attribute of attribute_metadata.json to the column that receives its predicted IRAP code. Columns are left blank when their values are not IRAP codes of a predicted attribute: 'Intersecting road volume' holds a vehicle count, and 'Speed limit', 'Pedestrian channelisation', 'Facilities for bicycles', the flows and the percentages have semantics that differ from the attributes of the same or similar names (see irap_vietnam_data_preparation/incompatible_attributes.json). The layout has no column for the attribute 'Service road'.",
+  "_comment": "iRAP coding-table layout (header received from Shanna, 2026-09). `attribute_to_column` maps an attribute of attribute_metadata.json to the column that receives its predicted iRAP code. Columns are left blank when their values are not iRAP codes of a predicted attribute: 'Intersecting road volume' holds a vehicle count, and 'Speed limit', 'Pedestrian channelisation', 'Facilities for bicycles', the flows and the percentages have semantics that differ from the attributes of the same or similar names (see irap_vietnam_data_preparation/incompatible_attributes.json). The layout has no column for the attribute 'Service road'.",
   "columns": [
     "Coder name",
     "Coding date",
