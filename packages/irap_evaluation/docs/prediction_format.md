@@ -2,41 +2,39 @@
 
 A prediction file is an [Apache Parquet](https://parquet.apache.org/) file holding the predictions of a method for a split of an iRAP dataset. Files are conventionally named `<method>.predictions.parquet`, or `<method>_seed<seed>.predictions.parquet` when distinguishing runs.
 
-Each row corresponds to one segment. The header is a JSON object in the Parquet key-value metadata under the key `irap_predictions` ([Header](#header)). It gives the iRAP code of each class.
-
-A file holds either predicted class distributions (`probs`) or predicted class indices (`hard`).
-
 `irap_evaluation.prediction_io` reads and writes the format (`read_predictions`, `write_predictions`), represented in memory by `irap_evaluation.predictions.Predictions`.
-
 
 ## Columns
 
+A file holds either predicted class distributions (`probs`) or predicted class indices (`hard`) for each segment.
+
 | Column | Type | Content |
 |---|---|---|
-| `segment_id` | `string` | Unique segment identifier matching dataset metadata. |
-| `<attribute name>` (one per attribute, named as in `attribute_metadata.json`) | `list<float32>` (`probs`) or `int64` (`hard`) | Prediction for the attribute (null for invalid prediction – [invalid cells](evaluation.md#invalid-cells)). |
+| `segment_id` | `string \| large_string` | Unique segment identifier matching dataset metadata. |
+| `<attribute name>` (one per attribute, named as in `attribute_metadata.json`) | `list<float32> \| int64 \| null` | Probability vector or class index (`null` for invalid prediction – [invalid cells](evaluation.md#invalid-cells)). |
 
 All attribute columns share the same output kind:
 
-- **`probs`**: a non-null list has one value per class of the attribute. Values are $\ge 0$, and sum to 1 within $10^{-4}$. The column is a variable-size list because Parquet readers do not restore null entries of fixed-size lists. Writers should use `list<float32>`. Readers also accept `large_list` (e.g. from Polars) and float64 values.
-- **`hard`**: a non-null value is the 0-based class index of the predicted class among the attribute's iRAP codes in the header. Writers should use `int64`. Readers accept other integer types.
+- **`probs`**: a list with one value per class of the attribute. Values are $\ge 0$, and sum to 1 within $10^{-4}$. Writers should use `list<float32>` or `large_list<float32>` (e.g. from Polars). `float64` values are acceptable too.
+- **`hard`**: a 0-based class index of the predicted class, represented as `int64` or some other integer type.
 
-A column containing only null cells may have the Arrow null type (which dataframe libraries assign by default), provided at least one column specifies the output kind.
+An invalid cell is `null`.
 
 ## Header
 
-The Parquet key-value metadata key `irap_predictions` stores a UTF-8 JSON object (without NaN or infinity).
+The header is a UTF-8 JSON object (without `NaN` or infinity) stored under the key `irap_predictions` in the file-level key-value metadata of the Parquet file.
 
-Read the header from file metadata (`pyarrow.parquet.read_metadata(path).metadata`): table schema metadata lacks custom keys in files written by some libraries, such as Polars. Note that pandas cannot write key-value metadata, and pandas, Polars, and DuckDB drop key-value metadata when reading and rewriting a file.
+In PyArrow, the file-level metadata is `pyarrow.parquet.read_metadata(path).metadata`. The schema metadata of a table read with `pyarrow.parquet.read_table` lacks the key in files written by some libraries, such as Polars.
+Pandas cannot write key-value metadata. Pandas, Polars, and DuckDB drop it when reading and rewriting a file.
 
 | Field | Type | Content |
 |---|---|---|
 | `format_version` | `int` | `1`. |
-| `dataset` | `str` | Dataset identifier: `"bh"` or `"vietnam"` (the keys of `irap_data.DATASET_PRESETS`). |
+| `dataset` | `str` | Dataset identifier: `"bh"` or `"vietnam"`. |
 | `split` | `str` | Segment split, e.g. `"val"`. |
-| `context_offsets` | `list[int] \| None` | Distinct relative positions of sequence segments read by the model, e.g. `[0, -1, -4]`, where -1 is the preceding segment in driving order. Along with `dataset` and `split`, defines the model's [evaluation set](evaluation.md#evaluation-sets). Null or absent if unknown. |
+| `context_offsets` | `list[int] \| None` | Distinct relative positions of sequence segments read by the model, e.g. `[0, -1, -4]`. Along with `dataset` and `split`, defines the model's [evaluation set](evaluation.md#evaluation-sets).Absent or `null` if unknown. |
 | `method` | `dict` | Method information (see [Method field](#method-field)). |
-| `attribute_to_irap_codes` | `dict[str, list[int]]` | Attribute column name → iRAP codes defining class order for `probs` lists and `hard` class indices. Must cover every attribute column. |
+| `attribute_to_irap_codes` | `dict[str, list[int]]` | Attribute column name → iRAP codes defining class order for `probs` lists and `hard` class indices. |
 
 Only `context_offsets` is optional.
 
@@ -50,10 +48,12 @@ Only `context_offsets` is optional.
 
 Only `name` is required.
 
+#### Details field of an ensemble
+
 An ensemble written by `irap_evaluation` is a `probs` file whose `context_offsets` are the union of its members' offsets (or null if any member's offsets are unknown). It records member provenance in `details.ensemble`:
 
 ```json
-{"members": [{"method": <method>, "context_offsets": <offsets>, "weight": <number>}, ...]}
+{"members": [{"method": ..., "context_offsets": ..., "weight": ...}, ...]}
 ```
 
 ## Examples
