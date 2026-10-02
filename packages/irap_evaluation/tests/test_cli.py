@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from irap_data.metadata import get_dataset_preset
+from irap_data.metadata import MetaFiles, get_dataset_preset
 from irap_evaluation.prediction_io import read_predictions, write_predictions
 from irap_evaluation.tools.cli import main
 
@@ -25,6 +25,16 @@ def _write_model_files(metadata, tmp_path):
                                                  seed=seed, context_offsets=offsets))
         paths.append(str(path))
     return paths
+
+
+def test_evaluate_refuses_runs_without_labels(metadata_dir, metadata, tmp_path, capsys):
+    paths = _write_model_files(metadata, tmp_path)
+    # Without road data, no segment has labels, as in an unlabeled split.
+    (metadata_dir / MetaFiles.SEGMENT_ID_TO_ROAD_DATA).write_text("{}", encoding="utf-8")
+    out = tmp_path / "results"
+    assert main(["evaluate", str(metadata_dir), *paths, "--out", str(out)]) == 1
+    assert "nothing is scored" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_evaluate_ensemble_compare_export(metadata_dir, metadata, tmp_path, capsys):
@@ -204,7 +214,7 @@ def test_a_model_with_the_reference_offsets_is_scored_only_on_the_reference_set(
                                              name="ref", seed=0, context_offsets=offsets))
     out = tmp_path / "results"
     assert main(["evaluate", str(metadata_dir), str(path), "--out", str(out)]) == 0
-    assert "scored only there" in capsys.readouterr().out
+    assert "model set is left out" in capsys.readouterr().out
     assert [p.name for p in (out / "ref").iterdir()] == ["metrics_reference.json"]
 
 

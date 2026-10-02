@@ -183,6 +183,9 @@ def run_evaluate(args: argparse.Namespace) -> None:
             method_context_offsets.get(predictions.header.method.name,
                                        predictions.header.context_offsets),
             reference_set_f, model_set_f)]
+    if not results:
+        raise ValueError("No run has an evaluation set with labels (see the notes above), so"
+                         " nothing is scored.")
     for result in results:
         if result.intervals is not None:
             _print_partially_undefined_intervals(

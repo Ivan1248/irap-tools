@@ -36,7 +36,8 @@ A file is scored on up to two sets:
 
 - A file that lacks segments of its model set is incomplete or of another metadata build, and is refused.
 - A model whose offsets reach beyond the reference window lacks some reference segments. It is scored only on its model set, with a note, or refused if its offsets are unknown.
-- If the two sets are equal, the model is scored only on the reference set.
+- If the two sets are equal, the model set is left out.
+- A set without labels, e.g. of an unlabeled split, is left out with a note. The file must still cover its segments as above.
 
 ## Attributes
 

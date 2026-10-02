@@ -1,4 +1,4 @@
-"""Evaluation sets: the labeled segments of a split that predictions are scored on.
+"""Evaluation sets: the segments of a split that predictions are scored on, with their labels.
 
 `docs/evaluation.md` defines the reference set and the model set.
 """
@@ -136,6 +136,9 @@ def select_evaluation_sets(
     """The evaluation sets to score a model on: the reference set, if the model predicts all its
     segments, and the model set, if it is known and has other segments than the reference set.
 
+    A set without labels, e.g. of an unlabeled split (`irap_data.is_unlabeled_split`), is left
+    out, but the predictions must still cover its segments as above.
+
     Args:
         predicted_segment_ids: The segments that the model predicts.
         reference_set: See `get_reference_set`.
@@ -178,7 +181,14 @@ def select_evaluation_sets(
         notes.append("No context offsets, so the model is not scored on its own set.")
     elif model_set.segment_ids == reference_set.segment_ids:
         notes.append(f"The context offsets {model_set.context_offsets} select the segments of the"
-                     f" reference set, so the model is scored only there.")
+                     f" reference set, so the model set is left out.")
     else:
         evaluation_sets.append(model_set)
-    return evaluation_sets, notes
+    labeled_sets = []
+    for evaluation_set in evaluation_sets:
+        if any(evaluation_set.attr_to_num_labeled.values()):
+            labeled_sets.append(evaluation_set)
+        else:
+            notes.append(f"The {evaluation_set.name} set has no labels, so the model is not"
+                         f" scored on it.")
+    return labeled_sets, notes

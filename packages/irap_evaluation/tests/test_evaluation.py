@@ -83,13 +83,31 @@ def test_select_evaluation_sets(metadata, reference_set):
     names, notes = select(wide_model_set.segment_ids, wide_model_set)
     assert names == ["model"] and "not scored on the reference set" in notes[0]
     names, notes = select(all_segments, dc.replace(reference_set, name="model"))
-    assert names == ["reference"] and "scored only there" in notes[0]
+    assert names == ["reference"] and "model set is left out" in notes[0]
     with pytest.raises(ValueError, match="cannot be scored"):
         select(without_a_reference_segment, None)
     # Incomplete predictions, also when the model set has the segments of the reference set.
     for incomplete_model_set in (model_set, dc.replace(reference_set, name="model")):
         with pytest.raises(ValueError, match="of the model set .* incomplete"):
             select(without_a_reference_segment, incomplete_model_set)
+
+
+def test_sets_without_labels_are_left_out(metadata, reference_set):
+    def without_labels(evaluation_set):
+        return dc.replace(evaluation_set, class_indices={
+            a: np.full_like(v, IGNORE_LABEL_INDEX) for a, v in evaluation_set.class_indices.items()})
+
+    model_set = get_evaluation_set(metadata, "vietnam", SPLIT, (0, -1), "model")
+    sets, notes = select_evaluation_sets(model_set.segment_ids, without_labels(reference_set),
+                                         model_set)
+    assert [s.name for s in sets] == ["model"]
+    assert notes == ["The reference set has no labels, so the model is not scored on it."]
+    sets, notes = select_evaluation_sets(model_set.segment_ids, without_labels(reference_set),
+                                         without_labels(model_set))
+    assert sets == [] and len(notes) == 2
+    with pytest.raises(ValueError, match="of the model set .* incomplete"):
+        select_evaluation_sets(model_set.segment_ids[1:], without_labels(reference_set),
+                               without_labels(model_set))
 
 
 def test_subsets_keep_their_road_sequences(reference_set, predictions):
