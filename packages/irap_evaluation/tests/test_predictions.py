@@ -20,6 +20,7 @@ from irap_evaluation.predictions import (
     PredictionFormatError,
     PredictionHeader,
     Predictions,
+    add_invalid_attributes,
     align_classes,
     check_class_codes,
     select_segments,
@@ -182,6 +183,25 @@ def test_class_codes_must_match():
         check_class_codes(_predictions(), {"c": (1,)})
     with pytest.raises(PredictionFormatError, match="at least one attribute"):
         check_class_codes(_predictions(), {})
+
+
+@pytest.mark.parametrize("make_predictions", [_predictions, _hard_predictions])
+def test_add_invalid_attributes(make_predictions):
+    predictions = make_predictions()
+    added = add_invalid_attributes(predictions, {"b": (2, 1), "c": (5, 6, 7)})
+    assert added.attributes == ("a", "b", "c")
+    assert added.attribute_to_irap_codes["c"] == (5, 6, 7)
+    assert added.output_kind == predictions.output_kind
+    assert not added.is_valid["c"].any()
+    for attr in predictions.attributes:  # Predicted attributes, also 'b', are kept.
+        np.testing.assert_array_equal(added.probs[attr], predictions.probs[attr])
+    assert added.attribute_to_irap_codes["b"] == CLASS_CODES["b"]
+    # The result is valid.
+    Predictions(added.header, added.output_kind, added.attribute_to_irap_codes,
+                added.segment_ids, added.probs)
+    assert add_invalid_attributes(predictions, {"a": CLASS_CODES["a"]}) is predictions
+    with pytest.raises(PredictionFormatError, match="duplicate"):
+        add_invalid_attributes(predictions, {"c": (5, 5)})
 
 
 def test_select_segments():

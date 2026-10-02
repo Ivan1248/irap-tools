@@ -151,6 +151,30 @@ def test_means_over_runs_need_the_first_class_null_policy(metadata_dir, metadata
         "--bootstrap", "20"]) == 0
 
 
+def test_missing_attributes(metadata_dir, metadata, tmp_path, capsys):
+    attributes = [a for a in metadata.vocabulary.attribute_names if a != "Lane width"]
+    path = tmp_path / "partial.predictions.parquet"
+    write_predictions(path, make_predictions(
+        metadata.vocabulary.restrict_to_attributes(attributes), list(metadata.splits[SPLIT]),
+        name="partial", seed=0))
+
+    def evaluate(policy):
+        out = tmp_path / policy
+        exit_code = main(["evaluate", str(metadata_dir), str(path), "--out", str(out),
+                          "--missing-attribute-policy", policy])
+        return exit_code, out
+
+    assert evaluate("error")[0] == 1
+    assert "not predicted: ['Lane width']" in capsys.readouterr().err
+    exit_code, out = evaluate("invalid")
+    assert exit_code == 0
+    assert "scored as invalid, since not predicted: Lane width" in capsys.readouterr().out
+    invalid = pd.read_csv(out / "summary_long.csv")
+    assert "Lane width" in set(invalid["attribute"])
+    report = json.loads((out / "partial" / "metrics_reference.json").read_text())
+    assert report["missing_attributes"] == ["Lane width"]
+
+
 def test_runs_of_a_method_need_distinct_seeds(metadata_dir, metadata, tmp_path, capsys):
     segments = list(metadata.splits[SPLIT])
     paths = [str(tmp_path / f"{i}.predictions.parquet") for i in range(2)]

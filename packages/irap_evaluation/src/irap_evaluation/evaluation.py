@@ -27,6 +27,7 @@ from .predictions import (
     OutputKind,
     PredictionFormatError,
     Predictions,
+    add_invalid_attributes,
     align_classes,
     select_segments,
     to_class_indices,
@@ -40,6 +41,14 @@ from .predictions import (
 #: `docs/evaluation.md#invalid-cells` gives the reasons.
 NullPolicy = T.Literal["first_class", "exclude"]
 NULL_POLICIES: tuple[str, ...] = T.get_args(NullPolicy)
+
+#: How an evaluated attribute that the predictions lack is scored:
+#: - 'error': not at all, `evaluate_predictions` raises an error.
+#: - 'invalid': as if every cell of it were invalid, so that runs that lack attributes are scored
+#:   on the same attributes as the others and are not rewarded for leaving out attributes.
+#: `docs/evaluation.md#missing-attributes` gives the reasons.
+MissingAttributePolicy = T.Literal["error", "invalid"]
+MISSING_ATTRIBUTE_POLICIES: tuple[str, ...] = T.get_args(MissingAttributePolicy)
 
 #: 'canonical': the iRAP attribute subset (`irap_data.attrs.get_attrs_to_include`), as in
 #: `vidlu_irap_gaim.metrics`. 'all': every attribute of the dataset.
@@ -56,16 +65,12 @@ def _check_attributes_in_vocabulary(attributes: T.Iterable[str],
 def select_evaluated_attributes(
     evaluation_set: EvaluationSet,
     attributes: AttributeSelection | T.Sequence[str] = "canonical",
-    *,
-    predicted_attributes: T.Collection[str] | None = None,
 ) -> tuple[str, ...]:
     """The attributes to score: the candidates that have a label in `evaluation_set`.
 
     Args:
         attributes: The candidates, an `AttributeSelection` or attribute names. The 'canonical'
             selection can contain attributes that the dataset lacks, which are left out.
-        predicted_attributes: If given, the candidates outside it are left out too, e.g. the
-            attributes that a model does not predict.
 
     Raises:
         ValueError: For an unknown selection, or attribute names that are not in the dataset.
@@ -78,8 +83,7 @@ def select_evaluated_attributes(
                       else evaluation_set.vocabulary.attribute_names)
     else:
         _check_attributes_in_vocabulary(attributes, evaluation_set.vocabulary)
-    labeled = filter_labeled_attrs(attributes, evaluation_set.attr_to_num_labeled)
-    return tuple(a for a in labeled if predicted_attributes is None or a in predicted_attributes)
+    return filter_labeled_attrs(attributes, evaluation_set.attr_to_num_labeled)
 
 
 @dc.dataclass(frozen=True)
@@ -98,6 +102,9 @@ class EvaluationResult:
         intervals: `bootstrap.BootstrapInterval`s of the metrics of this run alone, which cover the
             sampling of road sequences but not of runs (see
             `bootstrap.compute_bootstrap_intervals`), or None.
+        missing_attributes: The evaluated attributes that the predictions lack, scored as
+            invalid cells (`MissingAttributePolicy` 'invalid'). `num_invalid` counts their cells
+            too.
     """
 
     method: MethodInfo
@@ -108,6 +115,7 @@ class EvaluationResult:
     num_invalid: T.Mapping[str, int]
     metrics: MetricValues[float]
     intervals: MetricValues | None = None
+    missing_attributes: tuple[str, ...] = ()
 
     @property
     def run_label(self) -> str:
@@ -156,6 +164,7 @@ def evaluate_predictions(
     *,
     attributes: T.Sequence[str] | None = None,
     null_policy: NullPolicy = "first_class",
+    missing_attribute_policy: MissingAttributePolicy = "error",
     metric_names: T.Sequence[str] | None = None,
 ) -> EvaluationResult:
     """Scores predictions on every segment of an evaluation set.
@@ -167,15 +176,19 @@ def evaluate_predictions(
         attributes: The attributes to score. None means `select_evaluated_attributes` with its
             defaults.
         null_policy: See `NullPolicy`.
+        missing_attribute_policy: See `MissingAttributePolicy`.
         metric_names: None means the iRAP protocol (`metrics.get_irap_metric_names`) for the
             output kind of the predictions.
 
     Raises:
         ValueError: For probabilistic metrics of hard predictions, per-class metric names,
-            attributes that are not in the dataset, or if there is no attribute to score.
-        PredictionFormatError: If the release or split differ, an attribute is not predicted,
-            the predicted iRAP codes of an attribute differ from the dataset's, or a segment of
-            the evaluation set has no prediction.
+            attributes that are not in the dataset, if there is no attribute to score, or if
+            `null_policy='exclude'` would leave an attribute without scored segments, since
+            every labeled cell of it is invalid or, with `missing_attribute_policy='invalid'`,
+            it is not predicted.
+        PredictionFormatError: If the release or split differ, an attribute is not predicted
+            and `missing_attribute_policy='error'`, the predicted iRAP codes of an attribute
+            differ from the dataset's, or a segment of the evaluation set has no prediction.
     """
     header = predictions.header
     if (header.dataset, header.split) != (evaluation_set.dataset, evaluation_set.split):
@@ -184,6 +197,9 @@ def evaluate_predictions(
             f" {evaluation_set.dataset}/{evaluation_set.split}.")
     if null_policy not in NULL_POLICIES:
         raise ValueError(f"null_policy must be one of {NULL_POLICIES}, got {null_policy!r}.")
+    if missing_attribute_policy not in MISSING_ATTRIBUTE_POLICIES:
+        raise ValueError(f"missing_attribute_policy must be one of {MISSING_ATTRIBUTE_POLICIES},"
+                         f" got {missing_attribute_policy!r}.")
     if metric_names is None:
         metric_names = get_irap_metric_names(output_kind=predictions.output_kind)
     if per_class := [n for n in metric_names if is_per_class_metric(n)]:
@@ -194,10 +210,24 @@ def evaluate_predictions(
     if not attributes:
         raise ValueError("There is no attribute to score.")
     _check_attributes_in_vocabulary(attributes, evaluation_set.vocabulary)
-    aligned = select_segments(
-        align_classes(predictions, evaluation_set.vocabulary.restrict_to_attributes(attributes)
-                      .attribute_to_irap_codes),
-        evaluation_set.segment_ids)
+    attribute_to_irap_codes = evaluation_set.vocabulary.restrict_to_attributes(
+        attributes).attribute_to_irap_codes
+    missing_attributes = ()
+    if missing_attribute_policy == "invalid":
+        missing_attributes = tuple(a for a in attributes if a not in predictions.attributes)
+        predictions = add_invalid_attributes(predictions, attribute_to_irap_codes)
+    aligned = select_segments(align_classes(predictions, attribute_to_irap_codes),
+                              evaluation_set.segment_ids)
+    num_invalid = {attr: int((~aligned.is_valid[attr]
+                              & (evaluation_set.class_indices[attr] != IGNORE_LABEL_INDEX)).sum())
+                   for attr in attributes}
+    if null_policy == "exclude":
+        attr_to_num_labeled = evaluation_set.attr_to_num_labeled
+        if all_invalid := [a for a in attributes
+                           if 0 < num_invalid[a] == attr_to_num_labeled[a]]:
+            raise ValueError(f"Every labeled cell of {all_invalid} is invalid or not predicted,"
+                             f" so null_policy='exclude' would leave them without scored"
+                             f" segments. Use null_policy='first_class'.")
     has_probabilities = predictions.output_kind == "probs"
     attr_to_predicted_indices = to_class_indices(aligned)
 
@@ -217,15 +247,13 @@ def evaluate_predictions(
             num_groups=len(evaluation_set.sequence_ids))
 
     statistics = {attr: get_statistics(attr) for attr in attributes}
-    num_invalid = {attr: int((~aligned.is_valid[attr]
-                              & (evaluation_set.class_indices[attr] != IGNORE_LABEL_INDEX)).sum())
-                   for attr in attributes}
     metrics = compute_grouped_metrics(statistics, metric_names)
     return EvaluationResult(
         method=header.method, output_kind=predictions.output_kind,
         evaluation_set=evaluation_set, null_policy=null_policy,
         statistics=statistics, num_invalid=num_invalid,
-        metrics=map_metric_values(lambda v: np.asarray(v).item(), metrics))
+        metrics=map_metric_values(lambda v: np.asarray(v).item(), metrics),
+        missing_attributes=missing_attributes)
 
 
 @dc.dataclass(frozen=True)

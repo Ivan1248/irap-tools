@@ -5,7 +5,7 @@ This document defines what `irap_evaluation` computes when it scores a predictio
 Scoring a file on an evaluation set (`evaluate_predictions`) has these steps:
 
 1. Select the segments and attributes ([evaluation sets](#evaluation-sets), [attributes](#attributes)).
-2. Match the predictions to the labels, and score the invalid cells according to the null policy ([matching](#matching), [invalid cells](#invalid-cells)).
+2. Match the predictions to the labels, and score the invalid cells according to the null policy ([matching](#matching), [invalid cells](#invalid-cells)). Attributes that the file does not predict are an error, or count as invalid cells ([missing attributes](#missing-attributes)).
 3. Accumulate statistics per road sequence ([statistics](#statistics)).
 4. Compute the metrics from the summed statistics ([metrics](#metrics)).
 
@@ -41,7 +41,14 @@ A file is scored on up to two sets:
 
 ## Attributes
 
-The scored attributes are the canonical iRAP subset (`irap_data.attrs.get_attrs_to_include`, 41 attributes), in its order, minus those without a label in the evaluation set. On Vietnam validation, 34 remain. `--attributes all` starts from every attribute of the dataset. `--only-predicted` also drops the attributes the file does not predict, which are otherwise an error.
+The scored attributes are the canonical iRAP subset (`irap_data.attrs.get_attrs_to_include`, 41 attributes), in its order, minus those without a label in the evaluation set. On Vietnam validation, 34 remain. `--attributes all` starts from every attribute of the dataset.
+
+### Missing attributes
+
+A scored attribute that the file does not predict is handled according to `missing_attribute_policy` (`MissingAttributePolicy`, `--missing-attribute-policy`):
+
+- **`error`** (default): scoring fails.
+- **`invalid`**: every cell of the attribute counts as invalid ([invalid cells](#invalid-cells)). All files are then scored on the same attributes, so their averages are comparable, and a method does not gain by leaving out attributes that it predicts poorly. `EvaluationResult.missing_attributes` (`missing_attributes` in the JSON documents) lists such attributes, and `num_invalid` counts their cells. With `first_class`, the attribute is scored as a constant prediction of class 0, which can score above 0, e.g. in accuracy if class 0 is common. With `exclude`, it would have no scored segments, which is an error ([invalid cells](#invalid-cells)).
 
 ## Matching
 
@@ -59,7 +66,7 @@ An invalid cell is a null in the file: the method gave no usable prediction of t
 The null policy (`NullPolicy`) selects how invalid cells are scored:
 
 - **`first_class`** (default): in metrics computed from predicted classes, the cell counts as a prediction of class 0, as in the training-time evaluation. In NLL and Brier, it counts as the uniform distribution, which gives $\ln K$ and $1 - 1/K$ for $K$ classes (a one-hot distribution of class 0 would give an infinite NLL for any other label).
-- **`exclude`**: the cell is not scored, as if unlabeled. Each run leaves out its own invalid cells, so runs with invalid cells are scored on different segments.
+- **`exclude`**: the cell is not scored, as if unlabeled. Each run leaves out its own invalid cells, so runs with invalid cells are scored on different segments. An attribute with every labeled cell invalid would have no scored segments and would drop out of the attribute averages, which would reward leaving it empty. Scoring it is therefore an error.
 
 Means over runs and comparisons therefore need `first_class`. `irap-eval evaluate` scores the runs with `--null-policy` (default `first_class`) and writes the means over the runs of a method (`method_averages_*.csv`) only with `first_class`. `irap-eval compare` always uses `first_class`.
 

@@ -288,6 +288,14 @@ def _check_attributes(attribute_to_values: T.Mapping[str, T.Any], name: str,
             f" {sorted(set(attribute_to_values) - set(attribute_to_irap_codes))}.")
 
 
+def _validate_attribute_irap_codes(attr: str, codes: T.Sequence[int]) -> None:
+    """`irap_data.metadata.validate_irap_codes`, raising `PredictionFormatError`."""
+    try:
+        validate_irap_codes(attr, codes)
+    except ValueError as e:
+        raise PredictionFormatError(str(e)) from e
+
+
 def _validate_predictions(predictions: Predictions) -> None:
     """Checks the invariants documented in `Predictions`."""
     p = predictions
@@ -303,10 +311,7 @@ def _validate_predictions(predictions: Predictions) -> None:
         raise PredictionFormatError("Segment IDs must be unique.")
     _check_attributes(p.probs, "probs", p.attribute_to_irap_codes)
     for attr, codes in p.attribute_to_irap_codes.items():
-        try:
-            validate_irap_codes(attr, codes)
-        except ValueError as e:
-            raise PredictionFormatError(str(e)) from e
+        _validate_attribute_irap_codes(attr, codes)
         probs = p.probs[attr]
         if probs.dtype != np.float32 or probs.shape != (num_segments, len(codes)):
             raise PredictionFormatError(
@@ -329,8 +334,9 @@ def _validate_predictions(predictions: Predictions) -> None:
 
 def _replace_unvalidated(predictions: Predictions, **changes) -> Predictions:
     """`dataclasses.replace` without `_validate_predictions`, for changes that keep the
-    invariants: selecting segments or attributes and reordering classes. The checks scan every
-    probability, which takes about a second for 100k segments and 50 attributes."""
+    invariants: selecting segments or attributes, reordering classes, and adding invalid cells.
+    The checks scan every probability, which takes about a second for 100k segments and 50
+    attributes."""
     if "probs" in changes:
         changes = {**changes, "probs": _to_read_only_views(changes["probs"])}
     replaced = object.__new__(Predictions)
@@ -426,6 +432,36 @@ def align_classes(predictions: Predictions,
                                  for attr, codes in attribute_to_irap_codes.items()},
         probs={attr: predictions.probs[attr][:, get_column_order(attr)]
                for attr in attribute_to_irap_codes})
+
+
+def add_invalid_attributes(predictions: Predictions,
+                           attribute_to_irap_codes: T.Mapping[str, T.Sequence[int]]
+                           ) -> Predictions:
+    """The predictions with the attributes of `attribute_to_irap_codes` that they do not predict
+    added, with every cell invalid. Predicted attributes are kept as they are.
+
+    `docs/evaluation.md#missing-attributes` gives the reasons for scoring missing attributes so.
+
+    Args:
+        attribute_to_irap_codes: Attribute -> the iRAP codes of its classes, e.g. from
+            `ClassVocabulary.attribute_to_irap_codes`.
+
+    Raises:
+        PredictionFormatError: If the iRAP codes of an added attribute are invalid
+            (`irap_data.metadata.validate_irap_codes`).
+    """
+    missing = {attr: tuple(codes) for attr, codes in attribute_to_irap_codes.items()
+               if attr not in predictions.attribute_to_irap_codes}
+    for attr, codes in missing.items():
+        _validate_attribute_irap_codes(attr, codes)
+    if not missing:
+        return predictions
+    return _replace_unvalidated(
+        predictions,
+        attribute_to_irap_codes={**predictions.attribute_to_irap_codes, **missing},
+        probs={**predictions.probs,
+               **{attr: np.full((predictions.num_segments, len(codes)), np.nan, dtype=np.float32)
+                  for attr, codes in missing.items()}})
 
 
 def select_segments(predictions: Predictions, segment_ids: T.Sequence[str]) -> Predictions:

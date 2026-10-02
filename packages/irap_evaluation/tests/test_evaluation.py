@@ -173,6 +173,9 @@ def test_null_policies(reference_set, predictions):
     assert excluded.metrics.per_attribute["n"]["Lane width"] == \
            num_labeled - excluded.num_invalid["Lane width"]
     assert excluded.num_invalid["Lane width"] > 0
+    all_invalid = _invalidate(predictions, "Lane width", np.zeros(predictions.num_segments, bool))
+    with pytest.raises(ValueError, match=r"\['Lane width'\] is invalid"):
+        evaluate_predictions(all_invalid, reference_set, null_policy="exclude")
 
 
 def test_first_class_scores_invalid_cells_as_uniform_distributions(metadata, reference_set,
@@ -222,6 +225,29 @@ def test_evaluation_requires_every_segment_and_attribute(metadata, reference_set
         evaluate_predictions(partial, reference_set)
     assert evaluate_predictions(partial, reference_set, attributes=["Curvature"]).attributes == \
            ("Curvature",)
+
+
+def test_missing_attributes_score_as_invalid_cells(metadata, reference_set, predictions):
+    without = dc.replace(predictions, attribute_to_irap_codes={
+        a: c for a, c in predictions.attribute_to_irap_codes.items() if a != "Lane width"},
+        probs={a: p for a, p in predictions.probs.items() if a != "Lane width"})
+    result = evaluate_predictions(without, reference_set, missing_attribute_policy="invalid")
+    all_invalid = evaluate_predictions(
+        _invalidate(predictions, "Lane width", np.zeros(predictions.num_segments, bool)),
+        reference_set)
+    np.testing.assert_equal(dc.asdict(result.metrics), dc.asdict(all_invalid.metrics))
+    assert result.num_invalid == all_invalid.num_invalid
+    assert result.missing_attributes == ("Lane width",)
+    assert all_invalid.missing_attributes == ()
+    assert to_json_dict(result)["missing_attributes"] == ["Lane width"]
+    with pytest.raises(ValueError, match="exclude"):
+        evaluate_predictions(without, reference_set, missing_attribute_policy="invalid",
+                             null_policy="exclude")
+    # Without missing attributes, 'exclude' is allowed.
+    evaluate_predictions(predictions, reference_set, missing_attribute_policy="invalid",
+                         null_policy="exclude")
+    with pytest.raises(ValueError, match="missing_attribute_policy"):
+        evaluate_predictions(predictions, reference_set, missing_attribute_policy="skip")
 
 
 def test_bootstrap_intervals_contain_the_point_estimate(metadata, predictions):

@@ -19,9 +19,11 @@ from ..bootstrap import BootstrapInterval, compare_methods, compute_bootstrap_in
 from ..ensembling import ensemble_predictions
 from ..evaluation import (
     ATTRIBUTE_SELECTIONS,
+    MISSING_ATTRIBUTE_POLICIES,
     NULL_POLICIES,
     AttributeSelection,
     EvaluationResult,
+    MissingAttributePolicy,
     NullPolicy,
     check_runs_distinct,
     evaluate_predictions,
@@ -97,19 +99,17 @@ def run_validate(args: argparse.Namespace) -> None:
 
 
 def _score(predictions: Predictions, evaluation_set: EvaluationSet, *, null_policy: NullPolicy,
-           attribute_selection: AttributeSelection, only_predicted: bool, num_resamples: int,
+           attribute_selection: AttributeSelection,
+           missing_attribute_policy: MissingAttributePolicy, num_resamples: int,
            confidence: float, seed: int) -> EvaluationResult:
-    """Scores predictions, with bootstrap intervals of the run if `num_resamples` > 0.
-
-    Args:
-        only_predicted: Whether to leave out the selected attributes that the method does not
-            predict, rather than failing.
-    """
+    """Scores predictions, with bootstrap intervals of the run if `num_resamples` > 0."""
     result = evaluate_predictions(
         predictions, evaluation_set, null_policy=null_policy,
-        attributes=select_evaluated_attributes(
-            evaluation_set, attribute_selection,
-            predicted_attributes=predictions.attributes if only_predicted else None))
+        missing_attribute_policy=missing_attribute_policy,
+        attributes=select_evaluated_attributes(evaluation_set, attribute_selection))
+    if result.missing_attributes:
+        print(f"Run {result.run_label!r}, {evaluation_set.name} set: scored as invalid, since"
+              f" not predicted: {', '.join(result.missing_attributes)}.")
     if not num_resamples:
         return result
     return dc.replace(result, intervals=compute_bootstrap_intervals(
@@ -173,7 +173,7 @@ def run_evaluate(args: argparse.Namespace) -> None:
     model_set_f = functools.cache(functools.partial(get_evaluation_set, metadata, name="model"))
     score = functools.partial(
         _score, null_policy=args.null_policy, attribute_selection=args.attributes,
-        only_predicted=args.only_predicted, num_resamples=args.bootstrap,
+        missing_attribute_policy=args.missing_attribute_policy, num_resamples=args.bootstrap,
         confidence=args.confidence, seed=args.seed)
     results = [
         score(predictions, evaluation_set)
@@ -316,9 +316,11 @@ def make_argument_parser() -> argparse.ArgumentParser:
                           help=f"Metrics of the per-attribute tables, which end with the attribute"
                                f" average, from {', '.join(TABLE_METRICS)}. The metrics of"
                                f" distributions need probs files. Default: {IRAP_MAIN_METRIC}.")
-    evaluate.add_argument("--only-predicted", action="store_true",
-                          help="Score only the selected attributes that a method predicts, rather"
-                               " than failing when it does not predict one.")
+    evaluate.add_argument("--missing-attribute-policy", choices=MISSING_ATTRIBUTE_POLICIES,
+                          default="error",
+                          help="How a selected attribute that a file does not predict is scored."
+                               " error: not at all, the command fails. invalid: as if every cell"
+                               " of it were invalid (see --null-policy). Default: error.")
     evaluate.add_argument("--null-policy", choices=NULL_POLICIES, default="first_class",
                           help="How the results of the runs score invalid cells. first_class: as"
                                " class 0 in the metrics of the predicted classes and as the"
