@@ -100,6 +100,7 @@ Each tool is a package under `packages/` with its own `pyproject.toml`, README a
 packages/
 ├─ irap_data/                      Metadata API, PyTorch datasets, statistics reports, viewer
 ├─ irap_evaluation/                Evaluation of saved predictions (depends on irap-data)
+├─ irap_evaluation_server/         Web app for submissions and their evaluation (NiceGUI)
 ├─ irap_video_cutting/             Cutting survey videos by GPS track
 ├─ irap_vietnam_360/               Fisheye to perspective conversion (superseded)
 └─ irap_vietnam_data_preparation/  Scripts that build the iRAP-Vietnam metadata
@@ -123,6 +124,16 @@ irap_evaluation/
 ```
 
 The library imports neither `reports` nor `tools`, and `reports` does not import `tools`. The package `__init__` re-exports only the library. Place code in the lowest layer that uses it. For example, the dataset statistics are in `reports/`, because only the reports and the command-line tool use them.
+
+An application package, such as a server, keeps its logic modules, UI and entry point at the top level. Its logic modules do not import the UI framework:
+
+```
+irap_evaluation_server/
+├─ config, datasets, archive, …   Logic, tested without a browser
+├─ components/                    Reusable UI parts
+├─ pages/                         One module per page
+└─ server                         The command that runs the app
+```
 
 Import an optional dependency (an extra, such as `torch`, `report` or `viewer`) only in the modules that need it, so that the rest of the package works without it. `import irap_data` does not import PyTorch or Matplotlib.
 

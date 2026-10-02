@@ -1,0 +1,46 @@
+"""Display texts and HTML fragments shared by the pages."""
+
+import html
+import typing as T
+from datetime import datetime
+
+from ..archive import ActionLogEntry
+from .routes import get_submission_path
+
+_ACTION_DETAIL_LABELS = {"file_name": "File", "archive_member": "File in the archive",
+                         "notes": "Notes", "original_seed": "Seed in the file",
+                         "uploaded_file_sha256": "SHA-256 of the uploaded file"}
+
+
+def format_utc_time(time: datetime) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def make_submission_link_html(submission_id: int) -> str:
+    return f'<a href="{get_submission_path(submission_id)}">#{submission_id}</a>'
+
+
+def make_table_html(header_cells: list[str], rows: list[str]) -> str:
+    """A `data-table` (`styles.css`) of escaped header texts and `<tr>` rows."""
+    header = "".join(f"<th>{html.escape(cell)}</th>" for cell in header_cells)
+    return (f'<table class="data-table"><thead><tr>{header}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>')
+
+
+def _make_action_details_html(details: T.Mapping[str, T.Any]) -> str:
+    def to_html(value: T.Any) -> str:
+        if isinstance(value, list):
+            return "<br>".join(html.escape(str(v)) for v in value) or "–"
+        return html.escape("–" if value is None else str(value))
+
+    return "".join(f'<div><span class="muted">{html.escape(_ACTION_DETAIL_LABELS.get(k, k))}:'
+                   f"</span> {to_html(v)}</div>" for k, v in details.items())
+
+
+def make_action_table_html(entries: T.Sequence[ActionLogEntry]) -> str:
+    rows = [f"<tr><td>{format_utc_time(e.time)}</td><td>{html.escape(e.actor)}</td>"
+            f"<td>{e.action}</td>"
+            f"<td>{'' if e.submission_id is None else make_submission_link_html(e.submission_id)}"
+            f"</td><td>{_make_action_details_html(e.details)}</td></tr>"
+            for e in entries]
+    return make_table_html(["Time", "Who", "Action", "Submission", "Details"], rows)

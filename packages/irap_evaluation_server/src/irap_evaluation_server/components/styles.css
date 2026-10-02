@@ -1,0 +1,45 @@
+/* A compact, desktop-like look instead of Quasar's Material style. */
+:root {
+  --background: #f4f5f7; --panel: #ffffff; --border: #d9dde3; --text: #1d232b;
+  --muted: #5f6b7a; --accent: #2a78d6; --error: #b3261e; --deleted: #8a9099;
+}
+body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px;
+       line-height: normal; color: var(--text); background: var(--background); }
+/* No Quasar transitions or animations (menus, field labels, ...). */
+*, *::before, *::after { transition: none !important; animation: none !important; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* The browser's own controls instead of Tailwind's reset. */
+.native-control { all: revert; font: inherit; color: var(--text); }
+.native-control::file-selector-button { all: revert; font: inherit; }
+.field { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+
+.top-bar { display: flex; align-items: center; gap: 16px; padding: 6px 12px;
+           background: var(--panel); border-bottom: 1px solid var(--border); }
+.top-bar .title { font-size: 15px; font-weight: bold; color: var(--text); }
+.top-bar nav { display: flex; gap: 12px; }
+.top-bar nav a.current { color: var(--text); font-weight: bold; }
+.top-bar .submitter { margin-left: auto; }
+.top-bar .field { flex-direction: row; align-items: center; gap: 6px; }
+
+.page-content { padding: 12px; display: flex; flex-direction: column; gap: 12px;
+                width: 100%; max-width: 1400px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+         padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
+                 color: var(--muted); font-weight: bold; }
+.muted { color: var(--muted); }
+.error { color: var(--error); white-space: pre-wrap; }
+.form-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+
+.data-table { border-collapse: collapse; width: 100%; }
+.data-table th { text-align: left; font-weight: normal; color: var(--muted);
+                 border-bottom: 1px solid var(--border); padding: 3px 8px; white-space: nowrap; }
+.data-table td { border-bottom: 1px solid #eceef1; padding: 3px 8px; vertical-align: top; }
+.data-table td.number { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table tr.deleted td { color: var(--deleted); }
+.data-table tr.deleted a { color: var(--deleted); }
+
+.key-values { display: grid; grid-template-columns: max-content 1fr; gap: 3px 16px; }
+.key-values .key { color: var(--muted); }
