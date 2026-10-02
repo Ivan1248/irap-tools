@@ -22,26 +22,22 @@ Parquet file
     ... # one column per attribute
 ```
 
-Header types are Python types of the parsed JSON. `?` marks optional fields. Column types are Arrow types. There is an `<attribute>` column for each key of `attribute_to_irap_codes`, and either all are probability vectors or class indices.
+Header types are Python types of the parsed JSON. `?` marks optional fields. Column types are Arrow types.
 
 `irap_evaluation.prediction_io` reads and writes the format (`read_predictions`, `write_predictions`), represented in memory by `irap_evaluation.predictions.Predictions`.
 
 ## Columns
 
-A file holds either predicted class distributions (`probs`) or predicted class indices (`hard`) for each segment.
-
 | Column | Type | Content |
 |---|---|---|
 | `segment_id` | `string \| large_string` | Segment identifier. |
-| `<attribute>` (one per attribute) | `list<float32>` or `int64`, nullable | Probability vector or class index (`null` for invalid prediction – [invalid cells](evaluation.md#invalid-cells)). |
+| `<attribute>` | `list<float32>` or `int64`, nullable | Probability vector or class index, `null` for an [invalid cell](evaluation.md#invalid-cells). |
 
-There is one `<attribute>` column for each attribute, named as in `attribute_metadata.json`.
+There is one `<attribute>` column for each key of `attribute_to_irap_codes`, named as in `attribute_metadata.json`.
 All attribute columns share the same output kind:
 
-- **`probs`**: a list with one value per class of the attribute. Values are $\ge 0$, and sum to 1 within $10^{-4}$. Writers should use `list<float32>` or `large_list<float32>` (e.g. from Polars). `float64` values are acceptable too.
-- **`hard`**: a 0-based class index of the predicted class, represented as `int64` or some other integer type.
-
-An invalid cell is `null`.
+- **`probs`**: a predicted class distribution, a list with one value per class of the attribute. Values are $\ge 0$, and sum to 1 within $10^{-4}$. Writers should use `list<float32>` or `large_list<float32>` (e.g. from Polars). `float64` values are acceptable too.
+- **`hard`**: the 0-based index of the predicted class, as `int64` or another integer type.
 
 ## Header
 
@@ -55,21 +51,19 @@ Pandas cannot write key-value metadata. Pandas, Polars, and DuckDB drop it when 
 | `format_version` | `int` | `1`. |
 | `dataset` | `str` | Dataset identifier: `"bh"` or `"vietnam"`. |
 | `split` | `str` | Segment split, e.g. `"val"`. |
-| `context_offsets` | `list[int] \| None` | Distinct relative positions of sequence segments read by the model, e.g. `[0, -1, -4]`. Along with `dataset` and `split`, defines the model's [evaluation set](evaluation.md#evaluation-sets). Absent or `null` if unknown. |
+| `context_offsets` | `list[int] \| None` | Relative positions of sequence segments read by the model, e.g. `[0, -1, -4]`. Absent or `null` if unknown. Optional. |
 | `method` | `dict` | Method information (see [Method field](#method-field)). |
 | `attribute_to_irap_codes` | `dict[str, list[int]]` | Attribute column name → iRAP codes defining class order for `probs` lists and `hard` class indices. |
 
-Only `context_offsets` is optional.
+Along with `dataset` and `split`, `context_offsets` defines the model's [evaluation set](evaluation.md#evaluation-sets).
 
 ### Method field
 
 | Field | Type | Content |
 |---|---|---|
 | `name` | `str` | Short name identifying the method in reports. |
-| `seed` | `int \| None` | Run identifier, e.g. training seed. |
-| `details` | `dict \| None` | Free-form JSON metadata. |
-
-Only `name` is required.
+| `seed` | `int \| None` | Run identifier, e.g. training seed. Optional. |
+| `details` | `dict \| None` | Free-form JSON metadata. Optional. |
 
 #### Details field of an ensemble
 
