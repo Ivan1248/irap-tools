@@ -47,10 +47,7 @@ def _compute_vidlu_metrics(targets, outputs, output_kind):
     metrics.update(NameDict(
         out=tuple(torch.from_numpy(outputs[a]) for a in CLASS_COUNTS),
         target=torch.from_numpy(np.stack([targets[a] for a in CLASS_COUNTS], 1))))
-    computed = metrics.compute()
-    # The result keys of the per-attribute metrics are marked as hidden from the console.
-    key_to_name = vidlu_irap_metrics.irap_metric_names(output_kind=output_kind)
-    return {name: computed[key] for key, name in key_to_name.items()}
+    return metrics.compute()
 
 
 def _assert_metrics_equal(ours, vidlu):
@@ -69,8 +66,8 @@ def _assert_metrics_equal(ours, vidlu):
 
 @pytest.mark.parametrize("output_kind", ["probs", "hard"])
 def test_metric_names_match(output_kind):
-    vidlu_names = vidlu_irap_metrics.irap_metric_names(output_kind=output_kind).values()
-    assert get_irap_metric_names(output_kind=output_kind) == tuple(vidlu_names)
+    assert (get_irap_metric_names(output_kind=output_kind)
+            == vidlu_irap_metrics.get_irap_metric_names(output_kind=output_kind))
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])

@@ -56,7 +56,7 @@ def get_irap_metric_names(min_class_supports: T.Sequence[int] = IRAP_CLASS_SUPPO
                           output_kind: OutputKind = "probs") -> tuple[str, ...]:
     """The metric names of the iRAP protocol, attribute averages first.
 
-    The same names in the same order as `vidlu_irap_gaim.metrics.irap_metric_names`.
+    The same names in the same order as `vidlu_irap_gaim.metrics.get_irap_metric_names`.
 
     Args:
         min_class_supports: Support thresholds of the restricted versions of the main metric.

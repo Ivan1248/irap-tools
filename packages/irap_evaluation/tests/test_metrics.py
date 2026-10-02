@@ -118,7 +118,7 @@ def test_parse_metric_name():
             parse_metric_name(name)
 
 
-def test_irap_metric_names_are_averages_first():
+def test_get_irap_metric_names_puts_averages_first():
     names = get_irap_metric_names()
     assert names[:5] == ("amF1", "amP", "amR", "aMCC", "aA")
     assert "aNLL" not in get_irap_metric_names(output_kind="hard")
