@@ -116,6 +116,13 @@ def _check_comparable(result_a: EvaluationResult, result_b: EvaluationResult) ->
                          " null_policy='first_class'.")
 
 
+def _have_same_metrics(values_a: MetricValues, values_b: MetricValues) -> bool:
+    """Whether the values are of the same metrics and, per metric, of the same attributes."""
+    return values_a.names == values_b.names and all(
+        values_a.per_attribute[n].keys() == values_b.per_attribute[n].keys()
+        for n in values_a.per_attribute)
+
+
 def _check_runs(runs: T.Sequence[EvaluationResult]) -> None:
     """Checks that `runs` are distinct runs of one method, comparable with each other and with
     the same metrics."""
@@ -126,7 +133,7 @@ def _check_runs(runs: T.Sequence[EvaluationResult]) -> None:
     check_runs_distinct(r.method for r in runs)
     for run in runs[1:]:
         _check_comparable(runs[0], run)
-        if run.metrics.names != runs[0].metrics.names:
+        if not _have_same_metrics(run.metrics, runs[0].metrics):
             raise ValueError(f"The runs {runs[0].run_label!r} and {run.run_label!r} have"
                              f" different metrics.")
 
@@ -139,6 +146,20 @@ def _compute_mean(*values: float) -> float:
     return float(np.mean(values))
 
 
+def compute_mean_metrics(run_metrics: T.Sequence[MetricValues[float]]) -> MetricValues[float]:
+    """The mean of each metric over runs, e.g. of their metrics over a subset of the attributes
+    (`metrics.select_metric_attributes`). `compute_method_metrics` also checks the runs.
+
+    Raises:
+        ValueError: If `run_metrics` is empty, or the runs differ in metrics or attributes.
+    """
+    if not run_metrics:
+        raise ValueError("At least one run is required.")
+    if not all(_have_same_metrics(v, run_metrics[0]) for v in run_metrics[1:]):
+        raise ValueError("The runs differ in metrics or attributes.")
+    return map_metric_values(_compute_mean, *run_metrics)
+
+
 def compute_method_metrics(runs: T.Sequence[EvaluationResult]) -> MetricValues[float]:
     """The metrics of a method: the mean of each metric over its runs.
 
@@ -149,7 +170,7 @@ def compute_method_metrics(runs: T.Sequence[EvaluationResult]) -> MetricValues[f
             scores them on different segments.
     """
     _check_runs(runs)
-    return map_metric_values(_compute_mean, *(r.metrics for r in runs))
+    return compute_mean_metrics([r.metrics for r in runs])
 
 
 def _resample_method_metrics(

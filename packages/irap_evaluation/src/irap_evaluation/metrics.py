@@ -118,6 +118,17 @@ def is_per_class_metric(name: str) -> bool:
     return parse_metric_name(name).base in PER_CLASS_METRICS
 
 
+def add_per_attribute_metric_names(metric_names: T.Sequence[str]) -> tuple[str, ...]:
+    """`metric_names` followed by the per-attribute name of each attribute average that they
+    lack, e.g. 'NLL' for 'aNLL', so that `select_metric_attributes` can average the results
+    over a subset of the attributes."""
+    names = dict.fromkeys(metric_names)
+    for name in metric_names:
+        if (parsed := parse_metric_name(name)).is_averaged:
+            names.setdefault(parsed.name)
+    return tuple(names)
+
+
 # Metric values ####################################################################################
 
 @dc.dataclass(frozen=True)
@@ -307,6 +318,20 @@ def _compute_mean_over_defined(values: np.ndarray) -> np.ndarray:
     return _compute_masked_mean(values, ~np.isnan(values))
 
 
+def _compute_attribute_averages(
+        average_names: T.Iterable[str],
+        per_attribute: T.Mapping[str, T.Mapping[str, T.Any]]) -> dict[str, np.ndarray]:
+    """Attribute averages, e.g. 'amF1', from `per_attribute`: metric name -> attribute -> value,
+    arrays of the same shape. An average is the mean over the attributes where its metric is
+    defined, including infinite values."""
+    def compute_average(name: str) -> np.ndarray:
+        values = per_attribute[parse_metric_name(name).name].values()
+        return _compute_mean_over_defined(
+            np.stack([np.asarray(v, dtype=np.float64) for v in values], -1))
+
+    return {name: compute_average(name) for name in average_names}
+
+
 def _compute_confusion_matrix_metrics(confusion_matrix: np.ndarray,
                                       ignore_missing_classes: bool) -> dict[str, np.ndarray]:
     true_positives = np.diagonal(confusion_matrix, axis1=-2, axis2=-1)
@@ -428,16 +453,12 @@ def compute_multi_attribute_metrics(
         attr: compute_classification_metrics(stats, per_attribute_names)
         for attr, stats in attribute_to_statistics.items()}
 
-    def get_per_attribute(name: str) -> dict[str, np.ndarray]:
-        return {attr: metrics[name] for attr, metrics in attribute_to_metrics.items()}
-
-    def get_average(name: str) -> np.ndarray:
-        values = [np.asarray(v, dtype=np.float64) for v in get_per_attribute(name).values()]
-        return _compute_mean_over_defined(np.stack(values, -1))
-
+    per_attribute = {name: {attr: metrics[name] for attr, metrics in attribute_to_metrics.items()}
+                     for name in per_attribute_names}
     return MetricValues(
-        averages={name: get_average(p.name) for name, p in parsed.items() if p.is_averaged},
-        per_attribute={name: get_per_attribute(name) for name, p in parsed.items()
+        averages=_compute_attribute_averages(
+            [name for name, p in parsed.items() if p.is_averaged], per_attribute),
+        per_attribute={name: per_attribute[name] for name, p in parsed.items()
                        if not p.is_averaged})
 
 
@@ -458,3 +479,33 @@ def compute_grouped_metrics(
     """
     return compute_multi_attribute_metrics(
         {a: sum_statistics(s, group_weights) for a, s in statistics.items()}, metric_names)
+
+
+def select_metric_attributes(values: MetricValues[float],
+                             attributes: T.Collection[str]) -> MetricValues[float]:
+    """The metric values of a subset of the attributes, with the attribute averages computed
+    again over the subset, as `compute_multi_attribute_metrics` computes them.
+
+    The values must have the per-attribute value of each average, e.g. 'mF1' for 'amF1' (see
+    `add_per_attribute_metric_names`). The attributes keep the order of `values`, so that the
+    averages equal those of scoring only the subset.
+
+    Raises:
+        ValueError: If `attributes` is empty or has attributes without values, or an average
+            lacks its per-attribute values.
+    """
+    if not attributes:
+        raise ValueError("At least one attribute is required.")
+    if missing := [n for n in values.averages
+                   if parse_metric_name(n).name not in values.per_attribute]:
+        raise ValueError(f"No per-attribute values of the averages {missing}. Add them with"
+                         f" add_per_attribute_metric_names.")
+    if unknown := sorted(a for a in attributes
+                         if any(a not in v for v in values.per_attribute.values())):
+        raise ValueError(f"Attributes without values of every metric: {unknown}.")
+    per_attribute = {name: {a: v for a, v in attr_to_value.items() if a in attributes}
+                     for name, attr_to_value in values.per_attribute.items()}
+    return MetricValues(
+        averages={name: average.item() for name, average
+                  in _compute_attribute_averages(values.averages, per_attribute).items()},
+        per_attribute=per_attribute)

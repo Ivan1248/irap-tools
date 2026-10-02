@@ -12,6 +12,7 @@ from irap_evaluation.bootstrap import (
     _resample_method_metrics,
     compare_methods,
     compute_bootstrap_intervals,
+    compute_mean_metrics,
     compute_method_metrics,
     draw_group_weights,
 )
@@ -20,6 +21,7 @@ from irap_evaluation.evaluation import (
     evaluate_predictions,
     group_runs_by_method,
     select_evaluated_attributes,
+    select_result_attributes,
 )
 from irap_evaluation.evaluation_sets import (
     get_evaluation_set,
@@ -32,6 +34,7 @@ from irap_evaluation.metrics import (
     compute_classification_statistics,
     compute_grouped_metrics,
     compute_multi_attribute_metrics,
+    select_metric_attributes,
     sum_statistics,
 )
 from irap_evaluation.predictions import MethodInfo, PredictionFormatError, select_segments
@@ -248,6 +251,42 @@ def test_missing_attributes_score_as_invalid_cells(metadata, reference_set, pred
                          null_policy="exclude")
     with pytest.raises(ValueError, match="missing_attribute_policy"):
         evaluate_predictions(predictions, reference_set, missing_attribute_policy="skip")
+
+
+def test_select_result_attributes_equals_scoring_the_subset(reference_set, predictions):
+    result = evaluate_predictions(predictions, reference_set)
+    subset = ["Curvature", "Number of lanes"]  # Not in the order of the result.
+    assert result.attributes == ("Number of lanes", "Lane width", "Curvature")
+    selected = select_result_attributes(result, subset)
+    expected = evaluate_predictions(predictions, reference_set,
+                                    attributes=[a for a in result.attributes if a in subset])
+    assert selected.attributes == expected.attributes
+    np.testing.assert_equal(dc.asdict(selected.metrics), dc.asdict(expected.metrics))
+    np.testing.assert_equal(dc.asdict(select_metric_attributes(result.metrics, subset)),
+                            dc.asdict(expected.metrics))
+    assert selected.num_invalid == expected.num_invalid
+    assert selected.intervals is None
+    np.testing.assert_equal(dc.asdict(compute_bootstrap_intervals([selected], num_resamples=20)),
+                            dc.asdict(compute_bootstrap_intervals([expected], num_resamples=20)))
+    with pytest.raises(ValueError, match="not scored"):
+        select_result_attributes(result, ["Lane width", "Speed limit"])
+    with pytest.raises(ValueError, match="At least one"):
+        select_result_attributes(result, [])
+
+
+def test_compute_mean_metrics_equals_the_method_metrics(metadata, reference_set):
+    runs = _evaluate_runs(metadata, reference_set, "m", [0, 1, 2])
+    np.testing.assert_equal(dc.asdict(compute_mean_metrics([r.metrics for r in runs])),
+                            dc.asdict(compute_method_metrics(runs)))
+    subset = ["Number of lanes", "Lane width"]
+    np.testing.assert_equal(
+        dc.asdict(compute_mean_metrics([select_metric_attributes(r.metrics, subset)
+                                        for r in runs])),
+        dc.asdict(compute_method_metrics([select_result_attributes(r, subset) for r in runs])))
+    with pytest.raises(ValueError, match="differ"):
+        compute_mean_metrics([runs[0].metrics, select_metric_attributes(runs[1].metrics, subset)])
+    with pytest.raises(ValueError, match="At least one"):
+        compute_mean_metrics([])
 
 
 def test_bootstrap_intervals_contain_the_point_estimate(metadata, predictions):

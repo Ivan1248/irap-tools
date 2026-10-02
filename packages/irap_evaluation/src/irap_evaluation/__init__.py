@@ -21,6 +21,7 @@ from .bootstrap import (
     MetricDifference,
     compare_methods,
     compute_bootstrap_intervals,
+    compute_mean_metrics,
     compute_method_metrics,
 )
 from .ensembling import ensemble_predictions
@@ -35,6 +36,7 @@ from .evaluation import (
     evaluate_predictions,
     group_runs_by_method,
     select_evaluated_attributes,
+    select_result_attributes,
 )
 from .evaluation_sets import (
     EvaluationSet,
@@ -46,12 +48,14 @@ from .evaluation_sets import (
 from .metrics import (
     ClassificationStatistics,
     MetricValues,
+    add_per_attribute_metric_names,
     compute_classification_metrics,
     compute_classification_statistics,
     compute_grouped_metrics,
     compute_multi_attribute_metrics,
     get_irap_metric_names,
     map_metric_values,
+    select_metric_attributes,
     sum_statistics,
 )
 from .prediction_io import read_predictions, write_predictions

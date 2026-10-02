@@ -111,16 +111,20 @@ A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but n
 
 **Attribute average.** The prefix `a` averages a metric over the scored attributes where it is not NaN, e.g. `amF1`. Infinite values are included. Each attribute counts equally, so `aNLL` is the mean of the per-attribute NLLs. Per-class metrics are not averaged.
 
+**Averages over a subset of the attributes.** Since an average is the mean of the per-attribute values, `select_metric_attributes(result.metrics, subset)` computes it for a subset from those values, without the predictions. It needs the per-attribute value of each average, e.g. `mP` for `amP`. `evaluate_predictions` computes them by default, and `add_per_attribute_metric_names` adds them to other lists of metric names. Intervals of such averages cannot be computed from the per-attribute intervals, since the attributes of a road sequence are correlated. `select_result_attributes(result, subset)` restricts a result to the subset with its statistics, and `compute_bootstrap_intervals` and `compare_methods` then work on it as on any result.
+
 The iRAP protocol (`get_irap_metric_names`) reports the following. Its main metric is `amF1`.
 
 - **Attribute averages**: `amF1`, `amP`, `amR`, `aMCC`, `aA`, `amF1_supp5` and `amF1_supp10`. `probs` files also get `aNLL`, `aBrier`, `amNLL`, `amNLL_supp5` and `amNLL_supp10`.
 - **Per attribute**: `mF1`, `A`, `n`, `MCC`, `mF1_suppN` and `nc_suppN`. `probs` files also get `NLL`, `Brier` and `mNLL`.
 
+By default, `evaluate_predictions` (and so `irap-eval evaluate`) also computes the per-attribute values of the averages that the protocol lacks: `mP`, `mR` and, for `probs` files, `mNLL_suppN`.
+
 Results keep only the attribute averages and per-attribute metrics. `compute_class_metrics(result)` computes the per-class metrics (`P`, `R`, `F1`, `IoU`, `cNLL`, `cBrier`), support and confusion matrix of each attribute from its statistics.
 
 ## Methods
 
-The value of a metric for a method with runs $i = 1, \ldots, R$ on the same evaluation set is the mean $\bar m = \frac{1}{R} \sum_i m_i$ of the runs' values (`compute_method_metrics`). The runs must have the same segments, sequences, attributes, metrics and null policy. A method with a single run has the values of that run.
+The value of a metric for a method with runs $i = 1, \ldots, R$ on the same evaluation set is the mean $\bar m = \frac{1}{R} \sum_i m_i$ of the runs' values (`compute_method_metrics`, or `compute_mean_metrics` for the metric values alone, e.g. over a subset of the attributes). The runs must have the same segments, sequences, attributes, metrics and null policy. A method with a single run has the values of that run.
 
 ## Confidence intervals
 

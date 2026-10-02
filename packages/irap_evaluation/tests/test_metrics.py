@@ -1,14 +1,18 @@
+import dataclasses as dc
+
 import numpy as np
 import pytest
 
 from irap_data.metadata import IGNORE_LABEL_INDEX
 from irap_evaluation.metrics import (
     ClassificationStatistics,
+    add_per_attribute_metric_names,
     compute_classification_metrics,
     compute_classification_statistics,
     compute_multi_attribute_metrics,
     get_irap_metric_names,
     parse_metric_name,
+    select_metric_attributes,
     sum_statistics,
 )
 
@@ -97,6 +101,47 @@ def test_attribute_average_leaves_out_undefined_values():
     assert metrics.averages["aMCC"] == pytest.approx(metrics.per_attribute["MCC"]["x"])
     with pytest.raises(ValueError, match="per-class"):
         compute_multi_attribute_metrics({"x": defined}, ["aF1"])
+
+
+def test_add_per_attribute_metric_names():
+    assert add_per_attribute_metric_names(["amF1", "aNLL", "mF1", "amF1_supp5"]) == (
+        "amF1", "aNLL", "mF1", "amF1_supp5", "NLL", "mF1_supp5")
+
+
+def _to_float_values(metrics):
+    return type(metrics)(
+        averages={n: float(v) for n, v in metrics.averages.items()},
+        per_attribute={n: {a: float(v) for a, v in values.items()}
+                       for n, values in metrics.per_attribute.items()})
+
+
+def test_select_metric_attributes_equals_computing_on_the_subset():
+    # x has an undefined MCC (one class), y an infinite NLL (label probability 0).
+    targets = {"x": np.array([0, 0, 0]), "y": np.array([0, 1, 1]), "z": np.array([1, 0, 1])}
+    probs = {"x": np.array([[0.9, 0.1], [0.8, 0.2], [0.7, 0.3]]),
+             "y": np.array([[1.0, 0.0], [1.0, 0.0], [0.4, 0.6]]),
+             "z": np.array([[0.3, 0.7], [0.6, 0.4], [0.5, 0.5]])}
+    statistics = {a: compute_classification_statistics(
+                      targets[a], probs[a].argmax(1), 2, probs=probs[a].astype(np.float32))
+                  for a in targets}
+    names = add_per_attribute_metric_names(["amF1", "aMCC", "aNLL"])
+    metrics = _to_float_values(compute_multi_attribute_metrics(statistics, names))
+    for subset in (["x", "z"], ["y", "z"], ["x"], ["z", "x", "y"]):
+        expected = _to_float_values(compute_multi_attribute_metrics(
+            {a: s for a, s in statistics.items() if a in subset}, names))
+        # Equal values, NaN where undefined.
+        np.testing.assert_equal(dc.asdict(select_metric_attributes(metrics, subset)),
+                                dc.asdict(expected))
+    assert np.isnan(select_metric_attributes(metrics, ["x"]).averages["aMCC"])
+    assert select_metric_attributes(metrics, ["y", "z"]).averages["aNLL"] == np.inf
+
+    with pytest.raises(ValueError, match="At least one"):
+        select_metric_attributes(metrics, [])
+    with pytest.raises(ValueError, match=r"\['w'\]"):
+        select_metric_attributes(metrics, ["x", "w"])
+    averages_only = _to_float_values(compute_multi_attribute_metrics(statistics, ["amF1"]))
+    with pytest.raises(ValueError, match="add_per_attribute_metric_names"):
+        select_metric_attributes(averages_only, ["x"])
 
 
 def test_batched_metrics_equal_separate_computations():

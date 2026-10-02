@@ -14,6 +14,7 @@ from .metrics import (
     PROBABILISTIC_METRICS,
     ClassificationStatistics,
     MetricValues,
+    add_per_attribute_metric_names,
     compute_classification_metrics,
     compute_classification_statistics,
     compute_grouped_metrics,
@@ -178,7 +179,9 @@ def evaluate_predictions(
         null_policy: See `NullPolicy`.
         missing_attribute_policy: See `MissingAttributePolicy`.
         metric_names: None means the iRAP protocol (`metrics.get_irap_metric_names`) for the
-            output kind of the predictions.
+            output kind of the predictions, with the per-attribute value of each average
+            (`metrics.add_per_attribute_metric_names`), so that `metrics.select_metric_attributes`
+            can average the metrics over a subset of the attributes.
 
     Raises:
         ValueError: For probabilistic metrics of hard predictions, per-class metric names,
@@ -201,7 +204,8 @@ def evaluate_predictions(
         raise ValueError(f"missing_attribute_policy must be one of {MISSING_ATTRIBUTE_POLICIES},"
                          f" got {missing_attribute_policy!r}.")
     if metric_names is None:
-        metric_names = get_irap_metric_names(output_kind=predictions.output_kind)
+        metric_names = add_per_attribute_metric_names(
+            get_irap_metric_names(output_kind=predictions.output_kind))
     if per_class := [n for n in metric_names if is_per_class_metric(n)]:
         raise ValueError(f"Per-class metrics {per_class} are not kept in results. Use"
                          f" compute_class_metrics(result).")
@@ -247,13 +251,42 @@ def evaluate_predictions(
             num_groups=len(evaluation_set.sequence_ids))
 
     statistics = {attr: get_statistics(attr) for attr in attributes}
-    metrics = compute_grouped_metrics(statistics, metric_names)
     return EvaluationResult(
         method=header.method, output_kind=predictions.output_kind,
         evaluation_set=evaluation_set, null_policy=null_policy,
         statistics=statistics, num_invalid=num_invalid,
-        metrics=map_metric_values(lambda v: np.asarray(v).item(), metrics),
+        metrics=_compute_result_metrics(statistics, metric_names),
         missing_attributes=missing_attributes)
+
+
+def _compute_result_metrics(statistics: T.Mapping[str, ClassificationStatistics],
+                            metric_names: T.Sequence[str]) -> MetricValues[float]:
+    """`EvaluationResult.metrics` from its statistics."""
+    return map_metric_values(lambda v: np.asarray(v).item(),
+                             compute_grouped_metrics(statistics, metric_names))
+
+
+def select_result_attributes(result: EvaluationResult,
+                             attributes: T.Collection[str]) -> EvaluationResult:
+    """The result of a subset of its attributes, with the same metrics computed again from the
+    statistics, e.g. for intervals of averages over the subset.
+
+    The attributes keep the order of `result.attributes`, so that the metrics equal those of
+    scoring only the subset. The intervals are None.
+
+    Raises:
+        ValueError: If `attributes` is empty or has attributes that `result` does not score.
+    """
+    if not attributes:
+        raise ValueError("At least one attribute is required.")
+    if unknown := sorted(set(attributes) - set(result.attributes)):
+        raise ValueError(f"Attributes not scored in {result.run_label!r}: {unknown}.")
+    selected = [a for a in result.attributes if a in attributes]
+    statistics = {a: result.statistics[a] for a in selected}
+    return dc.replace(
+        result, statistics=statistics, num_invalid={a: result.num_invalid[a] for a in selected},
+        metrics=_compute_result_metrics(statistics, result.metrics.names), intervals=None,
+        missing_attributes=tuple(a for a in result.missing_attributes if a in attributes))
 
 
 @dc.dataclass(frozen=True)
