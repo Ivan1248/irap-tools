@@ -10,9 +10,10 @@ A file holds either predicted class distributions (`probs`) or predicted class i
 
 | Column | Type | Content |
 |---|---|---|
-| `segment_id` | `string \| large_string` | Unique segment identifier matching dataset metadata. |
-| `<attribute name>` (one per attribute, named as in `attribute_metadata.json`) | `list<float32> \| int64 \| null` | Probability vector or class index (`null` for invalid prediction – [invalid cells](evaluation.md#invalid-cells)). |
+| `segment_id` | `string \| large_string` | Segment identifier. |
+| `<attribute name>` (one per attribute) | `list<float32> \| int64 \| null` | Probability vector or class index (`null` for invalid prediction – [invalid cells](evaluation.md#invalid-cells)). |
 
+There is one `<attribute name>` column for each attribute, named as in `attribute_metadata.json`.
 All attribute columns share the same output kind:
 
 - **`probs`**: a list with one value per class of the attribute. Values are $\ge 0$, and sum to 1 within $10^{-4}$. Writers should use `list<float32>` or `large_list<float32>` (e.g. from Polars). `float64` values are acceptable too.
