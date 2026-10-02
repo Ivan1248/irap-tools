@@ -6,3 +6,4 @@ __pycache__/
 input*
 output*
 todo.md
+.devdocs/context.md
