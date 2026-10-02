@@ -21,6 +21,7 @@ from irap_evaluation.predictions import (
     PredictionHeader,
     Predictions,
     align_classes,
+    check_class_codes,
     select_segments,
     to_class_indices,
     to_irap_codes,
@@ -168,11 +169,19 @@ def test_align_classes_reorders_classes_by_code():
     assert aligned.attributes == ("a",)
     np.testing.assert_allclose(aligned.probs["a"][0], [0.3, 0.2, 0.5])
     np.testing.assert_array_equal(to_irap_codes(aligned)["a"], to_irap_codes(_predictions())["a"])
-    for codes in [(10, 20), (10, 20, 20, 30)]:
+    with pytest.raises(PredictionFormatError, match="differ"):
+        align_classes(_predictions(), {"a": (10, 20)})
+
+
+def test_class_codes_must_match():
+    check_class_codes(_predictions(), {"a": (30, 10, 20), "b": (1, 2)})
+    for codes in [(10, 20), (10, 20, 20, 30), (10, 20, 40)]:
         with pytest.raises(PredictionFormatError, match="differ"):
-            align_classes(_predictions(), {"a": codes})
+            check_class_codes(_predictions(), {"a": codes})
     with pytest.raises(PredictionFormatError, match="not predicted"):
-        align_classes(_predictions(), {"c": (1,)})
+        check_class_codes(_predictions(), {"c": (1,)})
+    with pytest.raises(PredictionFormatError, match="at least one attribute"):
+        check_class_codes(_predictions(), {})
 
 
 def test_select_segments():

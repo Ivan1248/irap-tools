@@ -382,6 +382,27 @@ def to_irap_codes(predictions: Predictions) -> dict[str, np.ndarray]:
             for attr, indices in to_class_indices(predictions).items()}
 
 
+def check_class_codes(predictions: Predictions,
+                      attribute_to_irap_codes: T.Mapping[str, T.Sequence[int]]) -> None:
+    """Checks that the attributes of `attribute_to_irap_codes` are predicted with its iRAP codes,
+    in any order.
+
+    Raises:
+        PredictionFormatError: If they are not, or `attribute_to_irap_codes` is empty.
+    """
+    predicted = predictions.attribute_to_irap_codes
+    if not attribute_to_irap_codes:
+        raise PredictionFormatError("Predictions need at least one attribute.")
+    if missing := [a for a in attribute_to_irap_codes if a not in predicted]:
+        raise PredictionFormatError(f"Attributes not predicted: {missing}.")
+    for attr, codes in attribute_to_irap_codes.items():
+        # Predicted codes are unique (`Predictions` validation).
+        if len(codes) != len(predicted[attr]) or set(codes) != set(predicted[attr]):
+            raise PredictionFormatError(
+                f"{attr!r}: the predicted iRAP codes {sorted(predicted[attr])} differ from"
+                f" {sorted(codes)}.")
+
+
 def align_classes(predictions: Predictions,
                   attribute_to_irap_codes: T.Mapping[str, T.Sequence[int]]) -> Predictions:
     """The predictions of the attributes of `attribute_to_irap_codes`, in its class order.
@@ -390,23 +411,14 @@ def align_classes(predictions: Predictions,
     codes of a vocabulary.
 
     Raises:
-        PredictionFormatError: If an attribute is not predicted, or its predicted iRAP codes
-            differ from those of `attribute_to_irap_codes`.
+        PredictionFormatError: See `check_class_codes`.
     """
+    check_class_codes(predictions, attribute_to_irap_codes)
     predicted = predictions.attribute_to_irap_codes
-    if not attribute_to_irap_codes:
-        raise PredictionFormatError("Predictions need at least one attribute.")
-    if missing := [a for a in attribute_to_irap_codes if a not in predicted]:
-        raise PredictionFormatError(f"Attributes not predicted: {missing}.")
 
     def get_column_order(attr: str) -> np.ndarray:
         code_to_index = {code: i for i, code in enumerate(predicted[attr])}
-        codes = attribute_to_irap_codes[attr]
-        if len(codes) != len(code_to_index) or set(codes) != set(code_to_index):
-            raise PredictionFormatError(
-                f"{attr!r}: the predicted iRAP codes {sorted(code_to_index)} differ from"
-                f" {sorted(codes)}.")
-        return np.array([code_to_index[c] for c in codes])
+        return np.array([code_to_index[c] for c in attribute_to_irap_codes[attr]])
 
     return _replace_unvalidated(
         predictions,

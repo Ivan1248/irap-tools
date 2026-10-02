@@ -62,6 +62,7 @@ from .predictions import (
     PredictionHeader,
     Predictions,
     align_classes,
+    check_class_codes,
     get_common_dataset_and_split,
     select_segments,
     to_class_indices,
