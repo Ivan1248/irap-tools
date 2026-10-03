@@ -5,7 +5,7 @@ A run is scored once, after its upload, on all its evaluation sets and all score
 computed from these scores when they are shown (`compute_method_scores`). Bootstrap intervals
 need the per-sequence statistics, which are too large to cache (about 11 MB per run on Vietnam
 train), so they are computed from the prediction files and cached per set of runs, evaluation set
-and subset of attributes (`IntervalRequest`, `compute_requested_intervals`).
+and subset of attributes (`IntervalRequest`, a `WorkRequest`).
 
 Cached values carry fingerprints of what they depend on: the scoring settings
 (`ScoringSettings.fingerprint`), the evaluation sets (`irap_evaluation.EvaluationSet.fingerprint`),
@@ -31,6 +31,8 @@ from irap_evaluation.reports.evaluation_report import to_json_dict
 from .archive import Submission, SubmissionArchive
 from .database import begin_write, connect, get_utc_now
 from .datasets import DatasetContext
+
+V = T.TypeVar("V")
 
 #: 'scored': the scores are stored (none for a split without labels, see `RunScoring.notes`).
 #: 'failed': the file cannot be scored, e.g. it lacks segments of a new metadata build. It is
@@ -60,16 +62,18 @@ CREATE TABLE IF NOT EXISTS run_scores (
     report TEXT NOT NULL,
     PRIMARY KEY (submission_id, evaluation_set)
 );
-CREATE TABLE IF NOT EXISTS interval_cache (
+CREATE TABLE IF NOT EXISTS result_cache (
     key TEXT PRIMARY KEY,
-    intervals TEXT,
+    value TEXT,
     message TEXT NOT NULL,
     computed_at TEXT NOT NULL
 );
 """
 
 
-def _compute_json_sha256(value: T.Any) -> str:
+def compute_json_sha256(value: T.Any) -> str:
+    """A SHA-256 of a JSON-compatible value, independent of the order of dict keys, e.g. a
+    fingerprint or a cache key."""
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -93,7 +97,7 @@ class ScoringSettings:
         """A SHA-256 of the settings and of what they select from the libraries, e.g. the
         canonical attributes and the default metrics, so that a library update that changes them
         makes cached values out of date."""
-        return _compute_json_sha256({
+        return compute_json_sha256({
             **dc.asdict(self),
             "canonical_attributes": list(get_attrs_to_include()),
             "metric_names": {kind: list(ie.get_default_metric_names(kind))
@@ -103,17 +107,21 @@ class ScoringSettings:
 SCORING_SETTINGS = ScoringSettings()
 
 
+def select_scored_attributes(evaluation_set: ie.EvaluationSet,
+                             settings: ScoringSettings) -> tuple[str, ...]:
+    return ie.select_evaluated_attributes(evaluation_set, settings.attribute_selection)
+
+
 def evaluate_run(predictions: ie.Predictions, evaluation_set: ie.EvaluationSet,
                  settings: ScoringSettings) -> ie.EvaluationResult:
     return ie.evaluate_predictions(
-        predictions, evaluation_set,
-        attributes=ie.select_evaluated_attributes(evaluation_set, settings.attribute_selection),
+        predictions, evaluation_set, attributes=select_scored_attributes(evaluation_set, settings),
         null_policy=settings.null_policy,
         missing_attribute_policy=settings.missing_attribute_policy)
 
 
 def _combine_evaluation_set_fingerprints(evaluation_sets: T.Iterable[ie.EvaluationSet]) -> str:
-    return _compute_json_sha256([s.fingerprint for s in evaluation_sets])
+    return compute_json_sha256([s.fingerprint for s in evaluation_sets])
 
 
 def get_evaluation_sets_fingerprint(context: DatasetContext, split: str,
@@ -202,26 +210,75 @@ def make_unscored_run_scoring(submission_id: int, status: T.Literal["failed", "e
 
 
 @dc.dataclass(frozen=True)
-class CachedIntervals:
-    """Computed intervals, or why they cannot be computed.
+class CachedResult(T.Generic[V]):
+    """The result of a request (`WorkRequest`), or why it cannot be computed.
 
     Attributes:
-        intervals: None if the computation failed.
+        value: None if the computation failed.
         message: Why the computation failed, empty if it did not.
     """
 
-    intervals: ie.MetricValues[ie.BootstrapInterval] | None
+    value: V | None
     message: str
     computed_at: datetime
 
 
-def _metric_values_to_json(values: ie.MetricValues) -> str:
-    # Python's JSON keeps NaN and infinite values, unlike standard JSON.
+@dc.dataclass(frozen=True)
+class ResultState:
+    """The result of a request (`WorkRequest`), e.g. the intervals of a row: computed or failed
+    (`cached`), being computed, or neither."""
+
+    cached: CachedResult | None = None
+    is_pending: bool = False
+
+
+class WorkRequest(T.Protocol[V]):
+    """A computation that pages request from the scoring worker (`ScoringWorker.request`), whose
+    result is cached in the database, e.g. intervals (`IntervalRequest`).
+
+    Its fields are the fingerprints of what the result depends on, so `key` identifies the
+    result in the cache.
+    """
+
+    @property
+    def key(self) -> str:
+        """A SHA-256 of the kind of request and its fields."""
+        ...
+
+    @property
+    def submission_ids(self) -> tuple[int, ...]:
+        """The submissions that the result is of, for log messages."""
+        ...
+
+    def compute(self, archive: SubmissionArchive,
+                dataset_contexts: T.Mapping[str, DatasetContext],
+                settings: ScoringSettings) -> V:
+        """Computes the result from the prediction files.
+
+        Raises:
+            ValueError: If it cannot be computed, e.g. since the request is out of date. The
+                message is cached instead of the result.
+        """
+        ...
+
+    def value_to_json(self, value: V) -> str: ...
+
+    def value_from_json(self, text: str) -> V: ...
+
+
+def metric_values_to_json(values: ie.MetricValues) -> str:
+    """The JSON of the cache, which keeps NaN and infinite values, unlike standard JSON and
+    `evaluation_report.to_json_dict`. Dataclass values become JSON objects."""
     return json.dumps(dc.asdict(values))
 
 
-def _metric_values_from_json(text: str, convert: T.Callable[[T.Any], T.Any] | None = None
-                             ) -> ie.MetricValues:
+def metric_values_from_json(text: str, convert: T.Callable[[T.Any], T.Any] | None = None
+                            ) -> ie.MetricValues:
+    """The values of `metric_values_to_json`.
+
+    Args:
+        convert: Gets each value, e.g. to make a dataclass of a JSON object.
+    """
     values = json.loads(text)
     metric_values = ie.MetricValues(averages=values["averages"],
                                     per_attribute=values["per_attribute"])
@@ -234,7 +291,7 @@ def _to_evaluation_set_scores(row: sqlite3.Row) -> EvaluationSetScores:
         context_offsets=tuple(json.loads(row["context_offsets"])),
         evaluation_set_fingerprint=row["evaluation_set_fingerprint"],
         attributes=tuple(json.loads(row["attributes"])),
-        metrics=_metric_values_from_json(row["metrics"]),
+        metrics=metric_values_from_json(row["metrics"]),
         num_invalid=json.loads(row["num_invalid"]),
         missing_attributes=tuple(json.loads(row["missing_attributes"])))
 
@@ -309,7 +366,7 @@ class ScoreStore:
                     (scoring.submission_id, scores.evaluation_set,
                      json.dumps(list(scores.context_offsets)),
                      scores.evaluation_set_fingerprint, json.dumps(list(scores.attributes)),
-                     _metric_values_to_json(scores.metrics), json.dumps(scores.num_invalid),
+                     metric_values_to_json(scores.metrics), json.dumps(scores.num_invalid),
                      json.dumps(list(scores.missing_attributes)),
                      json.dumps(reports[scores.evaluation_set])))
 
@@ -323,24 +380,23 @@ class ScoreStore:
                 (submission_id, evaluation_set)).fetchone()
         return None if row is None else json.loads(row["report"])
 
-    def get_intervals(self, key: str) -> CachedIntervals | None:
+    def get_result(self, request: WorkRequest[V]) -> CachedResult[V] | None:
         with connect(self.database_path) as connection:
-            row = connection.execute("SELECT * FROM interval_cache WHERE key = ?",
-                                     (key,)).fetchone()
+            row = connection.execute("SELECT * FROM result_cache WHERE key = ?",
+                                     (request.key,)).fetchone()
         if row is None:
             return None
-        return CachedIntervals(
-            intervals=(None if row["intervals"] is None else _metric_values_from_json(
-                row["intervals"], lambda d: ie.BootstrapInterval(**d))),
+        return CachedResult(
+            value=None if row["value"] is None else request.value_from_json(row["value"]),
             message=row["message"], computed_at=datetime.fromisoformat(row["computed_at"]))
 
-    def set_intervals(self, key: str, cached: CachedIntervals) -> None:
+    def set_result(self, request: WorkRequest[V], cached: CachedResult[V]) -> None:
         with begin_write(self.database_path) as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO interval_cache (key, intervals, message, computed_at)"
+                "INSERT OR REPLACE INTO result_cache (key, value, message, computed_at)"
                 " VALUES (?, ?, ?, ?)",
-                (key,
-                 None if cached.intervals is None else _metric_values_to_json(cached.intervals),
+                (request.key,
+                 None if cached.value is None else request.value_to_json(cached.value),
                  cached.message, cached.computed_at.isoformat()))
 
 
@@ -356,6 +412,24 @@ def is_run_scoring_current(scoring: RunScoring, submission: Submission, context:
     except ValueError:  # The split is no longer in the metadata.
         return False
     return scoring.evaluation_sets_fingerprint == sets_fingerprint
+
+
+def get_scored_evaluation_set(context: DatasetContext, submission: Submission,
+                              evaluation_set: str, fingerprint: str) -> ie.EvaluationSet:
+    """The evaluation set of a run with this name, which its stored scores are of.
+
+    Raises:
+        ValueError: If the run has no such set, or the set has changed since the scoring (its
+            fingerprint differs).
+    """
+    name_to_set = context.get_run_evaluation_sets(submission.split, submission.context_offsets)
+    if evaluation_set not in name_to_set:
+        raise ValueError(f"Run {submission.run_label!r} has no evaluation set"
+                         f" {evaluation_set!r}.")
+    if name_to_set[evaluation_set].fingerprint != fingerprint:
+        raise ValueError(f"The {evaluation_set} set of {submission.run_label!r} has changed since"
+                         f" it was scored.")
+    return name_to_set[evaluation_set]
 
 
 def score_submission(archive: SubmissionArchive, context: DatasetContext, submission: Submission,
@@ -397,6 +471,17 @@ class ScoredRun:
 
     submission: Submission
     scores: EvaluationSetScores
+
+
+def get_run_evaluation_set(context: DatasetContext, scored_run: ScoredRun) -> ie.EvaluationSet:
+    """The evaluation set that the scores of a run are of.
+
+    Raises:
+        ValueError: See `get_scored_evaluation_set`.
+    """
+    return get_scored_evaluation_set(context, scored_run.submission,
+                                     scored_run.scores.evaluation_set,
+                                     scored_run.scores.evaluation_set_fingerprint)
 
 
 @dc.dataclass(frozen=True)
@@ -462,6 +547,22 @@ def get_combination_error(runs: T.Sequence[ScoredRun]) -> str | None:
     return None
 
 
+def check_attributes(attributes: T.Collection[str]) -> None:
+    """Checks the attributes of means or a request.
+
+    Raises:
+        ValueError: If there is none.
+    """
+    if not attributes:
+        raise ValueError("At least one attribute is required.")
+
+
+def to_run_fingerprints(runs: T.Iterable[ScoredRun]) -> tuple[tuple[int, str], ...]:
+    """The sorted (submission id, file SHA-256) of the runs, which identify their predictions in
+    a request (see `WorkRequest`)."""
+    return tuple(sorted((r.submission.id, r.submission.file_sha256) for r in runs))
+
+
 def compute_method_scores(method_name: str, runs: T.Sequence[ScoredRun],
                           attributes: T.Sequence[str]) -> MethodScores:
     """The means over the runs of a method of their metrics over `attributes`.
@@ -472,8 +573,7 @@ def compute_method_scores(method_name: str, runs: T.Sequence[ScoredRun],
     Raises:
         ValueError: If `attributes` is empty.
     """
-    if not attributes:
-        raise ValueError("At least one attribute is required.")
+    check_attributes(attributes)
     runs = tuple(sorted(runs, key=lambda r: r.submission.id))
     unpredicted = {a for r in runs for a in r.scores.missing_attributes}
     error = get_combination_error(runs)
@@ -511,11 +611,55 @@ class IntervalRequest:
 
     @functools.cached_property
     def key(self) -> str:
-        return _compute_json_sha256(dc.asdict(self))
+        return compute_json_sha256({"kind": "intervals", **dc.asdict(self)})
 
     @property
     def submission_ids(self) -> tuple[int, ...]:
         return tuple(submission_id for submission_id, _ in self.runs)
+
+    def compute(self, archive: SubmissionArchive,
+                dataset_contexts: T.Mapping[str, DatasetContext],
+                settings: ScoringSettings) -> ie.MetricValues[ie.BootstrapInterval]:
+        """See `WorkRequest.compute`. The runs are scored again (`evaluate_runs`).
+
+        Raises:
+            ValueError: See `evaluate_runs`, and if `irap_evaluation.compute_bootstrap_intervals`
+                refuses the runs.
+        """
+        return ie.compute_bootstrap_intervals(
+            self.evaluate_runs(archive, dataset_contexts, settings),
+            num_resamples=settings.num_resamples, confidence=settings.confidence,
+            seed=settings.bootstrap_seed)
+
+    def evaluate_runs(self, archive: SubmissionArchive,
+                      dataset_contexts: T.Mapping[str, DatasetContext],
+                      settings: ScoringSettings) -> list[ie.EvaluationResult]:
+        """Scores the runs again from their files, restricted to `attributes`, since their
+        per-sequence statistics are not cached.
+
+        Raises:
+            ValueError: If the request is out of date: other settings, files or evaluation set.
+        """
+        if self.settings_fingerprint != settings.fingerprint:
+            raise ValueError("The request is of other scoring settings.")
+        results = []
+        for submission_id, file_sha256 in self.runs:
+            submission = archive.get_submission(submission_id)
+            if submission.file_sha256 != file_sha256:
+                raise ValueError(f"Submission #{submission_id} has another file than requested.")
+            scored_set = get_scored_evaluation_set(
+                dataset_contexts[submission.dataset], submission, self.evaluation_set,
+                self.evaluation_set_fingerprint)
+            predictions = ie.read_predictions(archive.get_predictions_path(submission_id))
+            results.append(ie.select_result_attributes(
+                evaluate_run(predictions, scored_set, settings), self.attributes))
+        return results
+
+    def value_to_json(self, value: ie.MetricValues[ie.BootstrapInterval]) -> str:
+        return metric_values_to_json(value)
+
+    def value_from_json(self, text: str) -> ie.MetricValues[ie.BootstrapInterval]:
+        return metric_values_from_json(text, lambda d: ie.BootstrapInterval(**d))
 
 
 def make_interval_request(runs: T.Sequence[ScoredRun], attributes: T.Collection[str],
@@ -527,48 +671,8 @@ def make_interval_request(runs: T.Sequence[ScoredRun], attributes: T.Collection[
     """
     if (error := get_combination_error(runs)) is not None:
         raise ValueError(error)
-    if not attributes:
-        raise ValueError("At least one attribute is required.")
+    check_attributes(attributes)
     return IntervalRequest(
-        runs=tuple(sorted((r.submission.id, r.submission.file_sha256) for r in runs)),
-        evaluation_set=runs[0].scores.evaluation_set,
+        runs=to_run_fingerprints(runs), evaluation_set=runs[0].scores.evaluation_set,
         evaluation_set_fingerprint=runs[0].scores.evaluation_set_fingerprint,
         attributes=tuple(sorted(attributes)), settings_fingerprint=settings.fingerprint)
-
-
-def compute_requested_intervals(
-    request: IntervalRequest,
-    archive: SubmissionArchive,
-    dataset_contexts: T.Mapping[str, DatasetContext],
-    settings: ScoringSettings,
-) -> ie.MetricValues[ie.BootstrapInterval]:
-    """Computes the intervals of a request from the prediction files.
-
-    The runs are scored again, since their statistics are not cached.
-
-    Raises:
-        ValueError: If the request is out of date (other settings, files or evaluation set), or
-            `irap_evaluation.compute_bootstrap_intervals` refuses the runs.
-    """
-    if request.settings_fingerprint != settings.fingerprint:
-        raise ValueError("The request is of other scoring settings.")
-    results = []
-    for submission_id, file_sha256 in request.runs:
-        submission = archive.get_submission(submission_id)
-        if submission.file_sha256 != file_sha256:
-            raise ValueError(f"Submission #{submission_id} has another file than requested.")
-        name_to_set = dataset_contexts[submission.dataset].get_run_evaluation_sets(
-            submission.split, submission.context_offsets)
-        if request.evaluation_set not in name_to_set:
-            raise ValueError(f"Run {submission.run_label!r} has no evaluation set"
-                             f" {request.evaluation_set!r}.")
-        evaluation_set = name_to_set[request.evaluation_set]
-        if evaluation_set.fingerprint != request.evaluation_set_fingerprint:
-            raise ValueError(f"The {request.evaluation_set} set of {submission.run_label!r} has"
-                             f" changed since the request.")
-        predictions = ie.read_predictions(archive.get_predictions_path(submission_id))
-        results.append(ie.select_result_attributes(
-            evaluate_run(predictions, evaluation_set, settings), request.attributes))
-    return ie.compute_bootstrap_intervals(results, num_resamples=settings.num_resamples,
-                                          confidence=settings.confidence,
-                                          seed=settings.bootstrap_seed)

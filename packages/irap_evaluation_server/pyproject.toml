@@ -9,7 +9,7 @@ description = "A web app for archiving, scoring, comparing and analyzing saved i
 requires-python = ">=3.11"
 dependencies = [
     "irap-data",
-    "irap-evaluation",
+    "irap-evaluation[xlsx]",
     "nicegui>=3.17,<4",
 ]
 

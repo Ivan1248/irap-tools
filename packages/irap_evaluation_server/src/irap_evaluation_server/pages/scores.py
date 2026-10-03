@@ -9,12 +9,11 @@ import irap_evaluation as ie
 from fastapi import Request
 from nicegui import ui
 
-from ..archive import Submission, SubmissionArchive
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
-from ..components.formatting import make_submission_link_html
-from ..components.interval_requests import IntervalRequester
+from ..components.comparison_view import ComparisonView
+from ..components.formatting import EVALUATION_SET_LABELS, make_submission_link_html
 from ..components.native_controls import create_native_select
-from ..components.page_frame import create_page_frame
+from ..components.page_frame import create_page_frame, show_view_error
 from ..components.refresh_timer import RefreshTimer
 from ..components.routes import ATTRIBUTE_PARAMETER, SCORES_PATH, make_query_path
 from ..components.score_tables import (
@@ -22,19 +21,27 @@ from ..components.score_tables import (
     make_method_table_html,
     make_per_attribute_table_html,
 )
+from ..components.view_queries import (
+    VIEW_OPTIONS,
+    parse_dataset_and_split,
+    parse_evaluation_set,
+    parse_per_attribute_metric,
+)
+from ..components.work_requests import WorkRequester
 from ..datasets import DatasetContext
+from ..method_comparison import get_default_partner, list_comparable_methods
 from ..method_ranking import (
     DEFAULT_SORT_METRIC,
     RANKING_METRIC_NAMES,
-    PER_ATTRIBUTE_METRIC_NAMES,
     collect_scored_attributes,
-    rank_methods,
     get_unscored_reason,
+    rank_methods,
 )
-from ..scoring import RunScoring, make_interval_request, select_scored_runs
+from ..scoring import MethodScores, make_interval_request, select_scored_runs
 from ..scoring_worker import ScoringWorker
 
-_EVALUATION_SET_LABELS = {ie.REFERENCE_SET_NAME: "Reference set",
+#: Plural for the model-compatible sets, since each method is scored on its own.
+_EVALUATION_SET_LABELS = {**EVALUATION_SET_LABELS,
                           ie.MODEL_COMPATIBLE_SET_NAME: "Model-compatible sets"}
 
 
@@ -53,13 +60,16 @@ class _ScoresView:
     sort_metric: str
     metric_name: str
 
-    def to_path(self, subset: AttributeSubset | None) -> str:
+    def to_path(self, attributes: T.Sequence[str] = ()) -> str:
+        """
+        Args:
+            attributes: The attribute subset (`AttributeSubset.to_query`).
+        """
         return make_query_path(SCORES_PATH, {
             "dataset": self.dataset, "split": self.split,
             "set": "" if self.evaluation_set == ie.REFERENCE_SET_NAME else self.evaluation_set,
             "sort": "" if self.sort_metric == DEFAULT_SORT_METRIC else self.sort_metric,
-            "metric": self.metric_name,
-            ATTRIBUTE_PARAMETER: () if subset is None else subset.to_query()})
+            "metric": self.metric_name, ATTRIBUTE_PARAMETER: attributes})
 
 
 def _parse_view(query: T.Mapping[str, str],
@@ -68,72 +78,54 @@ def _parse_view(query: T.Mapping[str, str],
     Raises:
         ValueError: For an unknown dataset, split, evaluation set or metric.
     """
-    dataset = query.get("dataset") or next(iter(dataset_contexts))
-    if dataset not in dataset_contexts:
-        raise ValueError(f"Unknown dataset {dataset!r}. Datasets: {', '.join(dataset_contexts)}.")
-    context = dataset_contexts[dataset]
-    split = query.get("split") or (context.config.analysis_splits or context.split_names)[0]
-    if split not in context.split_names:
-        raise ValueError(f"The dataset {dataset!r} has no split {split!r}. Its splits:"
-                         f" {', '.join(context.split_names)}.")
-    evaluation_set = query.get("set") or ie.REFERENCE_SET_NAME
-    if evaluation_set not in _EVALUATION_SET_LABELS:
-        raise ValueError(f"Unknown evaluation set {evaluation_set!r}. Evaluation sets:"
-                         f" {', '.join(_EVALUATION_SET_LABELS)}.")
+    dataset, split = parse_dataset_and_split(query, dataset_contexts)
     sort_metric = query.get("sort") or DEFAULT_SORT_METRIC
     if sort_metric not in RANKING_METRIC_NAMES:
         raise ValueError(f"Unknown sort metric {sort_metric!r}. Metrics:"
                          f" {', '.join(RANKING_METRIC_NAMES)}.")
-    metric_name = query.get("metric", "")
-    if metric_name and metric_name not in PER_ATTRIBUTE_METRIC_NAMES:
-        raise ValueError(f"Unknown per-attribute metric {metric_name!r}. Metrics:"
-                         f" {', '.join(PER_ATTRIBUTE_METRIC_NAMES)}.")
-    return _ScoresView(dataset=dataset, split=split, evaluation_set=evaluation_set,
-                            sort_metric=sort_metric, metric_name=metric_name)
+    return _ScoresView(dataset=dataset, split=split, evaluation_set=parse_evaluation_set(query),
+                       sort_metric=sort_metric, metric_name=parse_per_attribute_metric(query))
 
 
-def register_scores_page(archive: SubmissionArchive,
-                              dataset_contexts: T.Mapping[str, DatasetContext],
-                              worker: ScoringWorker) -> None:
+def register_scores_page(dataset_contexts: T.Mapping[str, DatasetContext],
+                         worker: ScoringWorker) -> None:
     @ui.page(SCORES_PATH, title="Scores · iRAP evaluation")
     def scores_page(request: Request) -> None:
         with create_page_frame(SCORES_PATH):
             try:
                 view = _parse_view(request.query_params, dataset_contexts)
             except ValueError as e:
-                ui.label(str(e)).classes("error")
-                ui.link("Open the default Scores page", SCORES_PATH)
+                show_view_error(str(e), SCORES_PATH)
                 return
-            _create_scores(archive, dataset_contexts, worker, view,
-                                request.query_params.getlist(ATTRIBUTE_PARAMETER))
+            _create_scores(dataset_contexts, worker, view,
+                           request.query_params.getlist(ATTRIBUTE_PARAMETER))
 
 
-def _create_scores(archive: SubmissionArchive,
-                        dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
-                        view: _ScoresView, attribute_query: T.Sequence[str]) -> None:
+def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
+                   view: _ScoresView, attribute_query: T.Sequence[str]) -> None:
     def navigate_to(**changes: str) -> None:
         # Another dataset has other attributes.
-        subset = None if "dataset" in changes else attribute_filter.subset
-        ui.navigate.to(dc.replace(view, **changes).to_path(subset))
+        attributes = () if "dataset" in changes else attribute_filter.subset.to_query()
+        ui.navigate.to(dc.replace(view, **changes).to_path(attributes))
 
     def on_view_changed(**changes: str) -> None:
         nonlocal view
         view = dc.replace(view, **changes)
-        ui.navigate.history.replace(view.to_path(attribute_filter.subset))
+        ui.navigate.history.replace(view.to_path(attribute_filter.subset.to_query()))
         show_table.refresh()
 
     def on_subset_changed(subset: AttributeSubset) -> None:
-        ui.navigate.history.replace(view.to_path(subset))
+        ui.navigate.history.replace(view.to_path(subset.to_query()))
         interval_requester.delay_requests()
         show_table.refresh()
 
     context = dataset_contexts[view.dataset]
-    interval_requester = IntervalRequester(worker)
+    interval_requester = WorkRequester(worker)
 
     @ui.refreshable
     def show_table() -> None:
-        submissions, submission_id_to_scoring, current = _load_view_scorings(archive, worker,
-                                                                             view)
+        submissions, submission_id_to_scoring, current = worker.load_split_scorings(
+            view.dataset, view.split)
         runs = select_scored_runs(submissions, current, view.evaluation_set)
         subset = attribute_filter.set_options(collect_scored_attributes(runs))
         pending_ids = [s.id for s in submissions if worker.is_scoring_pending(s.id)]
@@ -162,7 +154,8 @@ def _create_scores(archive: SubmissionArchive,
             else:
                 table_html = make_method_table_html(
                     rows, method_to_state, view.sort_metric, subset.to_query(),
-                    view.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME)
+                    view.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME,
+                    _make_comparison_paths(view, rows, subset))
             ui.html(table_html, sanitize=False).classes("w-full overflow-x-auto").on(
                 "click", lambda e: on_view_changed(sort_metric=e.args),
                 js_handler="(e) => { const th = e.target.closest('th[data-sort]');"
@@ -190,31 +183,31 @@ def _create_scores(archive: SubmissionArchive,
             create_native_select("Split", {n: n for n in context.split_names}, view.split,
                                  lambda v: navigate_to(split=v))
             if view.evaluation_set != ie.REFERENCE_SET_NAME or _has_model_compatible_scores(
-                    archive, worker, view):
+                    worker, view):
                 create_native_select("Evaluation set", _EVALUATION_SET_LABELS,
                                      view.evaluation_set, lambda v: navigate_to(evaluation_set=v))
-            create_native_select(
-                "View", {"": "Attribute averages",
-                         **{m: f"Per attribute: {m}" for m in PER_ATTRIBUTE_METRIC_NAMES}},
-                view.metric_name, lambda v: on_view_changed(metric_name=v))
+            create_native_select("View", VIEW_OPTIONS, view.metric_name,
+                                 lambda v: on_view_changed(metric_name=v))
         attribute_filter = AttributeFilter(attribute_query, on_subset_changed)
     with ui.element("section").classes("panel"):
         refresh_timer = RefreshTimer(show_table.refresh)
         show_table()
 
 
-def _load_view_scorings(archive: SubmissionArchive, worker: ScoringWorker, view: _ScoresView
-                        ) -> tuple[list[Submission], dict[int, RunScoring], dict[int, RunScoring]]:
-    """The submissions of the dataset split of `view` that are not deleted, the stored scorings
-    (`ScoreStore.get_run_scorings`) and the current ones."""
-    submissions = [s for s in archive.list_submissions()
-                   if (s.dataset, s.split) == (view.dataset, view.split)]
-    submission_id_to_scoring = worker.store.get_run_scorings(s.id for s in submissions)
-    return (submissions, submission_id_to_scoring,
-            worker.select_current_scorings(submissions, submission_id_to_scoring))
+def _make_comparison_paths(view: _ScoresView, rows: T.Sequence[MethodScores],
+                           subset: AttributeSubset) -> dict[str, str]:
+    """Method name -> the Comparison page of it and its default partner
+    (`method_comparison.get_default_partner`), for the methods that can be compared.
+
+    Args:
+        rows: The methods of the table, best first.
+    """
+    names = [r.method_name for r in list_comparable_methods(rows)]
+    return {name: ComparisonView(view.dataset, view.split, name, partner).to_path(
+                subset.to_query())
+            for name in names if (partner := get_default_partner(names, name)) is not None}
 
 
-def _has_model_compatible_scores(archive: SubmissionArchive, worker: ScoringWorker,
-                                 view: _ScoresView) -> bool:
-    submissions, _, current = _load_view_scorings(archive, worker, view)
+def _has_model_compatible_scores(worker: ScoringWorker, view: _ScoresView) -> bool:
+    submissions, _, current = worker.load_split_scorings(view.dataset, view.split)
     return bool(select_scored_runs(submissions, current, ie.MODEL_COMPATIBLE_SET_NAME))

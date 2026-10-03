@@ -18,13 +18,14 @@ from nicegui.elements.mixins.text_element import TextElement
 
 
 def _on_user_change(element: ui.element, prop: str,
-                    on_change: T.Callable[[T.Any], None]) -> T.Callable[[T.Any], None]:
+                    on_change: T.Callable[[T.Any], T.Any]) -> T.Callable[[T.Any], T.Any]:
     """A handler of a change event that stores the new value in `element.props[prop]` (see the
-    module docstring) before it calls `on_change`."""
-    def handle(event: T.Any) -> None:
+    module docstring) before it calls `on_change`. Its result is returned, so that NiceGUI awaits
+    that of an async `on_change`."""
+    def handle(event: T.Any) -> T.Any:
         element.props[prop] = event.args
         element.update()
-        on_change(event.args)
+        return on_change(event.args)
 
     return handle
 
@@ -36,11 +37,12 @@ def _create_field(label: str) -> ui.element:
 
 
 def create_native_select(label: str, options: T.Mapping[str, str], value: str,
-                         on_change: T.Callable[[str], None]) -> ui.element:
+                         on_change: T.Callable[[str], T.Any]) -> ui.element:
     """A labeled `<select>`.
 
     Args:
         options: Value -> displayed text.
+        on_change: Gets the new value. It can be async.
     """
     with _create_field(label):
         select = ui.element("select").classes("native-control")

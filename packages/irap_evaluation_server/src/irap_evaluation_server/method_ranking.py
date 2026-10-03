@@ -87,20 +87,39 @@ def collect_scored_attributes(runs: T.Iterable[ScoredRun]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(a for r in runs for a in r.scores.attributes))
 
 
+def _get_sort_key(metrics: ie.MetricValues[float] | None, metric: str,
+                  name: str) -> tuple[bool, float, str]:
+    """The key of `sort_method_scores` and `sort_scored_runs`."""
+    value = math.nan if metrics is None else metrics.averages.get(metric, math.nan)
+    is_missing = math.isnan(value)
+    sign = 1 if ie.is_lower_better(metric) else -1
+    return is_missing, 0.0 if is_missing else sign * value, name
+
+
 def sort_method_scores(rows: T.Iterable[MethodScores], metric: str) -> list[MethodScores]:
     """Best first by the attribute average `metric` (see `irap_evaluation.is_lower_better`).
 
     Rows without a value (an error, a metric that the method lacks, or NaN) are last. Ties are
     ordered by method name.
     """
-    sign = 1 if ie.is_lower_better(metric) else -1
+    return sorted(rows, key=lambda r: _get_sort_key(r.metrics, metric, r.method_name))
 
-    def get_key(row: MethodScores) -> tuple[bool, float, str]:
-        value = math.nan if row.metrics is None else row.metrics.averages.get(metric, math.nan)
-        is_missing = math.isnan(value)
-        return is_missing, 0.0 if is_missing else sign * value, row.method_name
 
-    return sorted(rows, key=get_key)
+def select_run_metrics(run: ScoredRun,
+                       attributes: T.Sequence[str]) -> ie.MetricValues[float] | None:
+    """The metrics of a run over `attributes` (`irap_evaluation.select_metric_attributes`), None
+    if it is not scored on all of them, or `attributes` is empty."""
+    if not attributes or any(a not in run.scores.attributes for a in attributes):
+        return None
+    return ie.select_metric_attributes(run.scores.metrics, attributes)
+
+
+def sort_scored_runs(runs: T.Iterable[ScoredRun], metric: str,
+                     attributes: T.Sequence[str]) -> list[ScoredRun]:
+    """Best first by the attribute average `metric` over `attributes` (`select_run_metrics`), as
+    `sort_method_scores` sorts methods. Ties are ordered by run label."""
+    return sorted(runs, key=lambda r: _get_sort_key(select_run_metrics(r, attributes), metric,
+                                                    r.submission.run_label))
 
 
 def rank_methods(runs: T.Iterable[ScoredRun], attributes: T.Sequence[str],

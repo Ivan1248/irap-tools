@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from irap_evaluation.reports.evaluation_report import to_file_name
 from nicegui import app, run, ui
 
-from ..archive import Submission, SubmissionArchive, add_upload, is_archive_upload
+from ..archive import Submission, SubmissionArchive, add_upload, is_archive_upload, parse_seed
 from ..components.formatting import format_utc_time, make_submission_link_html, make_table_html
 from ..components.native_controls import (
     create_file_upload_input,
@@ -56,15 +56,6 @@ def make_submissions_table_html(submissions: T.Sequence[Submission]) -> str:
             f"</tr>")
     return make_table_html(["#", "Run", "Dataset", "Split", "Output", "Segments", "Attributes",
                             "Submitter", "Uploaded", "Description"], rows)
-
-
-def _parse_seed(text: str) -> int | None:
-    if not text.strip():
-        return None
-    try:
-        return int(text)
-    except ValueError:
-        raise ValueError(f"The seed must be an integer, not {text.strip()!r}.") from None
 
 
 def _write_upload(source: T.BinaryIO, path: Path) -> None:
@@ -145,7 +136,7 @@ def _create_upload_form(archive: SubmissionArchive,
             set_status(status_label, "Enter your name in the top bar first.", is_error=True)
             return
         try:
-            seed = _parse_seed(form.seed_text)
+            seed = parse_seed(form.seed_text)
         except ValueError as e:
             set_status(status_label, str(e), is_error=True)
             return

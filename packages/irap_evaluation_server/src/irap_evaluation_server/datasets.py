@@ -3,6 +3,7 @@
 import dataclasses as dc
 import threading
 import typing as T
+from pathlib import Path
 
 import irap_evaluation as ie
 from irap_data.metadata import IRAPMetadata, load_irap_metadata
@@ -103,6 +104,34 @@ class DatasetContext:
         return ie.select_evaluation_sets(
             predictions.segment_ids, self.get_reference_set(header.split),
             None if offsets is None else self.get_model_compatible_set(header.split, offsets))
+
+    def check_new_predictions(self, predictions: ie.Predictions) -> list[str]:
+        """Checks the contents of predictions that are to be stored: their attributes and
+        classes (`check_predicted_classes`), and their evaluation sets
+        (`select_evaluation_sets`).
+
+        Returns:
+            The notes of `select_evaluation_sets`, e.g. that the model is not scored on the
+            reference set.
+
+        Raises:
+            irap_evaluation.PredictionFormatError: See `check_predicted_classes`.
+            ValueError: See `select_evaluation_sets`.
+        """
+        self.check_predicted_classes(predictions)
+        _, notes = self.select_evaluation_sets(predictions)
+        return notes
+
+    def find_segment_image(self, segment_id: str) -> Path | None:
+        """The RGB image of a segment in `config.images_dir`, None without an images directory,
+        if the segment has no image, or if its path in the metadata leads outside the
+        directory."""
+        images_dir = self.config.images_dir
+        relative = self.metadata.segment_id_to_data_paths_rel.get(segment_id, {}).get("rgb")
+        if images_dir is None or relative in (None, "NONE"):
+            return None
+        path = (images_dir / relative).resolve()
+        return path if path.is_relative_to(images_dir.resolve()) and path.is_file() else None
 
     def check_predicted_classes(self, predictions: ie.Predictions) -> None:
         """Checks that the predicted attributes and their iRAP codes are those of the dataset.

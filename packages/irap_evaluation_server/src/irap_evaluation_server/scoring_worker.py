@@ -1,10 +1,11 @@
-"""The background thread that scores submissions and computes intervals (see `scoring`).
+"""The background thread that scores submissions and computes the results of requests, e.g.
+intervals (see `scoring`).
 
-Tasks run one at a time, by priority: scoring first, then intervals that a page waits for, then
+Tasks run one at a time, by priority: scoring first, then requests that a page waits for, then
 the intervals of the default views (all scored attributes), which are computed in advance so
 that pages show them at once. A task can be queued at several priorities, e.g. default intervals
 that a page waits for. It runs once, at the first of them, and withdrawing the request of a page
-(`ScoringWorker.set_requested_intervals`) leaves it queued at the others.
+(`ScoringWorker.set_requests`) leaves it queued at the others.
 """
 
 import enum
@@ -17,12 +18,11 @@ from .database import get_utc_now
 from .datasets import EVALUATION_SET_NAMES, DatasetContext
 from .scoring import (
     SCORING_SETTINGS,
-    CachedIntervals,
-    IntervalRequest,
+    CachedResult,
     RunScoring,
     ScoreStore,
     ScoringSettings,
-    compute_requested_intervals,
+    WorkRequest,
     get_combination_error,
     is_run_scoring_current,
     make_interval_request,
@@ -34,12 +34,17 @@ from .scoring import (
 _logger = logging.getLogger(__name__)
 
 TaskKey = tuple[T.Any, ...]
+V = T.TypeVar("V")
 
 
 class TaskPriority(enum.IntEnum):
     SCORING = 0
-    REQUESTED_INTERVALS = 1
+    REQUESTED = 1
     DEFAULT_INTERVALS = 2
+
+
+def _get_request_task_key(request: WorkRequest) -> TaskKey:
+    return ("request", request.key)
 
 
 def _format_unexpected_error(e: Exception) -> str:
@@ -47,11 +52,11 @@ def _format_unexpected_error(e: Exception) -> str:
 
 
 class ScoringWorker:
-    """Scores submissions and computes intervals in a background thread (`start`), or in the
-    calling thread (`run_pending`, e.g. in tests).
+    """Scores submissions and computes the results of requests in a background thread (`start`),
+    or in the calling thread (`run_pending`, e.g. in tests).
 
     Pages read the results from the store and ask for missing ones with `update_submissions` and
-    `set_requested_intervals`.
+    `set_requests`.
     """
 
     def __init__(self, archive: SubmissionArchive, store: ScoreStore,
@@ -66,11 +71,11 @@ class ScoringWorker:
         self._priority_to_tasks: dict[TaskPriority, dict[TaskKey, T.Callable[[], None]]] = {
             priority: {} for priority in TaskPriority}
         self._running_keys: set[TaskKey] = set()
-        #: Interval key -> an unexpected error of computing them, which is not cached, so that
-        #: the next start computes the intervals again.
-        self._interval_key_to_error: dict[str, CachedIntervals] = {}
-        #: Owner -> the keys of the intervals that it waits for (see `set_requested_intervals`).
-        self._owner_to_interval_keys: dict[T.Hashable, set[str]] = {}
+        #: Request key -> an unexpected error of computing its result, which is not cached, so
+        #: that the next start computes the result again.
+        self._request_key_to_error: dict[str, CachedResult] = {}
+        #: Owner -> the task keys of the requests that it waits for (see `set_requests`).
+        self._owner_to_task_keys: dict[T.Hashable, set[TaskKey]] = {}
         self._is_stopping = False
         self._thread: threading.Thread | None = None
 
@@ -183,6 +188,17 @@ class ScoringWorker:
         return self.select_current_scorings(
             submissions, self.store.get_run_scorings(s.id for s in submissions))
 
+    def load_split_scorings(self, dataset: str, split: str) -> tuple[
+            list[Submission], dict[int, RunScoring], dict[int, RunScoring]]:
+        """The submissions of a dataset split that are not deleted, submission id -> its stored
+        scoring (`ScoreStore.get_run_scorings`), and submission id -> its current scoring
+        (`select_current_scorings`)."""
+        submissions = [s for s in self.archive.list_submissions()
+                       if (s.dataset, s.split) == (dataset, split)]
+        submission_id_to_scoring = self.store.get_run_scorings(s.id for s in submissions)
+        return (submissions, submission_id_to_scoring,
+                self.select_current_scorings(submissions, submission_id_to_scoring))
+
     def is_scoring_pending(self, submission_id: int) -> bool:
         return self._is_task_pending(("score", submission_id))
 
@@ -222,64 +238,59 @@ class ScoringWorker:
         metadata or the settings have changed."""
         self.update_submissions(s.id for s in self.archive.list_submissions())
 
-    # Intervals ####################################################################################
+    # Requests #####################################################################################
 
-    def get_intervals(self, request: IntervalRequest) -> CachedIntervals | None:
-        """The cached intervals, or an unexpected error of computing them, or None if they are
-        not computed."""
-        return (self._interval_key_to_error.get(request.key)
-                or self.store.get_intervals(request.key))
+    def get_result(self, request: WorkRequest[V]) -> CachedResult[V] | None:
+        """The cached result of a request, or an unexpected error of computing it, or None if
+        it is not computed."""
+        return self._request_key_to_error.get(request.key) or self.store.get_result(request)
 
-    def is_intervals_pending(self, request: IntervalRequest) -> bool:
-        return self._is_task_pending(("intervals", request.key))
+    def is_pending(self, request: WorkRequest) -> bool:
+        return self._is_task_pending(_get_request_task_key(request))
 
-    def _compute_intervals(self, request: IntervalRequest) -> None:
-        if self.store.get_intervals(request.key) is not None:
+    def _compute(self, request: WorkRequest) -> None:
+        if self.store.get_result(request) is not None:
             return
         try:
-            intervals = compute_requested_intervals(request, self.archive, self.dataset_contexts,
-                                                    self.settings)
-            cached = CachedIntervals(intervals=intervals, message="", computed_at=get_utc_now())
+            value = request.compute(self.archive, self.dataset_contexts, self.settings)
+            cached = CachedResult(value=value, message="", computed_at=get_utc_now())
         except ValueError as e:
-            cached = CachedIntervals(intervals=None, message=str(e), computed_at=get_utc_now())
+            cached = CachedResult(value=None, message=str(e), computed_at=get_utc_now())
         except Exception as e:
-            _logger.exception("Computing intervals of submissions %s failed.",
+            _logger.exception("Computing %s of submissions %s failed.", type(request).__name__,
                               request.submission_ids)
-            self._interval_key_to_error[request.key] = CachedIntervals(
-                intervals=None, message=_format_unexpected_error(e), computed_at=get_utc_now())
+            self._request_key_to_error[request.key] = CachedResult(
+                value=None, message=_format_unexpected_error(e), computed_at=get_utc_now())
             return
-        self.store.set_intervals(request.key, cached)
+        self.store.set_result(request, cached)
 
-    def request_intervals(self, request: IntervalRequest,
-                          priority: TaskPriority = TaskPriority.REQUESTED_INTERVALS
-                          ) -> CachedIntervals | None:
-        """The cached intervals (see `get_intervals`), or None after queuing their computation."""
-        if (cached := self.get_intervals(request)) is not None:
+    def request(self, request: WorkRequest[V],
+                priority: TaskPriority = TaskPriority.REQUESTED) -> CachedResult[V] | None:
+        """The cached result (see `get_result`), or None after queuing its computation."""
+        if (cached := self.get_result(request)) is not None:
             return cached
-        self._enqueue(("intervals", request.key), priority,
-                      lambda: self._compute_intervals(request))
+        self._enqueue(_get_request_task_key(request), priority, lambda: self._compute(request))
         return None
 
-    def set_requested_intervals(self, owner: T.Hashable,
-                                requests: T.Iterable[IntervalRequest]) -> None:
-        """Requests the intervals that `owner`, e.g. a page, waits for, instead of those that it
+    def set_requests(self, owner: T.Hashable, requests: T.Iterable[WorkRequest]) -> None:
+        """Requests the results that `owner`, e.g. a page, waits for, instead of those that it
         requested before.
 
         Earlier requests that no other owner waits for are withdrawn, e.g. those of an attribute
         subset that the user has left: they leave the queue, unless they are also queued
         otherwise, e.g. as default intervals. A running computation finishes.
         """
-        key_to_request = {r.key: r for r in requests}
+        task_key_to_request = {_get_request_task_key(r): r for r in requests}
         with self._condition:
-            earlier_keys = self._owner_to_interval_keys.pop(owner, set())
-            if key_to_request:
-                self._owner_to_interval_keys[owner] = set(key_to_request)
-            held_keys = set().union(*self._owner_to_interval_keys.values())
-            queued = self._priority_to_tasks[TaskPriority.REQUESTED_INTERVALS]
+            earlier_keys = self._owner_to_task_keys.pop(owner, set())
+            if task_key_to_request:
+                self._owner_to_task_keys[owner] = set(task_key_to_request)
+            held_keys = set().union(*self._owner_to_task_keys.values())
+            queued = self._priority_to_tasks[TaskPriority.REQUESTED]
             for key in earlier_keys - held_keys:
-                queued.pop(("intervals", key), None)
-        for request in key_to_request.values():
-            self.request_intervals(request)
+                queued.pop(key, None)
+        for request in task_key_to_request.values():
+            self.request(request)
 
     def _enqueue_default_intervals(self, dataset: str, split: str, method_name: str) -> None:
         self._enqueue(("default intervals", dataset, split, method_name),
@@ -302,5 +313,5 @@ class ScoringWorker:
             if len(runs) > 1 and get_combination_error(runs) is None:
                 run_groups.append(runs)
             for run_group in run_groups:
-                self.request_intervals(make_interval_request(run_group, attributes, self.settings),
-                                       TaskPriority.DEFAULT_INTERVALS)
+                self.request(make_interval_request(run_group, attributes, self.settings),
+                             TaskPriority.DEFAULT_INTERVALS)

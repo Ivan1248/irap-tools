@@ -9,7 +9,7 @@ import zipfile
 import irap_evaluation as ie
 import pytest
 from irap_data.metadata import MetaFiles
-from run_helpers import make_run, write_upload
+from run_helpers import OTHER_SPLIT, make_run, with_split, write_upload
 from synthetic_vietnam import SPLIT, make_predictions
 
 from irap_evaluation_server import archive as archive_module
@@ -31,24 +31,6 @@ def upload(archive, dataset_contexts, predictions, submitter="Ana", seed=None):
 
 def add(archive, dataset_contexts, predictions, **kwargs):
     return upload(archive, dataset_contexts, predictions, **kwargs)[1]()[0]
-
-
-OTHER_SPLIT = "test"
-
-
-@pytest.fixture
-def two_split_contexts(metadata_dir):
-    """The dataset with the split `OTHER_SPLIT`, which has the segments of `SPLIT`."""
-    splits_path = metadata_dir / MetaFiles.SPLITS
-    splits = json.loads(splits_path.read_text(encoding="utf-8"))
-    splits[OTHER_SPLIT] = splits[SPLIT]
-    splits_path.write_text(json.dumps(splits), encoding="utf-8")
-    return load_dataset_contexts({"vietnam": DatasetConfig(
-        metadata_dir=metadata_dir, images_dir=None, analysis_splits=())})
-
-
-def with_split(predictions, split):
-    return dc.replace(predictions, header=dc.replace(predictions.header, split=split))
 
 
 def make_run_files(dataset_contexts, splits=(SPLIT, OTHER_SPLIT), **kwargs):
@@ -413,7 +395,9 @@ def test_failed_storing_moves_back_all_files(archive, two_split_contexts, monkey
     for split in (SPLIT, OTHER_SPLIT):
         predictions = with_split(make_run(two_split_contexts), split)
         path = write_upload(archive, predictions)
-        new_submissions.append(NewSubmission.from_predictions(predictions, path, {}))
+        new_submissions.append(NewSubmission.from_predictions(predictions, path,
+                                                              action="upload", details={},
+                                                              notes=()))
 
     def fail(*args):
         raise RuntimeError("after the moves")

@@ -6,8 +6,14 @@ import irap_evaluation as ie
 import numpy as np
 import pytest
 from irap_data.metadata import MetaFiles
-from irap_evaluation.reports.evaluation_report import to_json_dict, to_labeled_metric_values
-from run_helpers import add_run, make_run
+from irap_evaluation.reports.evaluation_report import to_json_dict
+from run_helpers import (
+    add_run,
+    assert_close,
+    evaluate_submission,
+    make_run,
+    score_and_get_runs,
+)
 from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server.config import DatasetConfig
@@ -17,58 +23,11 @@ from irap_evaluation_server.scoring import (
     ScoreStore,
     ScoringSettings,
     compute_method_scores,
-    compute_requested_intervals,
-    evaluate_run,
     group_scored_runs_by_method,
     is_run_scoring_current,
     make_interval_request,
-    select_scored_runs,
 )
 from irap_evaluation_server.scoring_worker import ScoringWorker, TaskPriority
-
-
-def assert_close(a, b, label=""):
-    """Equality of metric values, intervals or floats, with NaN equal to NaN."""
-    if isinstance(a, ie.MetricValues):
-        a, b = to_labeled_metric_values(a), to_labeled_metric_values(b)
-        assert a.keys() == b.keys()
-        for key in a:
-            assert_close(a[key], b[key], key)
-    elif dc.is_dataclass(a):
-        for field in dc.fields(a):
-            assert_close(getattr(a, field.name), getattr(b, field.name), f"{label}.{field.name}")
-    elif isinstance(a, float) and math.isnan(a):
-        assert isinstance(b, float) and math.isnan(b), label
-    else:
-        assert a == pytest.approx(b, rel=1e-12, abs=0), label
-
-
-@pytest.fixture
-def settings():
-    # Fewer resamples than the server, for speed.
-    return ScoringSettings(num_resamples=50)
-
-
-@pytest.fixture
-def store(archive):
-    return ScoreStore(archive.database_path)
-
-
-@pytest.fixture
-def worker(archive, store, dataset_contexts, settings):
-    return ScoringWorker(archive, store, dataset_contexts, settings)
-
-
-def score_and_get_runs(worker, submission_ids, evaluation_set="reference"):
-    worker.update_submissions(submission_ids)
-    worker.run_pending()
-    return select_scored_runs(worker.archive.list_submissions(), worker.get_current_scorings(),
-                              evaluation_set)
-
-
-def evaluate_submission(worker, submission, evaluation_set):
-    return evaluate_run(ie.read_predictions(worker.archive.get_predictions_path(submission.id)),
-                        evaluation_set, worker.settings)
 
 
 def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker):
@@ -98,9 +57,9 @@ def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker
 
     # The default intervals of the run are computed after the scoring.
     request = make_interval_request([run], run.scores.attributes, worker.settings)
-    cached = worker.get_intervals(request)
-    assert cached.intervals is not None
-    assert_close(cached.intervals, ie.compute_bootstrap_intervals(
+    cached = worker.get_result(request)
+    assert cached.value is not None
+    assert_close(cached.value, ie.compute_bootstrap_intervals(
         [result], num_resamples=worker.settings.num_resamples, seed=0))
 
 
@@ -123,42 +82,42 @@ def test_method_scores_and_intervals_over_a_subset(archive, dataset_contexts, wo
 
     # Intervals over the subset are computed on request.
     request = make_interval_request(method_to_runs["m"], subset, worker.settings)
-    assert worker.request_intervals(request) is None
-    assert worker.is_intervals_pending(request)
+    assert worker.request(request) is None
+    assert worker.is_pending(request)
     worker.run_pending()
-    assert not worker.is_intervals_pending(request)
-    assert_close(worker.request_intervals(request).intervals, ie.compute_bootstrap_intervals(
+    assert not worker.is_pending(request)
+    assert_close(worker.request(request).value, ie.compute_bootstrap_intervals(
         results, num_resamples=worker.settings.num_resamples, seed=0))
     # The order of the subset does not matter.
     assert make_interval_request(method_to_runs["m"], subset[::-1],
                                  worker.settings).key == request.key
 
 
-def test_set_requested_intervals_withdraws_left_subsets(archive, dataset_contexts, worker):
+def test_set_requests_withdraws_left_subsets(archive, dataset_contexts, worker):
     submission = add_run(archive, dataset_contexts, make_run(dataset_contexts, "m"))
     [run] = score_and_get_runs(worker, [submission.id])
     attributes = run.scores.attributes
     first, second, default = (make_interval_request([run], subset, worker.settings)
                               for subset in (attributes[:2], attributes[1:3], attributes[2:4]))
 
-    worker.set_requested_intervals("page 1", [first])
-    assert worker.is_intervals_pending(first)
+    worker.set_requests("page 1", [first])
+    assert worker.is_pending(first)
     # The page leaves the first subset.
-    worker.set_requested_intervals("page 1", [second])
-    assert not worker.is_intervals_pending(first) and worker.is_intervals_pending(second)
+    worker.set_requests("page 1", [second])
+    assert not worker.is_pending(first) and worker.is_pending(second)
     # A request that another page waits for is kept.
-    worker.set_requested_intervals("page 2", [second])
-    worker.set_requested_intervals("page 1", [])
-    assert worker.is_intervals_pending(second)
+    worker.set_requests("page 2", [second])
+    worker.set_requests("page 1", [])
+    assert worker.is_pending(second)
     # A withdrawn request that is also queued otherwise stays queued.
-    worker.request_intervals(default, TaskPriority.DEFAULT_INTERVALS)
-    worker.set_requested_intervals("page 1", [default])
-    worker.set_requested_intervals("page 1", [])
-    assert worker.is_intervals_pending(default)
+    worker.request(default, TaskPriority.DEFAULT_INTERVALS)
+    worker.set_requests("page 1", [default])
+    worker.set_requests("page 1", [])
+    assert worker.is_pending(default)
     worker.run_pending()
-    assert worker.get_intervals(second).intervals is not None
-    assert worker.get_intervals(default).intervals is not None
-    assert worker.get_intervals(first) is None
+    assert worker.get_result(second).value is not None
+    assert worker.get_result(default).value is not None
+    assert worker.get_result(first) is None
 
 
 def test_missing_attribute(archive, dataset_contexts, worker):
@@ -189,12 +148,12 @@ def test_deletion_updates_the_method_intervals(archive, dataset_contexts, worker
                    for seed in (1, 2)]
     runs = score_and_get_runs(worker, [s.id for s in submissions])
     attributes = runs[0].scores.attributes
-    assert worker.get_intervals(make_interval_request(runs, attributes, worker.settings))
+    assert worker.get_result(make_interval_request(runs, attributes, worker.settings))
 
     archive.set_submission_deleted(submissions[0].id, True, actor="Bo")
     [remaining] = score_and_get_runs(worker, [submissions[0].id])
     assert remaining.submission.id == submissions[1].id
-    assert worker.get_intervals(make_interval_request([remaining], attributes, worker.settings))
+    assert worker.get_result(make_interval_request([remaining], attributes, worker.settings))
 
     # A restored run is not scored again, since its scoring is current.
     archive.set_submission_deleted(submissions[0].id, False, actor="Bo")
@@ -256,15 +215,18 @@ def test_scoring_errors(archive, dataset_contexts, store, worker):
     worker.run_pending()
 
 
-def test_compute_requested_intervals_refuses_changed_files(archive, dataset_contexts, worker):
+def test_requested_intervals_refuse_changed_files(archive, dataset_contexts, worker):
     submission = add_run(archive, dataset_contexts, make_run(dataset_contexts, "m"))
     [run] = score_and_get_runs(worker, [submission.id])
     request = make_interval_request([run], run.scores.attributes, worker.settings)
     with pytest.raises(ValueError, match="other scoring settings"):
-        compute_requested_intervals(request, archive, dataset_contexts, SCORING_SETTINGS)
+        request.compute(archive, dataset_contexts, SCORING_SETTINGS)
     changed = dc.replace(request, runs=((submission.id, "0" * 64),))
     with pytest.raises(ValueError, match="another file"):
-        compute_requested_intervals(changed, archive, dataset_contexts, worker.settings)
+        changed.compute(archive, dataset_contexts, worker.settings)
+    changed = dc.replace(request, evaluation_set_fingerprint="0" * 64)
+    with pytest.raises(ValueError, match="has changed since it was scored"):
+        changed.compute(archive, dataset_contexts, worker.settings)
 
 
 def test_worker_thread(archive, dataset_contexts, store, worker):

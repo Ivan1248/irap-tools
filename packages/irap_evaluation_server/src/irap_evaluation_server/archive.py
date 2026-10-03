@@ -32,7 +32,10 @@ import irap_evaluation as ie
 from .database import begin_write, connect, get_utc_now
 from .datasets import DatasetContext
 
-ActionKind = T.Literal["upload", "delete", "restore"]
+#: The actions that add a submission: an upload, or an ensemble of stored runs (see `ensembles`).
+AddingActionKind = T.Literal["upload", "ensemble"]
+ADDING_ACTION_KINDS: tuple[str, ...] = T.get_args(AddingActionKind)
+ActionKind = AddingActionKind | T.Literal["delete", "restore"]
 
 #: SQLite stores integers as signed 64-bit values.
 _SQLITE_INTEGER_RANGE = range(-2**63, 2**63)
@@ -136,7 +139,11 @@ class NewSubmission:
     Attributes:
         file_path: The file, in the same file system as the data directory, e.g. at
             `SubmissionArchive.make_upload_path`.
-        details: The details of the upload in the action log.
+        action: The action that adds it, in the action log.
+        details: The details of the action in the action log, e.g. the name of the uploaded
+            file.
+        notes: The notes of `DatasetContext.check_new_predictions`, which the action log
+            records with the details (as 'notes').
     """
 
     header: ie.PredictionHeader
@@ -144,18 +151,21 @@ class NewSubmission:
     num_segments: int
     num_attributes: int
     file_path: Path
+    action: AddingActionKind
     details: T.Mapping[str, T.Any]
+    notes: tuple[str, ...]
 
     @classmethod
-    def from_predictions(cls, predictions: ie.Predictions, file_path: Path,
-                         details: T.Mapping[str, T.Any]) -> T.Self:
+    def from_predictions(cls, predictions: ie.Predictions, file_path: Path, *,
+                         action: AddingActionKind, details: T.Mapping[str, T.Any],
+                         notes: T.Sequence[str]) -> T.Self:
         """Args:
             predictions: The contents of the file, e.g. from `irap_evaluation.read_predictions`.
         """
         return cls(header=predictions.header, output_kind=predictions.output_kind,
                    num_segments=predictions.num_segments,
                    num_attributes=len(predictions.attributes), file_path=file_path,
-                   details=details)
+                   action=action, details=details, notes=tuple(notes))
 
 
 def _compute_file_sha256(path: Path) -> str:
@@ -181,7 +191,12 @@ def _to_action_log_entry(row: sqlite3.Row) -> ActionLogEntry:
                           submission_id=row["submission_id"], details=json.loads(row["details"]))
 
 
-def _check_actor(actor: str) -> str:
+def check_actor(actor: str) -> str:
+    """The free-text name of who does an action, stripped.
+
+    Raises:
+        ValueError: If it is empty.
+    """
     if not actor.strip():
         raise ValueError("Enter your name, so that the action log shows who did this.")
     return actor.strip()
@@ -206,6 +221,20 @@ def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind,
 def _check_seed_storable(seed: int | None) -> None:
     if seed is not None and seed not in _SQLITE_INTEGER_RANGE:
         raise ValueError(f"The seed {seed} does not fit a signed 64-bit integer.")
+
+
+def parse_seed(text: str) -> int | None:
+    """The seed that a user entered, None for a blank text.
+
+    Raises:
+        ValueError: If it is not an integer.
+    """
+    if not text.strip():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        raise ValueError(f"The seed must be an integer, not {text.strip()!r}.") from None
 
 
 def _check_run_distinct(connection: sqlite3.Connection, dataset: str, split: str,
@@ -339,7 +368,8 @@ class SubmissionArchive:
 
     def add_submissions(self, new_submissions: T.Sequence[NewSubmission], *, submitter: str,
                         description: str) -> list[Submission]:
-        """Stores prediction files, moved from their `file_path`, and logs the uploads.
+        """Stores prediction files, moved from their `file_path`, and logs the action that adds
+        each of them (`NewSubmission.action`).
 
         Either all are stored or none. Files that are not stored stay at their `file_path`.
 
@@ -347,7 +377,7 @@ class SubmissionArchive:
             ValueError: If `submitter` is empty, or `check_new_run` refuses a run, also because
                 of a run stored before it in the same call.
         """
-        submitter = _check_actor(submitter)
+        submitter = check_actor(submitter)
         for new in new_submissions:
             _check_seed_storable(new.header.method.seed)
         file_sha256s = [_compute_file_sha256(new.file_path) for new in new_submissions]
@@ -371,7 +401,8 @@ class SubmissionArchive:
                          description.strip(), get_utc_now().isoformat()))
                     submission_id = cursor.lastrowid
                     submission_ids.append(submission_id)
-                    _log_action(connection, submitter, "upload", submission_id, new.details)
+                    _log_action(connection, submitter, new.action, submission_id,
+                                {**new.details, "notes": list(new.notes)})
                     target_path = self.get_predictions_path(submission_id)
                     # A directory left by a crash between the move and COMMIT is overwritten.
                     target_path.parent.mkdir(exist_ok=True)
@@ -394,7 +425,7 @@ class SubmissionArchive:
             ValueError: If `actor` is empty, the submission is already in that state, or a
                 restored run is no longer distinct from the runs of its method.
         """
-        actor = _check_actor(actor)
+        actor = check_actor(actor)
         with begin_write(self.database_path) as connection:
             submission = _get_submission(connection, submission_id)
             if submission.is_deleted == is_deleted:
@@ -433,7 +464,7 @@ def _prepare_upload(
     *,
     seed: int | None,
     details: T.Mapping[str, T.Any],
-) -> tuple[NewSubmission, list[str]]:
+) -> NewSubmission:
     """Checks the contents of an uploaded prediction file, read from `uploaded_path` (see
     `add_uploaded_submission`).
 
@@ -442,9 +473,6 @@ def _prepare_upload(
 
     Args:
         details: The details of the upload in the action log, without the notes and seeds.
-
-    Returns:
-        The new submission and the notes of `select_evaluation_sets`.
     """
     header = uploaded.header
     method = _override_seed(header.method, seed)
@@ -453,19 +481,17 @@ def _prepare_upload(
         raise ValueError(f"The predictions are of the dataset {header.dataset!r}, which the"
                          f" server does not have. Its datasets: {', '.join(dataset_contexts)}.")
     archive.check_new_run(header.dataset, header.split, method)
-    # After the cheap checks, since it validates the predictions again.
+    notes = dataset_contexts[header.dataset].check_new_predictions(uploaded)
+    # After the checks, since it validates the predictions again.
     predictions = _replace_method(uploaded, method) if is_seed_replaced else uploaded
-    context = dataset_contexts[header.dataset]
-    context.check_predicted_classes(predictions)
-    _, notes = context.select_evaluation_sets(predictions)
-    details = {**details, "notes": notes}
-    if not is_seed_replaced:
-        return NewSubmission.from_predictions(predictions, uploaded_path, details), notes
-    details |= {"original_seed": header.method.seed,
-                "uploaded_file_sha256": _compute_file_sha256(uploaded_path)}
-    rewritten_path = _get_rewritten_path(uploaded_path)
-    ie.write_predictions(rewritten_path, predictions)
-    return NewSubmission.from_predictions(predictions, rewritten_path, details), notes
+    path = uploaded_path
+    if is_seed_replaced:
+        details = {**details, "original_seed": header.method.seed,
+                   "uploaded_file_sha256": _compute_file_sha256(uploaded_path)}
+        path = _get_rewritten_path(uploaded_path)
+        ie.write_predictions(path, predictions)
+    return NewSubmission.from_predictions(predictions, path, action="upload", details=details,
+                                          notes=notes)
 
 
 def add_uploaded_submission(
@@ -503,18 +529,18 @@ def add_uploaded_submission(
             refused by `select_evaluation_sets` or by `SubmissionArchive.check_new_run`.
     """
     # The cheap checks come first, so that a refused retry does not wait for the others.
-    submitter = _check_actor(submitter)
+    submitter = check_actor(submitter)
     uploaded = ie.read_predictions(uploaded_path)
     try:
-        new, notes = _prepare_upload(archive, dataset_contexts, uploaded, uploaded_path,
-                                     seed=seed, details={"file_name": file_name})
+        new = _prepare_upload(archive, dataset_contexts, uploaded, uploaded_path, seed=seed,
+                              details={"file_name": file_name})
         [submission] = archive.add_submissions([new], submitter=submitter,
                                                description=description)
     finally:
         _get_rewritten_path(uploaded_path).unlink(missing_ok=True)
     if new.file_path != uploaded_path:  # Otherwise it is moved into the archive.
         uploaded_path.unlink()
-    return submission, notes
+    return submission, list(new.notes)
 
 
 def _is_macos_metadata(info: zipfile.ZipInfo) -> bool:
@@ -607,14 +633,14 @@ def add_uploaded_archive(
             `add_uploaded_submission`, of another run than the first file, or of the split of an
             earlier file. The message of a refused file starts with its name.
     """
-    submitter = _check_actor(submitter)
+    submitter = check_actor(submitter)
     try:
         zip_file = zipfile.ZipFile(uploaded_path)
     except zipfile.BadZipFile as e:
         raise ValueError(f"{file_name} is not a .zip archive: {e}") from e
     extracted_paths: list[Path] = []
     try:
-        prepared: list[tuple[NewSubmission, list[str]]] = []
+        prepared: list[NewSubmission] = []
         with zip_file:
             first_run_and_member_name: tuple[_ArchiveRun, str] | None = None
             split_to_member_name: dict[str, str] = {}
@@ -643,7 +669,7 @@ def add_uploaded_archive(
                         details={"file_name": file_name, "archive_member": member.filename}))
                 except ValueError as e:
                     raise ValueError(f"{member.filename}: {e}") from e
-        submissions = archive.add_submissions([new for new, _ in prepared], submitter=submitter,
+        submissions = archive.add_submissions(prepared, submitter=submitter,
                                               description=description)
     finally:
         # Those that are stored are moved into the archive.
@@ -651,7 +677,7 @@ def add_uploaded_archive(
             path.unlink(missing_ok=True)
             _get_rewritten_path(path).unlink(missing_ok=True)
     uploaded_path.unlink()
-    return [(s, notes) for s, (_, notes) in zip(submissions, prepared, strict=True)]
+    return [(s, list(new.notes)) for s, new in zip(submissions, prepared, strict=True)]
 
 
 def is_archive_upload(uploaded_path: Path) -> bool:

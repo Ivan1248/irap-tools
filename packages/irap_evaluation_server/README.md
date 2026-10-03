@@ -4,7 +4,9 @@ An internal web app for saved iRAP model predictions, built with [NiceGUI](https
 
 - an archive of submissions (prediction files) with an action log,
 - scores and the method table,
-- (planned) method comparison, prediction analysis with a map, ensembling and coding-table export.
+- the comparison of two methods, with intervals of the differences,
+- the analysis of the predictions of a run: confusion matrices, a map, and the details of segments,
+- ensembles of stored runs, and the export of a submission as an iRAP coding table.
 
 There are no logins. Anyone who can open the app can upload, delete and restore submissions. Each user enters a name in the top bar, which the action log records. Deleted submissions are kept and can be restored.
 
@@ -26,9 +28,11 @@ port = 8600             # optional
 
 [datasets.vietnam]      # a key of irap_data.DATASET_PRESETS
 metadata_dir = "/data/IRAP_Vietnam"
-images_dir = "/data/IRAP_Vietnam_images"   # optional
-analysis_splits = ["train", "val"]          # splits with the detailed analysis (planned)
+images_dir = "/data/IRAP_Vietnam_images"   # optional, the segment images of the analysis page
+analysis_splits = ["train", "val"]          # the splits of the analysis page
 ```
+
+On its first start, the server downloads the JavaScript libraries of the map (MapLibre and deck.gl, pinned versions checked by SHA-256) into `data_dir/vendor/`, since MapLibre must be served from the server itself. Without internet access, it starts without the map. The basemap tiles come from Carto, so the map also needs internet access in the browser.
 
 ## Submissions
 
@@ -67,6 +71,33 @@ The page of a submission shows its scores on each evaluation set: the attribute 
 
 The attribute filter of both pages chooses the attributes that the averages cover. The URL keeps the subset in repeated `attribute` parameters, so a filtered view can be shared as a link. Values change at once. Intervals over a subset are computed from the files a second after the last change of the filter, which takes about 0.4 s per run on Vietnam val and 1–2 s on train, and are cached.
 
+## Comparison page
+
+The Comparison page (`/comparison`) compares two methods of a dataset split on its reference set with `irap_evaluation.compare_methods`, as `irap-eval compare` does. For each attribute average (or for each attribute, with one per-attribute metric), it shows the means over the runs of A and B, the difference A − B, and its bootstrap interval. The interval resamples the road sequences once for both methods, and includes the variation between the runs of each method. A method is marked "clearly better" if the interval excludes 0. Differences of single attributes are exploratory. The Scores page links each method to its comparison with the best one.
+
+Like intervals, the comparison needs the per-sequence statistics, so the background thread computes it from the files when the page asks for it (one scoring per run, as for intervals) and caches it. The attribute filter chooses the attributes, as on the Scores page.
+
+## Analysis page
+
+The Analysis page (`/analysis`) shows the predictions of one run (A) for one attribute on an evaluation set of an analysis split. The test split can be left out of `analysis_splits`, so that its labels are not browsed.
+
+- **Confusion matrix:** the labeled segments by label (rows) and prediction of A (columns), with a column of invalid predictions. Scores count an invalid prediction as the first class (`null_policy="first_class"`), so the matrix of the scores is this one with the invalid column added to the first. The class table shows the precision, recall and F1 of each class as scored.
+- **Segments of a cell:** a click on a cell lists its segments, the most confident predictions first, so that a cell of errors starts with the confident errors.
+- **Map:** the segments that have a location, coloured by outcome (correct, wrong, invalid, unlabeled). With a second run (B), the colours compare them (both correct, only A correct, only B correct, neither correct). The segments of the selected cell are highlighted.
+- **Segment details:** a click on a segment in the list or on the map shows its context images (at the context offsets of A, from `images_dir`), its label, and the distributions predicted by A and B.
+
+The runs are ordered by amF1 over the attribute subset of the filter, which also restricts the attribute choices. The URL keeps the whole view. The page reads the prediction files of A and B, about 0.1 s on Vietnam val and 0.3 s on train, and keeps the 8 most recently used runs in memory. Deleted submissions are not offered. The submission page links to the analysis of a run.
+
+## Ensembles
+
+The Ensemble page (`/ensemble`) creates the ensemble of stored runs with `irap_evaluation.ensemble_predictions`, as `irap-eval ensemble` does: the weighted mean of their distributions, where a hard prediction counts as a one-hot distribution. The members are runs (a method name and seed) of a dataset, each with a weight. One ensemble is stored for each split where every member has a submission, all or none, as a new run with the given method name and seed. Each is checked like an upload, and the action log records its members and weights (action `ensemble`). The ensembles are scored like uploads.
+
+Members with different context offsets predict different segments. The option "Only the segments that every member predicts" keeps their common segments.
+
+## Coding tables
+
+The submission page downloads the submission as an iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with the packaged template, a coder name (default: the method name) and a coding date. A `.xlsx` file of probabilistic predictions has the probability of each exported code on a second sheet.
+
 ## Layout
 
 ```
@@ -76,9 +107,14 @@ irap_evaluation_server/
 ├─ database.py      Connections to the SQLite database
 ├─ archive.py       SubmissionArchive: files, SQLite index and action log, upload checks
 ├─ scoring.py       Scoring settings, the score cache, means over runs and intervals
-├─ scoring_worker.py  The background thread that scores and computes intervals
+├─ scoring_worker.py  The background thread that scores and computes requested results
 ├─ method_ranking.py  The rows of the method table and their order
-├─ components/      Page frame, native form controls, attribute filter, score tables, CSS
+├─ method_comparison.py  Comparisons of two methods (cached requests of the background thread)
+├─ prediction_analysis.py  Outcomes of segments, confusion matrices, segment details
+├─ map_libraries.py   The download of the map libraries
+├─ ensembles.py     Ensembles of stored runs
+├─ coding_table_export.py  The coding table of a submission
+├─ components/      Page frame, native form controls, attribute filter, tables, map, page views, CSS
 ├─ pages/           One module per page
 └─ server.py        The irap-eval-server command
 ```

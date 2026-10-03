@@ -9,22 +9,30 @@ from irap_evaluation.metrics import IRAP_ATTRIBUTE_METRIC_NAMES
 from irap_evaluation_server.archive import Submission
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
 from irap_evaluation_server.components.score_tables import (
-    IntervalState,
+    make_comparison_table_html,
     make_method_table_html,
     make_per_attribute_table_html,
     make_run_scores_html,
 )
+from irap_evaluation_server.method_comparison import (
+    get_default_partner,
+    list_comparable_methods,
+    select_method_pair,
+)
 from irap_evaluation_server.method_ranking import (
     CellHighlight,
     compute_highlights,
-    rank_methods,
     get_unscored_reason,
+    rank_methods,
+    select_run_metrics,
     sort_method_scores,
+    sort_scored_runs,
 )
 from irap_evaluation_server.scoring import (
-    CachedIntervals,
+    CachedResult,
     EvaluationSetScores,
     MethodScores,
+    ResultState,
     RunScoring,
     ScoredRun,
 )
@@ -78,6 +86,55 @@ def test_rank_methods_means_over_runs():
     assert rows[1].metrics.averages["amF1"] == pytest.approx(0.3)
     [row] = rank_methods(runs[:1], ["x", "z"], "amF1")
     assert "not scored on z" in row.error
+
+
+def test_sort_scored_runs_by_the_average_over_a_subset():
+    runs = [make_run(1, {"x": 0.2, "y": 0.9}), make_run(2, {"x": 0.4, "y": 0.1}),
+            make_run(3, {"x": 0.3})]
+    assert select_run_metrics(runs[0], ["x", "y"]).averages["amF1"] == pytest.approx(0.55)
+    assert select_run_metrics(runs[2], ["x", "y"]) is None  # It is not scored on y.
+    assert select_run_metrics(runs[0], []) is None
+    assert [r.submission.id for r in sort_scored_runs(runs, "amF1", ["x"])] == [2, 3, 1]
+    assert [r.submission.id for r in sort_scored_runs(runs, "amF1", ["x", "y"])] == [1, 2, 3]
+
+
+def test_comparison_table_html():
+    a = make_method_scores("<a>", {"amF1": 0.6, "aNLL": 1.0, "amP": 0.5})
+    b = make_method_scores("b", {"amF1": 0.5, "aNLL": 0.8, "amP": 0.5})
+
+    def difference(value, low, high, num_undefined=0):
+        return ie.MetricDifference(value, ie.BootstrapInterval(low, high, num_undefined))
+
+    differences = ie.MetricValues(averages={
+        "amF1": difference(0.1, 0.05, 0.15), "aNLL": difference(0.2, 0.1, 0.3),
+        "amP": difference(0.0, -0.1, 0.1, num_undefined=3)}, per_attribute={})
+    state = ResultState(cached=CachedResult(value=differences, message="", computed_at=_TIME))
+    table = make_comparison_table_html(a, b, state)
+    rows = table.split("<tr>")[2:]
+    assert [r.split("</td>")[0] for r in rows] == ["<td>amF1", "<td>amP", "<td>aNLL"]
+    assert "<b>A better</b>" in rows[0]  # Higher amF1 is better.
+    assert "<b></b>" in rows[1] and ".100*" in rows[1]  # The interval includes 0.
+    assert "<b>B better</b>" in rows[2]  # Higher aNLL is worse.
+    assert "A: &lt;a&gt;" in table
+    pending = make_comparison_table_html(a, b, ResultState(is_pending=True))
+    assert "computing…" in pending and "better</b>" not in pending
+
+
+def test_select_method_pair():
+    rows = [make_method_scores("a", {"amF1": 0.6}), make_method_scores("x", {}, error="differ"),
+            make_method_scores("b", {"amF1": 0.5}), make_method_scores("c", {"amF1": 0.4})]
+    comparable = list_comparable_methods(rows)
+    assert [r.method_name for r in comparable] == ["a", "b", "c"]
+    names = ["a", "b", "c"]
+    assert [get_default_partner(names, n) for n in names] == ["b", "a", "a"]
+    assert get_default_partner(["a"], "a") is None
+    pair = select_method_pair(comparable, "", "")
+    assert [r.method_name for r in pair] == ["a", "b"]
+    assert [r.method_name for r in select_method_pair(comparable, "c", "")] == ["c", "a"]
+    with pytest.raises(ValueError, match="cannot be compared.*x"):
+        select_method_pair(comparable, "a", "x")
+    with pytest.raises(ValueError, match="two different"):
+        select_method_pair(comparable, "b", "b")
 
 
 def test_get_unscored_reason():
@@ -147,12 +204,14 @@ def test_method_table_html():
     rows = [*rank_methods(runs, ["x", "y"], "amF1"),
             make_method_scores("<n>", {}, error="Runs <differ>.")]
     interval = ie.BootstrapInterval(low=0.1, high=0.3, num_undefined=2)
-    cached = CachedIntervals(
-        intervals=ie.MetricValues(averages={"amF1": interval}, per_attribute={}),
+    cached = CachedResult(
+        value=ie.MetricValues(averages={"amF1": interval}, per_attribute={}),
         message="", computed_at=_TIME)
-    table = make_method_table_html(rows, {"<m>": IntervalState(cached=cached)}, "amF1",
-                                        ["x"], is_model_compatible_view=False)
+    table = make_method_table_html(rows, {"<m>": ResultState(cached=cached)}, "amF1",
+                                   ["x"], is_model_compatible_view=False,
+                                   method_to_comparison_path={"<m>": "/comparison?a=<m>"})
     assert "&lt;m&gt;" in table and "<m>" not in table
+    assert '<a class="muted" href="/comparison?a=&lt;m&gt;">compare</a>' in table
     assert '<td colspan="12" class="error">Runs &lt;differ&gt;.</td>' in table
     assert '<th class="sortable sorted" data-sort="amF1"' in table
     assert '<a href="/submissions/1?attribute=x">#1</a>' in table
@@ -165,5 +224,5 @@ def test_method_table_html():
 def test_run_scores_html():
     run = make_run(1, {"x": 0.2, "y": math.nan}, missing_attributes=("y",))
     [scores] = rank_methods([run], ["x", "y"], "amF1")
-    html = make_run_scores_html(scores, IntervalState(is_pending=True))
+    html = make_run_scores_html(scores, ResultState(is_pending=True))
     assert "computing…" in html and "NaN" in html and "3 (not predicted)" in html
