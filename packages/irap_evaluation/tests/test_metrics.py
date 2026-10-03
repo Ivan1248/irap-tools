@@ -11,6 +11,7 @@ from irap_evaluation.metrics import (
     compute_classification_statistics,
     compute_multi_attribute_metrics,
     get_irap_metric_names,
+    is_lower_better,
     parse_metric_name,
     select_metric_attributes,
     sum_statistics,
@@ -161,6 +162,11 @@ def test_parse_metric_name():
     for name in ["nc", "A_supp5", "mF1_suppx", "xyz"]:
         with pytest.raises(ValueError):
             parse_metric_name(name)
+
+
+def test_is_lower_better():
+    assert [n for n in get_irap_metric_names() if is_lower_better(n)] == [
+        "aNLL", "aBrier", "amNLL", "amNLL_supp5", "amNLL_supp10", "NLL", "Brier", "mNLL"]
 
 
 def test_get_irap_metric_names_puts_averages_first():

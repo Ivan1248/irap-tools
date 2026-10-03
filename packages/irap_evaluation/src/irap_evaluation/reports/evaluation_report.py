@@ -183,11 +183,10 @@ def to_labeled_metric_values(values: MetricValues[V]) -> dict[str, V]:
 def get_partially_undefined_intervals(
         intervals: MetricValues[BootstrapInterval]) -> dict[str, int]:
     """Label (see `to_labeled_metric_values`) -> `BootstrapInterval.num_undefined`, for the
-    intervals that leave out some but not all resamples. Such bounds hold only for the resamples where the
-    value is defined, unlike NaN bounds, which show that every resample is undefined."""
+    intervals that are `BootstrapInterval.is_partially_undefined`."""
     return {label: interval.num_undefined
             for label, interval in to_labeled_metric_values(intervals).items()
-            if interval.num_undefined > 0 and not math.isnan(interval.low)}
+            if interval.is_partially_undefined}
 
 
 def to_markdown_table(table: pd.DataFrame, float_format: str = "{:.4f}") -> str:

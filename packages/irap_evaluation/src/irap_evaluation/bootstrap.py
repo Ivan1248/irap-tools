@@ -6,6 +6,7 @@ over the runs with a Student-t draw. `docs/evaluation.md#confidence-intervals` d
 """
 
 import dataclasses as dc
+import math
 import typing as T
 
 import numpy as np
@@ -27,6 +28,13 @@ class BootstrapInterval:
     low: float
     high: float
     num_undefined: int
+
+    @property
+    def is_partially_undefined(self) -> bool:
+        """Whether some but not all resamples are undefined. The bounds then hold only for the
+        resamples where the value is defined, unlike NaN bounds, which show that every resample
+        is undefined."""
+        return self.num_undefined > 0 and not math.isnan(self.low)
 
 
 @dc.dataclass(frozen=True)

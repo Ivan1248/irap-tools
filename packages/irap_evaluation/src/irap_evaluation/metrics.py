@@ -118,6 +118,12 @@ def is_per_class_metric(name: str) -> bool:
     return parse_metric_name(name).base in PER_CLASS_METRICS
 
 
+def is_lower_better(name: str) -> bool:
+    """Whether lower values of the metric are better, e.g. for sorting methods: true for the
+    losses of predicted distributions (`PROBABILISTIC_METRICS`), false for the others."""
+    return parse_metric_name(name).base in PROBABILISTIC_METRICS
+
+
 def add_per_attribute_metric_names(metric_names: T.Sequence[str]) -> tuple[str, ...]:
     """`metric_names` followed by the per-attribute name of each attribute average that they
     lack, e.g. 'NLL' for 'aNLL', so that `select_metric_attributes` can average the results
