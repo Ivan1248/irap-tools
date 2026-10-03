@@ -10,7 +10,12 @@ import typing as T
 from nicegui import ui
 from nicegui.elements.mixins.text_element import TextElement
 
-from .native_controls import create_native_button, create_native_checkbox, create_native_input
+from .native_controls import (
+    create_native_button,
+    create_native_checkbox,
+    create_native_input,
+    set_native_checkbox_checked,
+)
 
 
 @dc.dataclass(frozen=True)
@@ -125,9 +130,7 @@ class AttributeFilter:
     def _select(self, selected: T.Collection[str]) -> None:
         self.subset = self.subset.select(selected)
         for option, checkbox in self._option_to_checkbox.items():
-            if (option in self.subset.selected) != checkbox.props["checked"]:
-                checkbox.props["checked"] = option in self.subset.selected
-                checkbox.update()
+            set_native_checkbox_checked(checkbox, option in self.subset.selected)
         self._summary.set_text(f"Attributes: {self.subset.count_label}")
         self._on_change(self.subset)
 

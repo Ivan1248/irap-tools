@@ -4,8 +4,6 @@ import typing as T
 import urllib.parse
 
 SCORES_PATH = "/scores"
-#: Its query parameters are those of `comparison_view.ComparisonView.to_path`.
-COMPARISON_PATH = "/comparison"
 #: Its query parameters are those of `analysis_view.AnalysisView.to_path`.
 ANALYSIS_PATH = "/analysis"
 #: With the query parameter `dataset`.

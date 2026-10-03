@@ -10,16 +10,15 @@ from .native_controls import create_native_input
 from .routes import (
     ACTION_LOG_PATH,
     ANALYSIS_PATH,
-    COMPARISON_PATH,
     ENSEMBLE_PATH,
     SCORES_PATH,
     SUBMISSIONS_PATH,
 )
 
 #: (Title, path) of the pages in the navigation.
-NAVIGATION_PAGES = (("Scores", SCORES_PATH), ("Comparison", COMPARISON_PATH),
-                    ("Analysis", ANALYSIS_PATH), ("Submissions", SUBMISSIONS_PATH),
-                    ("Ensemble", ENSEMBLE_PATH), ("Action log", ACTION_LOG_PATH))
+NAVIGATION_PAGES = (("Scores", SCORES_PATH), ("Analysis", ANALYSIS_PATH),
+                    ("Submissions", SUBMISSIONS_PATH), ("Ensemble", ENSEMBLE_PATH),
+                    ("Action log", ACTION_LOG_PATH))
 
 _STYLES = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
 _SUBMITTER_NAME_KEY = "submitter_name"

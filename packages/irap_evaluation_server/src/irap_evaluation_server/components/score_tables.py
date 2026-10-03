@@ -2,9 +2,11 @@
 
 A value cell shows the value and, below it, its bootstrap interval, or the state of its
 computation. Its background is shaded by how good the value is among the values that it is compared
-with (`method_ranking.compute_highlights`).
+with (`method_ranking.compute_highlights`). With a reference method, the cells of the other methods
+also show their difference from it (`ReferenceComparisons`).
 """
 
+import dataclasses as dc
 import html
 import math
 import typing as T
@@ -89,39 +91,59 @@ def format_optional_metric_value(value: float | None, num_decimals: int) -> str:
     return "–" if value is None else format_metric_value(value, num_decimals)
 
 
-def _make_interval_html(state: ResultState, select_interval: IntervalSelector) -> str:
-    title = ""
+def format_signed_metric_value(value: float, num_decimals: int) -> str:
+    """`format_metric_value` with '+' before a positive value, e.g. of a difference."""
+    return ("+" if value > 0 else "") + format_metric_value(value, num_decimals)
+
+
+def _make_title_attribute(title: str) -> str:
+    return f' title="{html.escape(title)}"' if title else ""
+
+
+def _get_interval_text(state: ResultState, select_interval: IntervalSelector,
+                       is_signed: bool = False) -> tuple[str, str]:
+    """The text of the interval of a cell, or of the state of its computation, and a title that
+    explains it ('' for none).
+
+    Args:
+        is_signed: Whether the bounds have a sign, e.g. those of a difference.
+    """
     if state.cached is not None and state.cached.value is None:
-        text, title = "failed", state.cached.message
-    elif state.cached is not None:
-        interval = select_interval(state.cached.value)
-        if interval is None:
-            text = "–"
-        else:
-            text = (f"{format_metric_value(interval.low, num_decimals=3)}–"
-                    f"{format_metric_value(interval.high, num_decimals=3)}")
-            if interval.is_partially_undefined:
-                text += "*"
-                title = (f"Leaves out {interval.num_undefined} resamples where the value is"
-                         f" undefined.")
-    else:
-        text = "computing…" if state.is_pending else "–"
-    title_attribute = f' title="{html.escape(title)}"' if title else ""
-    return f'<div class="interval"{title_attribute}>{text}</div>'
+        return "failed", state.cached.message
+    if state.cached is None:
+        return "computing…" if state.is_pending else "–", ""
+    interval = select_interval(state.cached.value)
+    if interval is None:
+        return "–", ""
+    format_bound = format_signed_metric_value if is_signed else format_metric_value
+    text = (f"{format_bound(interval.low, num_decimals=3)}–"
+            f"{format_bound(interval.high, num_decimals=3)}")
+    if not interval.is_partially_undefined:
+        return text, ""
+    return text + "*", (f"Leaves out {interval.num_undefined} resamples where the value is"
+                        f" undefined.")
+
+
+def _make_interval_html(state: ResultState, select_interval: IntervalSelector) -> str:
+    text, title = _get_interval_text(state, select_interval)
+    return f'<div class="interval"{_make_title_attribute(title)}>{text}</div>'
 
 
 def make_value_cell_html(value: float | None, state: ResultState,
                          select_interval: IntervalSelector, note: str = "",
-                         highlight: CellHighlight | None = None) -> str:
+                         highlight: CellHighlight | None = None,
+                         difference_html: str = "") -> str:
     """A cell with the value and its interval, or '–' if the value is None.
 
     Args:
         note: Shown instead of the interval, e.g. 'not predicted'.
+        difference_html: Shown below the interval, e.g. the difference from a reference method
+            (`_make_difference_html`).
     """
     if value is None:
         return '<td class="number">–</td>'
     below = (f'<div class="interval">{html.escape(note)}</div>' if note
-             else _make_interval_html(state, select_interval))
+             else _make_interval_html(state, select_interval)) + difference_html
     text = format_metric_value(value, num_decimals=4)
     if highlight is not None and highlight.is_best_or_tied:
         text = f"<b>{text}</b>"
@@ -133,19 +155,113 @@ def make_value_cell_html(value: float | None, state: ResultState,
 
 def _make_compared_cells_html(values: T.Sequence[float | None], states: T.Sequence[ResultState],
                               select_interval: IntervalSelector, is_lower_better: bool,
+                              difference_htmls: T.Sequence[str],
                               notes: T.Sequence[str] | None = None) -> list[str]:
     """The cells of values that are compared with each other, with their intervals.
 
     Args:
         states: The intervals of the row of each value.
+        difference_htmls: The difference of each cell (`make_value_cell_html`).
         notes: The note of each cell (`make_value_cell_html`).
     """
     highlights = compute_highlights(
         values, [_select_cell_interval(s, select_interval) for s in states], is_lower_better)
-    return [make_value_cell_html(v, s, select_interval, note=n, highlight=h)
-            for v, s, n, h in zip(values, states, notes or [""] * len(values), highlights,
-                                  strict=True)]
+    return [make_value_cell_html(v, s, select_interval, note=n, highlight=h, difference_html=d)
+            for v, s, n, h, d in zip(values, states, notes or [""] * len(values), highlights,
+                                     difference_htmls, strict=True)]
 
+
+# Comparisons with a reference method ##############################################################
+
+@dc.dataclass(frozen=True)
+class ReferenceComparisons:
+    """The comparisons of the methods of a table with a reference method
+    (`method_comparison.ComparisonRequest`, with the method as A and the reference as B).
+
+    Attributes:
+        reference: The means over the runs of the reference method, without an error.
+        method_to_state: Method name -> the state of its comparison, for the compared methods.
+    """
+
+    reference: MethodScores
+    method_to_state: T.Mapping[str, ResultState]
+
+
+def make_comparison_note(settings: ScoringSettings, reference_method: str,
+                         rows: T.Iterable[MethodScores]) -> str:
+    """Explains the differences from the reference method (`ReferenceComparisons`).
+
+    Args:
+        rows: The methods of the table, for the note about single runs.
+    """
+    text = (f"Δ: the difference from {reference_method}, with its {settings.confidence:.0%}"
+            f" bootstrap interval over the same resampled road sequences"
+            f" ({settings.num_resamples} resamples), with the variation between the runs of each"
+            f" method. Better or worse: the interval excludes 0. With many methods or attributes,"
+            f" some intervals exclude 0 by chance.")
+    return text + (f" {SINGLE_RUN_NOTE}" if any(_is_single_run(r) for r in rows) else "")
+
+
+def _select_difference_interval(
+        select_difference: ValueSelector[ie.MetricDifference]) -> IntervalSelector:
+    """The interval of the difference that `select_difference` gets from the result of a
+    comparison."""
+    def select(differences: ie.MetricValues[ie.MetricDifference]) -> ie.BootstrapInterval | None:
+        difference = select_difference(differences)
+        return None if difference is None else difference.interval
+    return select
+
+
+def _make_difference_html(difference: float, state: ResultState,
+                          select_difference: ValueSelector[ie.MetricDifference],
+                          metric_name: str) -> str:
+    """The difference of a value from that of the reference method, with its interval, and
+    whether the value is clearly better or worse (`method_comparison.get_better_method`).
+
+    Args:
+        state: The comparison of the method with the reference.
+    """
+    select_interval = _select_difference_interval(select_difference)
+    interval_text, title = _get_interval_text(state, select_interval, is_signed=True)
+    better = get_better_method(_select_cell_interval(state, select_interval), metric_name)
+    verdict = {"A": " <b>better</b>", "B": " <b>worse</b>", None: ""}[better]
+    return (f'<div class="interval"{_make_title_attribute(title)}>'
+            f"Δ {format_signed_metric_value(difference, 4)} ({interval_text}){verdict}</div>")
+
+
+def _make_difference_htmls(rows: T.Sequence[MethodScores],
+                           comparisons: ReferenceComparisons | None,
+                           select_value: ValueSelector, metric_name: str) -> list[str]:
+    """The difference of the value of each row from that of the reference method
+    (`_make_difference_html`), '' for the rows that are not compared or lack the value.
+
+    Args:
+        select_value: Gets the value from the metrics of a row, and the difference from a
+            comparison.
+        metric_name: The metric of the value.
+    """
+    if comparisons is None:
+        return [""] * len(rows)
+    reference_value = select_value(comparisons.reference.metrics)
+
+    def make_html(row: MethodScores) -> str:
+        state = comparisons.method_to_state.get(row.method_name)
+        value = None if row.metrics is None else select_value(row.metrics)
+        if state is None or value is None or reference_value is None:
+            return ""
+        return _make_difference_html(value - reference_value, state, select_value, metric_name)
+
+    return [make_html(r) for r in rows]
+
+
+def _make_method_label(method_name: str, comparisons: ReferenceComparisons | None) -> str:
+    """The method name, marked if it is the reference method."""
+    is_reference = (comparisons is not None
+                    and method_name == comparisons.reference.method_name)
+    return f"{method_name} (reference)" if is_reference else method_name
+
+
+# Tables ###########################################################################################
 
 def _make_runs_html(row: MethodScores, attributes_query: T.Sequence[str]) -> str:
     links = ", ".join(make_submission_link_html(r.submission.id, attributes_query)
@@ -156,8 +272,8 @@ def _make_runs_html(row: MethodScores, attributes_query: T.Sequence[str]) -> str
 def _make_notes_html(row: MethodScores, is_model_compatible_view: bool) -> str:
     notes = []
     if row.missing_attributes:
-        names = html.escape(", ".join(row.missing_attributes))
-        notes.append(f'<span title="{names}">{len(row.missing_attributes)} not predicted</span>')
+        title_attribute = _make_title_attribute(", ".join(row.missing_attributes))
+        notes.append(f"<span{title_attribute}>{len(row.missing_attributes)} not predicted</span>")
     if is_model_compatible_view:
         offsets = ", ".join(map(str, row.runs[0].scores.context_offsets))
         notes.append(f"context offsets {offsets}")
@@ -170,7 +286,7 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
                            method_to_intervals: T.Mapping[str, ResultState],
                            sort_metric: str, attributes_query: T.Sequence[str],
                            is_model_compatible_view: bool,
-                           method_to_comparison_path: T.Mapping[str, str]) -> str:
+                           comparisons: ReferenceComparisons | None = None) -> str:
     """Method rows × the attribute averages of `RANKING_METRIC_NAMES`.
 
     The metric headers have a `data-sort` attribute with the metric name, for a click handler.
@@ -181,8 +297,7 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
             (`AttributeSubset.to_query`).
         is_model_compatible_view: Whether the rows are scored on model-compatible sets, whose
             context offsets are shown.
-        method_to_comparison_path: Method name -> the Comparison page of it and another
-            method, for a link next to its name.
+        comparisons: The comparisons with a reference method, or None.
     """
     metric_headers = "".join(
         f'<th class="sortable{" sorted" if n == sort_metric else ""}" data-sort="{n}"'
@@ -193,7 +308,8 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
     metric_columns = [
         _make_compared_cells_html(
             [None if r.metrics is None else r.metrics.averages.get(n) for r in rows], states,
-            select_average_value(n), ie.is_lower_better(n))
+            select_average_value(n), ie.is_lower_better(n),
+            _make_difference_htmls(rows, comparisons, select_average_value(n), n))
         for n in RANKING_METRIC_NAMES]
     html_rows = []
     for row, metric_cells in zip(rows, zip(*metric_columns)):
@@ -202,10 +318,8 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
                      f"{html.escape(row.error or '')}</td>")
         else:
             cells = "".join(metric_cells)
-        comparison_path = method_to_comparison_path.get(row.method_name)
-        compare_link = ("" if comparison_path is None else
-                        f' <a class="muted" href="{html.escape(comparison_path)}">compare</a>')
-        html_rows.append(f"<tr><td>{html.escape(row.method_name)}{compare_link}</td>"
+        method_label = _make_method_label(row.method_name, comparisons)
+        html_rows.append(f"<tr><td>{html.escape(method_label)}</td>"
                          f"<td>{_make_runs_html(row, attributes_query)}</td>{cells}"
                          f"<td>{_make_notes_html(row, is_model_compatible_view)}</td></tr>")
     footnote = (f'<div class="muted">* {SINGLE_RUN_NOTE}</div>'
@@ -216,21 +330,27 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
 
 def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
                                   method_to_intervals: T.Mapping[str, ResultState],
-                                  metric_name: str, attributes: T.Sequence[str]) -> str:
+                                  metric_name: str, attributes: T.Sequence[str],
+                                  comparisons: ReferenceComparisons | None = None) -> str:
     """Attribute rows × method columns of one per-attribute metric, for the rows without an
-    error, in their order."""
+    error, in their order.
+
+    Args:
+        comparisons: The comparisons with a reference method, or None.
+    """
     rows = [r for r in rows if r.metrics is not None]
     states = [method_to_intervals.get(r.method_name, ResultState()) for r in rows]
     is_lower_better = ie.is_lower_better(metric_name)
     html_rows = []
     for attribute in attributes:
+        select_value = select_attribute_value(metric_name, attribute)
         cells = _make_compared_cells_html(
-            [r.metrics.per_attribute.get(metric_name, {}).get(attribute) for r in rows], states,
-            select_attribute_value(metric_name, attribute), is_lower_better,
+            [select_value(r.metrics) for r in rows], states, select_value, is_lower_better,
+            _make_difference_htmls(rows, comparisons, select_value, metric_name),
             notes=["not predicted" if attribute in r.missing_attributes else "" for r in rows])
         html_rows.append(f"<tr><td>{html.escape(attribute)}</td>{''.join(cells)}</tr>")
-    return (make_table_html(["Attribute", *(r.method_name for r in rows)], html_rows,
-                            fits_content=True)
+    method_labels = [_make_method_label(r.method_name, comparisons) for r in rows]
+    return (make_table_html(["Attribute", *method_labels], html_rows, fits_content=True)
             + _make_highlight_note_html("the other methods in its row", has_best_or_tied=True))
 
 
@@ -270,64 +390,3 @@ def make_run_scores_html(scores: MethodScores, state: ResultState) -> str:
             f'{make_table_html(["Average", "Value"], average_rows, fits_content=True)}'
             f"{make_table_html(attribute_header, attribute_rows, fits_content=True)}</div>"
             f"{_make_highlight_note_html('the other attributes', has_best_or_tied=False)}")
-
-
-# Comparisons ######################################################################################
-
-def make_comparison_note(settings: ScoringSettings, has_single_run: bool) -> str:
-    """Explains the intervals of the differences (`method_comparison.ComparisonRequest`)."""
-    text = (f"Below each difference: its {settings.confidence:.0%} bootstrap interval over the"
-            f" same resampled road sequences ({settings.num_resamples} resamples), with the"
-            f" variation between the runs of each method. A method is clearly better if the"
-            f" interval excludes 0.")
-    return text + (f" {SINGLE_RUN_NOTE}" if has_single_run else "")
-
-
-def _select_difference_interval(
-        select_difference: ValueSelector[ie.MetricDifference]) -> IntervalSelector:
-    """The interval of the difference that `select_difference` gets from the result of a
-    comparison."""
-    def select(differences: ie.MetricValues[ie.MetricDifference]) -> ie.BootstrapInterval | None:
-        difference = select_difference(differences)
-        return None if difference is None else difference.interval
-    return select
-
-
-def make_comparison_table_html(scores_a: MethodScores, scores_b: MethodScores,
-                               state: ResultState, metric_name: str = "",
-                               attributes: T.Sequence[str] = ()) -> str:
-    """The metrics of methods A and B, and their difference with its interval, in rows of the
-    attribute averages that both have, or of the attributes for one per-attribute metric.
-
-    Args:
-        scores_a: The means over the runs of A, without an error.
-        scores_b: The same of B.
-        state: The result of their comparison (`method_comparison.ComparisonRequest`).
-        metric_name: The per-attribute metric, or '' for the attribute averages.
-        attributes: The attributes of the rows of a per-attribute metric.
-    """
-    metrics_a, metrics_b = scores_a.metrics, scores_b.metrics
-    if metric_name:
-        values_a = metrics_a.per_attribute.get(metric_name, {})
-        values_b = metrics_b.per_attribute.get(metric_name, {})
-        keys = list(attributes)
-    else:
-        values_a, values_b = metrics_a.averages, metrics_b.averages
-        keys = [n for n in RANKING_METRIC_NAMES if n in values_a and n in values_b]
-    rows = []
-    for key in keys:
-        value_a, value_b = values_a.get(key), values_b.get(key)
-        difference = None if value_a is None or value_b is None else value_a - value_b
-        selector = _select_difference_interval(
-            select_attribute_value(metric_name, key) if metric_name
-            else select_average_value(key))
-        better = get_better_method(_select_cell_interval(state, selector), metric_name or key)
-        verdict = "" if better is None else f"{better} better"
-        rows.append(f"<tr><td>{html.escape(key)}</td>"
-                    f'<td class="number">{format_optional_metric_value(value_a, 4)}</td>'
-                    f'<td class="number">{format_optional_metric_value(value_b, 4)}</td>'
-                    f"{make_value_cell_html(difference, state, selector)}"
-                    f"<td><b>{verdict}</b></td></tr>")
-    header = ["Attribute" if metric_name else "Metric", f"A: {scores_a.method_name}",
-              f"B: {scores_b.method_name}", "A − B", "Clearly better"]
-    return make_table_html(header, rows, fits_content=True)

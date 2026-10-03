@@ -86,6 +86,14 @@ def create_native_checkbox(label: str, value: bool,
     return element
 
 
+def set_native_checkbox_checked(checkbox: ui.element, is_checked: bool) -> None:
+    """Checks or unchecks a checkbox of `create_native_checkbox` from code, without its
+    `on_change`."""
+    if checkbox.props["checked"] != is_checked:
+        checkbox.props["checked"] = is_checked
+        checkbox.update()
+
+
 def create_native_button(text: str, on_click: T.Callable[[], T.Any]) -> ui.element:
     button = TextElement(tag="button", text=text).classes("native-control")
     button.props["type"] = "button"

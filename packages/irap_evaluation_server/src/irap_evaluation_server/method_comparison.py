@@ -89,36 +89,6 @@ def list_comparable_methods(rows: T.Iterable[MethodScores]) -> list[MethodScores
     return [r for r in rows if r.error is None]
 
 
-def get_default_partner(method_names: T.Sequence[str], method_name: str) -> str | None:
-    """The method that `method_name` is compared with by default: the first other one, e.g. the
-    best one of a method table. None if there is no other."""
-    return next((n for n in method_names if n != method_name), None)
-
-
-def select_method_pair(rows: T.Sequence[MethodScores], method_a: str,
-                       method_b: str) -> tuple[MethodScores, MethodScores]:
-    """The methods A and B of a comparison.
-
-    Args:
-        rows: The methods that can be compared (`list_comparable_methods`), best first.
-        method_a: '' for the first method.
-        method_b: '' for the default partner of A (`get_default_partner`).
-
-    Raises:
-        ValueError: If a method is not among `rows`, or A and B are the same.
-    """
-    name_to_row = {r.method_name: r for r in rows}
-    names = list(name_to_row)
-    method_a = method_a or next(iter(names), "")
-    method_b = method_b or get_default_partner(names, method_a) or ""
-    if unknown := [n for n in (method_a, method_b) if n not in name_to_row]:
-        raise ValueError(f"These methods cannot be compared on this split, since they have no"
-                         f" scores or their runs cannot be combined: {', '.join(unknown)}.")
-    if method_a == method_b:
-        raise ValueError("Choose two different methods.")
-    return name_to_row[method_a], name_to_row[method_b]
-
-
 def get_better_method(interval: ie.BootstrapInterval | None,
                       metric_name: str) -> T.Literal["A", "B"] | None:
     """Which method is clearly better by the interval of a difference A − B: the one that it

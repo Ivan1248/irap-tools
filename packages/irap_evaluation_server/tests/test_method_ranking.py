@@ -9,22 +9,20 @@ from irap_evaluation.metrics import IRAP_ATTRIBUTE_METRIC_NAMES
 from irap_evaluation_server.archive import Submission
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
 from irap_evaluation_server.components.score_tables import (
-    make_comparison_table_html,
+    ReferenceComparisons,
     make_method_table_html,
     make_per_attribute_table_html,
     make_run_scores_html,
 )
-from irap_evaluation_server.method_comparison import (
-    get_default_partner,
-    list_comparable_methods,
-    select_method_pair,
-)
+from irap_evaluation_server.components.view_queries import compile_name_pattern
+from irap_evaluation_server.method_comparison import list_comparable_methods
 from irap_evaluation_server.method_ranking import (
     CellHighlight,
     compute_highlights,
     get_unscored_reason,
     rank_methods,
     select_run_metrics,
+    select_shown_methods,
     sort_method_scores,
     sort_scored_runs,
 )
@@ -98,9 +96,10 @@ def test_sort_scored_runs_by_the_average_over_a_subset():
     assert [r.submission.id for r in sort_scored_runs(runs, "amF1", ["x", "y"])] == [1, 2, 3]
 
 
-def test_comparison_table_html():
-    a = make_method_scores("<a>", {"amF1": 0.6, "aNLL": 1.0, "amP": 0.5})
+def test_method_table_differences_from_a_reference():
+    a = make_method_scores("a", {"amF1": 0.6, "aNLL": 1.0, "amP": 0.5})
     b = make_method_scores("b", {"amF1": 0.5, "aNLL": 0.8, "amP": 0.5})
+    c = make_method_scores("c", {"amF1": 0.4, "aNLL": 0.9, "amP": 0.4})
 
     def difference(value, low, high, num_undefined=0):
         return ie.MetricDifference(value, ie.BootstrapInterval(low, high, num_undefined))
@@ -109,32 +108,41 @@ def test_comparison_table_html():
         "amF1": difference(0.1, 0.05, 0.15), "aNLL": difference(0.2, 0.1, 0.3),
         "amP": difference(0.0, -0.1, 0.1, num_undefined=3)}, per_attribute={})
     state = ResultState(cached=CachedResult(value=differences, message="", computed_at=_TIME))
-    table = make_comparison_table_html(a, b, state)
-    rows = table.split("<tr>")[2:]
-    assert [r.split("</td>")[0] for r in rows] == ["<td>amF1", "<td>amP", "<td>aNLL"]
-    assert "<b>A better</b>" in rows[0]  # Higher amF1 is better.
-    assert "<b></b>" in rows[1] and ".100*" in rows[1]  # The interval includes 0.
-    assert "<b>B better</b>" in rows[2]  # Higher aNLL is worse.
-    assert "A: &lt;a&gt;" in table
-    pending = make_comparison_table_html(a, b, ResultState(is_pending=True))
-    assert "computing…" in pending and "better</b>" not in pending
+    comparisons = ReferenceComparisons(b, {"a": state, "c": ResultState(is_pending=True)})
+    table = make_method_table_html([a, b, c], {}, "amF1", [], is_model_compatible_view=False,
+                                   comparisons=comparisons)
+    row_a, row_b, row_c = table.split("<tr>")[2:]
+    cells = row_a.split("<td")
+    amf1, amp, anll = (next(c for c in cells if f">{v}" in c) for v in (".6000", ".5000",
+                                                                         "1.0000"))
+    assert "Δ +.1000 (+.050–+.150) <b>better</b>" in amf1  # Higher amF1 is better.
+    assert "Δ .0000 (-.100–+.100*)</div>" in amp  # The interval includes 0.
+    assert "Δ +.2000 (+.100–+.300) <b>worse</b>" in anll  # Higher aNLL is worse.
+    assert "b (reference)" in row_b and "Δ" not in row_b
+    assert "Δ -.1000 (computing…)</div>" in row_c
 
 
-def test_select_method_pair():
+def test_list_comparable_methods():
     rows = [make_method_scores("a", {"amF1": 0.6}), make_method_scores("x", {}, error="differ"),
-            make_method_scores("b", {"amF1": 0.5}), make_method_scores("c", {"amF1": 0.4})]
-    comparable = list_comparable_methods(rows)
-    assert [r.method_name for r in comparable] == ["a", "b", "c"]
-    names = ["a", "b", "c"]
-    assert [get_default_partner(names, n) for n in names] == ["b", "a", "a"]
-    assert get_default_partner(["a"], "a") is None
-    pair = select_method_pair(comparable, "", "")
-    assert [r.method_name for r in pair] == ["a", "b"]
-    assert [r.method_name for r in select_method_pair(comparable, "c", "")] == ["c", "a"]
-    with pytest.raises(ValueError, match="cannot be compared.*x"):
-        select_method_pair(comparable, "a", "x")
-    with pytest.raises(ValueError, match="two different"):
-        select_method_pair(comparable, "b", "b")
+            make_method_scores("b", {"amF1": 0.5})]
+    assert [r.method_name for r in list_comparable_methods(rows)] == ["a", "b"]
+
+
+def test_select_shown_methods():
+    rows = [make_method_scores("a-1", {"amF1": 0.6}),
+            make_method_scores("x", {}, error="differ"), make_method_scores("B-2", {"amF1": 0.5})]
+
+    def select(text, reference_method=""):
+        shown = select_shown_methods(rows, compile_name_pattern(text), reference_method)
+        return [r.method_name for r in shown]
+
+    assert select("") == ["a-1", "x", "B-2"]
+    assert select("b") == ["B-2"]  # A part of the name, case-insensitive.
+    assert select(r"^(a|b)-\d$") == ["a-1", "B-2"]
+    assert select("^x$", reference_method="B-2") == ["x", "B-2"]  # The reference, unmatched.
+    assert select("nothing") == []
+    with pytest.raises(ValueError, match="Invalid regular expression"):
+        compile_name_pattern("a(")
 
 
 def test_get_unscored_reason():
@@ -208,10 +216,8 @@ def test_method_table_html():
         value=ie.MetricValues(averages={"amF1": interval}, per_attribute={}),
         message="", computed_at=_TIME)
     table = make_method_table_html(rows, {"<m>": ResultState(cached=cached)}, "amF1",
-                                   ["x"], is_model_compatible_view=False,
-                                   method_to_comparison_path={"<m>": "/comparison?a=<m>"})
+                                   ["x"], is_model_compatible_view=False)
     assert "&lt;m&gt;" in table and "<m>" not in table
-    assert '<a class="muted" href="/comparison?a=&lt;m&gt;">compare</a>' in table
     assert '<td colspan="12" class="error">Runs &lt;differ&gt;.</td>' in table
     assert '<th class="sortable sorted" data-sort="amF1"' in table
     assert '<a href="/submissions/1?attribute=x">#1</a>' in table

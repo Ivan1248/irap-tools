@@ -64,6 +64,8 @@ a:hover { text-decoration: underline; }
 .ensemble-members { display: grid; grid-template-columns: max-content max-content 1fr;
                     align-items: center; gap: 4px 12px; }
 .ensemble-members input[type=number] { width: 6em; }
+/* A member's cells are cells of the grid. The member is hidden with Quasar's `hidden` class. */
+.ensemble-member { display: contents; }
 
 /* The analysis page (`create_page_frame(..., fills_window=True)`). */
 .page-content.fills-window { flex: 1; min-height: 0; max-width: none; padding: 0; gap: 0; }

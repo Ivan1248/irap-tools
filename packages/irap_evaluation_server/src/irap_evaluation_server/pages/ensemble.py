@@ -14,11 +14,12 @@ from ..components.native_controls import (
     create_native_checkbox,
     create_native_input,
     create_native_select,
+    set_native_checkbox_checked,
     set_status,
 )
 from ..components.page_frame import create_page_frame, get_submitter_name
 from ..components.routes import ENSEMBLE_PATH, make_query_path
-from ..components.view_queries import parse_dataset
+from ..components.view_queries import compile_name_pattern, parse_dataset
 from ..datasets import DatasetContext
 from ..ensembles import (
     EnsembleMember,
@@ -82,6 +83,10 @@ def _create_ensemble_form(archive: SubmissionArchive,
     runs = list_member_runs(submissions, dataset, context.split_names)
     is_selected: dict[str, bool] = {}
     weight_texts: dict[str, str] = {}
+    # The member filter: by run label.
+    member_pattern = compile_name_pattern("")
+    label_to_checkbox: dict[str, ui.element] = {}
+    label_to_container: dict[str, ui.element] = {}
     form = {"name": "", "seed": "", "description": "", "intersect_segments": False}
 
     def get_plan(submissions: T.Sequence[Submission]) -> EnsemblePlan:
@@ -101,6 +106,31 @@ def _create_ensemble_form(archive: SubmissionArchive,
 
     def set_member(label: str, is_checked: bool) -> None:
         is_selected[label] = is_checked
+        update_plan()
+
+    def show_members() -> None:
+        """Shows the members that match the filter, and the selected ones, so that every member
+        of the plan is visible."""
+        for label, container in label_to_container.items():
+            container.set_visibility(is_selected.get(label, False)
+                                     or bool(member_pattern.search(label)))
+
+    def on_filter_changed(text: str) -> None:
+        nonlocal member_pattern
+        try:
+            member_pattern = compile_name_pattern(text)
+        except ValueError as e:
+            set_status(filter_status, str(e), is_error=True)
+            return
+        filter_status.set_text("")
+        show_members()
+
+    def select_shown_members(is_checked: bool) -> None:
+        for label, container in label_to_container.items():
+            if container.visible:
+                is_selected[label] = is_checked
+                set_native_checkbox_checked(label_to_checkbox[label], is_checked)
+        show_members()
         update_plan()
 
     def set_weight(label: str, text: str) -> None:
@@ -155,14 +185,22 @@ def _create_ensemble_form(archive: SubmissionArchive,
             ui.label("The dataset has no submissions.").classes("muted")
             return
         ui.label("Members").classes("subsection-title")
+        with ui.element("div").classes("form-row items-center"):
+            create_native_input("Filter (regular expression)", "", on_filter_changed,
+                                placeholder="all", size=24)
+            create_native_button("Select shown", lambda: select_shown_members(True))
+            create_native_button("Unselect shown", lambda: select_shown_members(False))
+            filter_status = ui.label().classes("muted")
         with ui.element("div").classes("ensemble-members"):
             for member_run in runs:
                 label = member_run.method.run_label
-                create_native_checkbox(label, False,
-                                       lambda is_checked, lb=label: set_member(lb, is_checked))
-                create_native_input("", "1", lambda text, lb=label: set_weight(lb, text),
-                                    input_type="number", size=6)
-                ui.label(", ".join(member_run.splits)).classes("muted")
+                with ui.element("div").classes("ensemble-member") as container:
+                    label_to_checkbox[label] = create_native_checkbox(
+                        label, False, lambda is_checked, lb=label: set_member(lb, is_checked))
+                    create_native_input("", "1", lambda text, lb=label: set_weight(lb, text),
+                                        input_type="number", size=6)
+                    ui.label(", ".join(member_run.splits)).classes("muted")
+                label_to_container[label] = container
         plan_label = ui.label("Select at least 2 members.").classes("muted")
         with ui.element("div").classes("form-row"):
             create_native_input("Method name", "", lambda v: form.update(name=v), size=24)

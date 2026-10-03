@@ -1,5 +1,6 @@
-"""The query parameters that several pages share."""
+"""The view settings that several pages share, mostly query parameters."""
 
+import re
 import typing as T
 
 import irap_evaluation as ie
@@ -70,3 +71,16 @@ def parse_per_attribute_metric(query: T.Mapping[str, str]) -> str:
         raise ValueError(f"Unknown per-attribute metric {metric_name!r}. Metrics:"
                          f" {', '.join(PER_ATTRIBUTE_METRIC_NAMES)}.")
     return metric_name
+
+
+def compile_name_pattern(text: str) -> re.Pattern[str]:
+    """The case-insensitive regular expression of a name filter, e.g. of the methods. Use it with
+    `re.Pattern.search`, so that a part of a name matches, and '' matches all names.
+
+    Raises:
+        ValueError: If `text` is not a valid regular expression.
+    """
+    try:
+        return re.compile(text, re.IGNORECASE)
+    except re.error as e:
+        raise ValueError(f"Invalid regular expression {text!r}: {e}.") from None

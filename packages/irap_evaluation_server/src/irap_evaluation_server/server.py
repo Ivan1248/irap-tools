@@ -41,7 +41,6 @@ def main(argv: list[str] | None = None) -> None:
     from .components.routes import VENDOR_PATH
     from .pages.action_log import register_action_log_page
     from .pages.analysis import register_analysis_page
-    from .pages.comparison import register_comparison_page
     from .pages.ensemble import register_ensemble_page
     from .pages.scores import register_scores_page
     from .pages.submission import register_submission_page
@@ -68,7 +67,6 @@ def main(argv: list[str] | None = None) -> None:
     app.on_shutdown(scoring_worker.stop)
 
     register_scores_page(dataset_contexts, scoring_worker)
-    register_comparison_page(dataset_contexts, scoring_worker)
     register_analysis_page(dataset_contexts, scoring_worker,
                            AlignedRunCache(archive, scoring_worker.settings), map_error)
     register_submission_pages(archive, dataset_contexts, scoring_worker.update_submissions)

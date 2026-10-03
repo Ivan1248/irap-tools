@@ -3,8 +3,7 @@
 An internal web app for saved iRAP model predictions, built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/):
 
 - an archive of submissions (prediction files) with an action log,
-- scores and the method table,
-- the comparison of two methods, with intervals of the differences,
+- scores and the method table, with the differences from a reference method and their intervals,
 - the analysis of the predictions of a run: confusion matrices, a map, and the details of segments,
 - ensembles of stored runs, and the export of a submission as an iRAP coding table.
 
@@ -67,15 +66,13 @@ Cached values are out of date when the scoring settings, the evaluation sets (e.
 
 The Scores page (`/scores`, also the start page) ranks the methods of a dataset split by an attribute average, with the means over the runs of each method and their bootstrap intervals. A click on a metric header sorts by it, best first. The View select shows one per-attribute metric instead, with attribute rows and method columns. The cells are shaded by their value relative to the other methods in the column (in the row for a per-attribute metric), darkest for the best. The best value is bold, and so are the values whose interval overlaps its interval, a rough sign that they are not clearly worse. Submissions that are being scored, or whose scoring failed, are listed below the table with the reason. Deleted submissions are left out.
 
+The Methods field filters the methods by a regular expression, case-insensitive and matching any part of the name: `foo` shows the methods whose name contains "foo", and `^(foo|bar)$` exactly these two. The shading and the bold values compare the shown methods.
+
+On the reference set, "Compare with" chooses a reference method, which is shown even if the filter does not match it. The cells of the other shown methods then have a third line: the difference from the reference (Δ), its bootstrap interval, and "better" or "worse" if the interval excludes 0. The differences come from `irap_evaluation.compare_methods`, as `irap-eval compare` computes them. The interval resamples the road sequences once for both methods, so it is usually narrower than the separate intervals suggest, and it includes the variation between the runs of each method. With many methods or attributes, some intervals exclude 0 by chance, so the differences of single attributes are exploratory. Like intervals, a comparison needs the per-sequence statistics, so the background thread computes it from the files (one scoring per run of both methods), row by row, and caches it.
+
 The page of a submission shows its scores on each evaluation set: the attribute averages, and the iRAP metrics and the invalid cells of each attribute, with the metrics shaded relative to the other attributes. A link downloads the `irap-eval evaluate` JSON document over all attributes, without intervals (`/api/submissions/<id>/scores/<set>.json`).
 
 The attribute filter of both pages chooses the attributes that the averages cover. The URL keeps the subset in repeated `attribute` parameters, so a filtered view can be shared as a link. Values change at once. Intervals over a subset are computed from the files a second after the last change of the filter, which takes about 0.4 s per run on Vietnam val and 1–2 s on train, and are cached.
-
-## Comparison page
-
-The Comparison page (`/comparison`) compares two methods of a dataset split on its reference set with `irap_evaluation.compare_methods`, as `irap-eval compare` does. For each attribute average (or for each attribute, with one per-attribute metric), it shows the means over the runs of A and B, the difference A − B, and its bootstrap interval. The interval resamples the road sequences once for both methods, and includes the variation between the runs of each method. A method is marked "clearly better" if the interval excludes 0. Differences of single attributes are exploratory. The Scores page links each method to its comparison with the best one.
-
-Like intervals, the comparison needs the per-sequence statistics, so the background thread computes it from the files when the page asks for it (one scoring per run, as for intervals) and caches it. The attribute filter chooses the attributes, as on the Scores page.
 
 ## Analysis page
 
@@ -90,7 +87,7 @@ The runs are ordered by amF1 over the attribute subset of the filter, which also
 
 ## Ensembles
 
-The Ensemble page (`/ensemble`) creates the ensemble of stored runs with `irap_evaluation.ensemble_predictions`, as `irap-eval ensemble` does: the weighted mean of their distributions, where a hard prediction counts as a one-hot distribution. The members are runs (a method name and seed) of a dataset, each with a weight. One ensemble is stored for each split where every member has a submission, all or none, as a new run with the given method name and seed. Each is checked like an upload, and the action log records its members and weights (action `ensemble`). The ensembles are scored like uploads.
+The Ensemble page (`/ensemble`) creates the ensemble of stored runs with `irap_evaluation.ensemble_predictions`, as `irap-eval ensemble` does: the weighted mean of their distributions, where a hard prediction counts as a one-hot distribution. The members are runs (a method name and seed) of a dataset, each with a weight. A regular expression filters the listed runs by run label, as the Methods field of the Scores page does, and "Select shown" selects the listed ones. Selected runs stay listed, so that every member is visible. One ensemble is stored for each split where every member has a submission, all or none, as a new run with the given method name and seed. Each is checked like an upload, and the action log records its members and weights (action `ensemble`). The ensembles are scored like uploads.
 
 Members with different context offsets predict different segments. The option "Only the segments that every member predicts" keeps their common segments.
 
@@ -109,7 +106,7 @@ irap_evaluation_server/
 ├─ scoring.py       Scoring settings, the score cache, means over runs and intervals
 ├─ scoring_worker.py  The background thread that scores and computes requested results
 ├─ method_ranking.py  The rows of the method table and their order
-├─ method_comparison.py  Comparisons of two methods (cached requests of the background thread)
+├─ method_comparison.py  Comparisons with a reference method (cached requests of the background thread)
 ├─ prediction_analysis.py  Outcomes of segments, confusion matrices, segment details
 ├─ map_libraries.py   The download of the map libraries
 ├─ ensembles.py     Ensembles of stored runs

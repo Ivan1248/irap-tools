@@ -3,6 +3,7 @@ subset of the attributes (see `scoring` for the scores), and the highlights of c
 
 import dataclasses as dc
 import math
+import re
 import typing as T
 
 import irap_evaluation as ie
@@ -134,6 +135,13 @@ def rank_methods(runs: T.Iterable[ScoredRun], attributes: T.Sequence[str],
         [compute_method_scores(name, method_runs, attributes)
          for name, method_runs in group_scored_runs_by_method(runs).items()],
         sort_metric)
+
+
+def select_shown_methods(rows: T.Iterable[MethodScores], pattern: re.Pattern[str],
+                         reference_method: str = "") -> list[MethodScores]:
+    """The rows whose method name matches `pattern` (`re.Pattern.search`), and the row of
+    `reference_method`, which the others are compared with, in their order."""
+    return [r for r in rows if pattern.search(r.method_name) or r.method_name == reference_method]
 
 
 def get_unscored_reason(submission: Submission, scoring: RunScoring | None, is_current: bool,
