@@ -1,6 +1,6 @@
 # Evaluation definitions
 
-This document defines what `irap_evaluation` computes when it scores a prediction file ([format](prediction_format.md)), and ends with how to [interpret the results](#interpreting-results). The definitions match the training-time evaluation of `vidlu_irap_gaim` (`get_irap_metrics`): on its model set, a model gets the scores reported during training, up to float32 rounding (`tests/test_vidlu_parity.py`).
+This document defines what `irap_evaluation` computes when it scores a prediction file ([format](prediction_format.md)), and ends with how to [interpret the results](#interpreting-results). The definitions match the training-time evaluation of `vidlu_irap_gaim` (`get_irap_metrics`): on its model-compatible set, a model gets the scores reported during training, up to float32 rounding (`tests/test_vidlu_parity.py`).
 
 Scoring a file on an evaluation set (`evaluate_predictions`) has these steps:
 
@@ -30,13 +30,13 @@ For context offsets $o_1, \ldots, o_m$, the evaluation set of a split holds its 
 A file is scored on up to two sets:
 
 - **Reference set**: offsets −4 … 0 for Vietnam and −10 … 10 for BH (`DATASET_PRESETS`). It is the same for every model, so its scores are comparable across models.
-- **Model set**: the model's own offsets, from the file header or `--context-offsets`. This is the set of the training-time evaluation. If the offsets lie within the reference window, the model set contains the reference set.
+- **Model-compatible set**: the model's own offsets, from the file header or `--context-offsets`. This is the set of the training-time evaluation. If the offsets lie within the reference window, the model-compatible set contains the reference set.
 
 `select_evaluation_sets` (used by `irap-eval evaluate`) selects the sets as follows:
 
-- A file that lacks segments of its model set is incomplete or of another metadata build, and is refused.
-- A model whose offsets reach beyond the reference window lacks some reference segments. It is scored only on its model set, with a note, or refused if its offsets are unknown.
-- If the two sets are equal, the model set is left out.
+- A file that lacks segments of its model-compatible set is incomplete or of another metadata build, and is refused.
+- A model whose offsets reach beyond the reference window lacks some reference segments. It is scored only on its model-compatible set, with a note, or refused if its offsets are unknown.
+- If the two sets are equal, the model-compatible set is left out.
 - A set without labels, e.g. of an unlabeled split, is left out with a note. The file must still cover its segments as above.
 
 ## Attributes

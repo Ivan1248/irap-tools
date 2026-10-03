@@ -87,6 +87,14 @@ def select_evaluated_attributes(
     return filter_labeled_attrs(attributes, evaluation_set.attr_to_num_labeled)
 
 
+def get_default_metric_names(output_kind: OutputKind) -> tuple[str, ...]:
+    """The metrics that `evaluate_predictions` computes by default: the iRAP protocol
+    (`metrics.get_irap_metric_names`) for the output kind, with the per-attribute value of each
+    average (`metrics.add_per_attribute_metric_names`), so that
+    `metrics.select_metric_attributes` can average the metrics over a subset of the attributes."""
+    return add_per_attribute_metric_names(get_irap_metric_names(output_kind=output_kind))
+
+
 @dc.dataclass(frozen=True)
 class EvaluationResult:
     """Scores of one set of predictions on one evaluation set.
@@ -178,10 +186,8 @@ def evaluate_predictions(
             defaults.
         null_policy: See `NullPolicy`.
         missing_attribute_policy: See `MissingAttributePolicy`.
-        metric_names: None means the iRAP protocol (`metrics.get_irap_metric_names`) for the
-            output kind of the predictions, with the per-attribute value of each average
-            (`metrics.add_per_attribute_metric_names`), so that `metrics.select_metric_attributes`
-            can average the metrics over a subset of the attributes.
+        metric_names: None means `get_default_metric_names` of the output kind of the
+            predictions.
 
     Raises:
         ValueError: For probabilistic metrics of hard predictions, per-class metric names,
@@ -204,8 +210,7 @@ def evaluate_predictions(
         raise ValueError(f"missing_attribute_policy must be one of {MISSING_ATTRIBUTE_POLICIES},"
                          f" got {missing_attribute_policy!r}.")
     if metric_names is None:
-        metric_names = add_per_attribute_metric_names(
-            get_irap_metric_names(output_kind=predictions.output_kind))
+        metric_names = get_default_metric_names(predictions.output_kind)
     if per_class := [n for n in metric_names if is_per_class_metric(n)]:
         raise ValueError(f"Per-class metrics {per_class} are not kept in results. Use"
                          f" compute_class_metrics(result).")

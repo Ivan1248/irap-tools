@@ -1,10 +1,12 @@
 """Evaluation sets: the segments of a split that predictions are scored on, with their labels.
 
-`docs/evaluation.md` defines the reference set and the model set.
+`docs/evaluation.md` defines the reference set and the model-compatible set.
 """
 
 import dataclasses as dc
 import functools
+import hashlib
+import json
 import typing as T
 
 import numpy as np
@@ -18,6 +20,9 @@ from irap_data.metadata import (
     select_preset_split_segments,
 )
 
+REFERENCE_SET_NAME = "reference"
+MODEL_COMPATIBLE_SET_NAME = "model"
+
 
 @dc.dataclass(frozen=True)
 class EvaluationSet:
@@ -26,8 +31,8 @@ class EvaluationSet:
     Attributes:
         dataset: The iRAP release, a key of `irap_data.DATASET_PRESETS`.
         split: The split, e.g. 'val'.
-        name: Identifies the set in reports, e.g. 'reference' (`get_reference_set`) or 'model'
-            for a model set.
+        name: Identifies the set in reports, e.g. `REFERENCE_SET_NAME` (`get_reference_set`) or
+            `MODEL_COMPATIBLE_SET_NAME` (`get_model_compatible_set`).
         context_offsets: The context offsets that selected the segments, also of a subset
             (see `select_evaluation_subset`).
         vocabulary: The attributes and classes of the dataset.
@@ -66,14 +71,32 @@ class EvaluationSet:
     def attr_to_num_labeled(self) -> dict[str, int]:
         return {a: int((v != IGNORE_LABEL_INDEX).sum()) for a, v in self.class_indices.items()}
 
+    @functools.cached_property
+    def fingerprint(self) -> str:
+        """A SHA-256 of everything that scores on the set depend on: its segments, their labels
+        and road sequences, and the classes. It changes e.g. with a new build of the metadata,
+        so it tells whether stored scores are of this set."""
+        digest = hashlib.sha256()
+        description = {
+            "dataset": self.dataset, "split": self.split, "name": self.name,
+            "context_offsets": self.context_offsets, "segment_ids": self.segment_ids,
+            "segment_sequence_ids": self.segment_sequence_ids,
+            "attribute_to_irap_codes": self.vocabulary.attribute_to_irap_codes,
+            "attributes": list(self.class_indices)}
+        digest.update(json.dumps(description).encode())
+        for class_indices in self.class_indices.values():
+            digest.update(class_indices.astype("<i8").tobytes())
+        return digest.hexdigest()
+
 
 def get_evaluation_set(metadata: IRAPMetadata, dataset: str, split: str,
                        context_offsets: T.Sequence[int], name: str) -> EvaluationSet:
     """The evaluation set that `context_offsets` select in a split.
 
     It has the segments with a complete context window for `context_offsets`, selected with
-    `irap_data.select_preset_split_segments`. The offsets of a model give its model set, and
-    (0,) selects every segment of the split that has an image and labels.
+    `irap_data.select_preset_split_segments`. The offsets of a model give its model-compatible
+    set (`get_model_compatible_set`), and (0,) selects every segment of the split that has an
+    image and labels.
 
     Args:
         name: See `EvaluationSet.name`.
@@ -92,13 +115,22 @@ def get_evaluation_set(metadata: IRAPMetadata, dataset: str, split: str,
 
 
 def get_reference_set(metadata: IRAPMetadata, dataset: str, split: str) -> EvaluationSet:
-    """The reference set of a split, named 'reference', the same for every model.
+    """The reference set of a split, named `REFERENCE_SET_NAME`, the same for every model.
 
     It is the evaluation set of the reference offsets of the release
     (`irap_data.DatasetPreset.reference_context_offsets`).
     """
     return get_evaluation_set(metadata, dataset, split,
-                              get_dataset_preset(dataset).reference_context_offsets, "reference")
+                              get_dataset_preset(dataset).reference_context_offsets,
+                              REFERENCE_SET_NAME)
+
+
+def get_model_compatible_set(metadata: IRAPMetadata, dataset: str, split: str,
+                             context_offsets: T.Sequence[int]) -> EvaluationSet:
+    """The model-compatible set of a split for a model's context offsets, named
+    `MODEL_COMPATIBLE_SET_NAME`."""
+    return get_evaluation_set(metadata, dataset, split, context_offsets,
+                              MODEL_COMPATIBLE_SET_NAME)
 
 
 def select_evaluation_subset(evaluation_set: EvaluationSet, is_selected: np.ndarray,
@@ -131,10 +163,11 @@ def select_evaluation_subset(evaluation_set: EvaluationSet, is_selected: np.ndar
 def select_evaluation_sets(
     predicted_segment_ids: T.Collection[str],
     reference_set: EvaluationSet,
-    model_set: EvaluationSet | None,
+    model_compatible_set: EvaluationSet | None,
 ) -> tuple[list[EvaluationSet], list[str]]:
     """The evaluation sets to score a model on: the reference set, if the model predicts all its
-    segments, and the model set, if it is known and has other segments than the reference set.
+    segments, and the model-compatible set, if it is known and has other segments than the
+    reference set.
 
     A set without labels, e.g. of an unlabeled split (`irap_data.is_unlabeled_split`), is left
     out, but the predictions must still cover its segments as above.
@@ -142,30 +175,32 @@ def select_evaluation_sets(
     Args:
         predicted_segment_ids: The segments that the model predicts.
         reference_set: See `get_reference_set`.
-        model_set: The evaluation set of the model's context offsets (see
-            `get_evaluation_set`), or None if they are unknown.
+        model_compatible_set: See `get_model_compatible_set`. None if the model's context
+            offsets are unknown.
 
     Returns:
         The evaluation sets, and notes on why a set is left out.
 
     Raises:
-        ValueError: If segments of `model_set` have no prediction, or reference segments have
-            none and `model_set` is None.
+        ValueError: If segments of `model_compatible_set` have no prediction, or reference
+            segments have none and `model_compatible_set` is None.
     """
     predicted = set(predicted_segment_ids)
 
     def count_missing(evaluation_set: EvaluationSet) -> int:
         return sum(sid not in predicted for sid in evaluation_set.segment_ids)
 
-    if model_set is not None and (num_missing_model := count_missing(model_set)):
+    if (model_compatible_set is not None
+            and (num_missing_model := count_missing(model_compatible_set))):
         raise ValueError(
-            f"No predictions for {num_missing_model} of the {model_set.num_segments} segments of"
-            f" the model set (context offsets {model_set.context_offsets}), so the predictions"
-            f" are incomplete or of another metadata build.")
+            f"No predictions for {num_missing_model} of the {model_compatible_set.num_segments}"
+            f" segments of the model-compatible set (context offsets"
+            f" {model_compatible_set.context_offsets}), so the predictions are incomplete or of"
+            f" another metadata build.")
     num_missing = count_missing(reference_set)
     missing_note = (f"No predictions for {num_missing} of the {reference_set.num_segments}"
                     f" reference segments")
-    if num_missing and model_set is None:
+    if num_missing and model_compatible_set is None:
         raise ValueError(
             f"{missing_note} and no context offsets, so the model cannot be scored. If its"
             f" context window reaches beyond the reference window"
@@ -177,13 +212,14 @@ def select_evaluation_sets(
                      f" offsets {reference_set.context_offsets}).")
     else:
         evaluation_sets.append(reference_set)
-    if model_set is None:
-        notes.append("No context offsets, so the model is not scored on its own set.")
-    elif model_set.segment_ids == reference_set.segment_ids:
-        notes.append(f"The context offsets {model_set.context_offsets} select the segments of the"
-                     f" reference set, so the model set is left out.")
+    if model_compatible_set is None:
+        notes.append("No context offsets, so the model is not scored on its model-compatible"
+                     " set.")
+    elif model_compatible_set.segment_ids == reference_set.segment_ids:
+        notes.append(f"The context offsets {model_compatible_set.context_offsets} select the"
+                     f" segments of the reference set, so the model-compatible set is left out.")
     else:
-        evaluation_sets.append(model_set)
+        evaluation_sets.append(model_compatible_set)
     labeled_sets = []
     for evaluation_set in evaluation_sets:
         if any(evaluation_set.attr_to_num_labeled.values()):

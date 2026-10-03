@@ -63,7 +63,7 @@ irap-eval compare $DATA resnet_seed*.predictions.parquet vit_seed*.predictions.p
 irap-eval export-coding-table $DATA ensemble.predictions.parquet -o ensemble.xlsx --confidence-table
 ```
 
-`evaluate` scores each file on the reference set and on its model set ([evaluation sets](docs/evaluation.md#evaluation-sets)), with nulls in the file scored according to `--null-policy` ([invalid cells](docs/evaluation.md#invalid-cells)). It writes to `--out`:
+`evaluate` scores each file on the reference set and on its model-compatible set ([evaluation sets](docs/evaluation.md#evaluation-sets)), with nulls in the file scored according to `--null-policy` ([invalid cells](docs/evaluation.md#invalid-cells)). It writes to `--out`:
 
 | File | Content |
 |---|---|
@@ -100,8 +100,8 @@ print(ie.compute_method_metrics(runs["resnet"]).averages["amF1"],
 differences = ie.compare_methods(runs["resnet"], runs["vit"], ["amF1"])
 print(differences.averages["amF1"])  # MetricDifference(difference, interval)
 
-# Other evaluation sets: the model set of some offsets, and a subset, e.g. one region.
-model_set = ie.get_evaluation_set(metadata, "vietnam", "val", (0, -1, -4), name="model")
+# Other evaluation sets: the model-compatible set of some offsets, and a subset, e.g. one region.
+model_compatible_set = ie.get_model_compatible_set(metadata, "vietnam", "val", (0, -1, -4))
 north_set = ie.select_evaluation_subset(reference_set, is_north, name="north")
 ```
 

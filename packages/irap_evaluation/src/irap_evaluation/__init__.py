@@ -34,13 +34,17 @@ from .evaluation import (
     check_runs_distinct,
     compute_class_metrics,
     evaluate_predictions,
+    get_default_metric_names,
     group_runs_by_method,
     select_evaluated_attributes,
     select_result_attributes,
 )
 from .evaluation_sets import (
+    MODEL_COMPATIBLE_SET_NAME,
+    REFERENCE_SET_NAME,
     EvaluationSet,
     get_evaluation_set,
+    get_model_compatible_set,
     get_reference_set,
     select_evaluation_sets,
     select_evaluation_subset,

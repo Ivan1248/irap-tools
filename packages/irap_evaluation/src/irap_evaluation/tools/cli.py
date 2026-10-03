@@ -31,7 +31,7 @@ from ..evaluation import (
 )
 from ..evaluation_sets import (
     EvaluationSet,
-    get_evaluation_set,
+    get_model_compatible_set,
     get_reference_set,
     select_evaluation_sets,
 )
@@ -120,17 +120,17 @@ def _select_run_evaluation_sets(
     predictions: Predictions,
     context_offsets: tuple[int, ...] | None,
     reference_set_f: T.Callable[[str, str], EvaluationSet],
-    model_set_f: T.Callable[[str, str, tuple[int, ...]], EvaluationSet],
+    model_compatible_set_f: T.Callable[[str, str, tuple[int, ...]], EvaluationSet],
 ) -> list[EvaluationSet]:
     """`select_evaluation_sets` for a run, with its notes printed."""
     header = predictions.header
     name = header.method.run_label
     reference_set = reference_set_f(header.dataset, header.split)
-    model_set = (None if context_offsets is None
-                 else model_set_f(header.dataset, header.split, tuple(context_offsets)))
+    model_compatible_set = None if context_offsets is None else model_compatible_set_f(
+        header.dataset, header.split, tuple(context_offsets))
     try:
         evaluation_sets, notes = select_evaluation_sets(predictions.segment_ids, reference_set,
-                                                        model_set)
+                                                        model_compatible_set)
     except ValueError as e:
         raise ValueError(f"Run {name!r}: {e}") from e
     for note in notes:
@@ -170,7 +170,7 @@ def run_evaluate(args: argparse.Namespace) -> None:
     metadata = load_irap_metadata(args.metadata_dir)
     # Cached, since the runs of a release and split share their reference set.
     reference_set_f = functools.cache(functools.partial(get_reference_set, metadata))
-    model_set_f = functools.cache(functools.partial(get_evaluation_set, metadata, name="model"))
+    model_compatible_set_f = functools.cache(functools.partial(get_model_compatible_set, metadata))
     score = functools.partial(
         _score, null_policy=args.null_policy, attribute_selection=args.attributes,
         missing_attribute_policy=args.missing_attribute_policy, num_resamples=args.bootstrap,
@@ -182,7 +182,7 @@ def run_evaluate(args: argparse.Namespace) -> None:
             predictions,
             method_context_offsets.get(predictions.header.method.name,
                                        predictions.header.context_offsets),
-            reference_set_f, model_set_f)]
+            reference_set_f, model_compatible_set_f)]
     if not results:
         raise ValueError("No run has an evaluation set with labels (see the notes above), so"
                          " nothing is scored.")
@@ -297,8 +297,8 @@ def make_argument_parser() -> argparse.ArgumentParser:
     validate.set_defaults(run=run_validate)
 
     evaluate = commands.add_parser(
-        "evaluate", help="Score prediction files on the reference set and, if the context"
-                         " offsets of a method are known, on its own set. Methods with several"
+        "evaluate", help="Score prediction files on the reference set and, if the context offsets"
+                         " of a method are known, on its model-compatible set. Methods with several"
                          " runs also get the means over their runs.")
     evaluate.add_argument("metadata_dir", type=Path, help="Metadata directory of the release.")
     evaluate.add_argument("files", nargs="+", type=Path, help="Prediction files.")

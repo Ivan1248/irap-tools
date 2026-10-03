@@ -238,7 +238,7 @@ def test_a_model_with_the_reference_offsets_is_scored_only_on_the_reference_set(
                                              name="ref", seed=0, context_offsets=offsets))
     out = tmp_path / "results"
     assert main(["evaluate", str(metadata_dir), str(path), "--out", str(out)]) == 0
-    assert "model set is left out" in capsys.readouterr().out
+    assert "model-compatible set is left out" in capsys.readouterr().out
     assert [p.name for p in (out / "ref").iterdir()] == ["metrics_reference.json"]
 
 
