@@ -11,12 +11,12 @@ Submissions are not removed: a deleted one is marked and can be restored. There 
 each action records a free-text name of who did it.
 """
 
-import contextlib
 import dataclasses as dc
 import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -24,17 +24,24 @@ import typing as T
 import uuid
 import zipfile
 import zlib
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 import irap_evaluation as ie
 
+from .database import begin_write, connect, get_utc_now
 from .datasets import DatasetContext
 
 ActionKind = T.Literal["upload", "delete", "restore"]
 
 #: SQLite stores integers as signed 64-bit values.
 _SQLITE_INTEGER_RANGE = range(-2**63, 2**63)
+
+_PREDICTIONS_SUFFIX = ".predictions.parquet"
+_ARCHIVE_SUFFIX = ".zip"
+#: The names of `SubmissionArchive.make_upload_path`.
+_UPLOAD_NAME_PATTERN = re.compile(
+    rf"[0-9a-f]{{32}}({re.escape(_PREDICTIONS_SUFFIX)}|{re.escape(_ARCHIVE_SUFFIX)})")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS submissions (
@@ -128,7 +135,7 @@ class NewSubmission:
 
     Attributes:
         file_path: The file, in the same file system as the data directory, e.g. at
-            `SubmissionArchive.make_upload_path()`.
+            `SubmissionArchive.make_upload_path`.
         details: The details of the upload in the action log.
     """
 
@@ -149,10 +156,6 @@ class NewSubmission:
                    num_segments=predictions.num_segments,
                    num_attributes=len(predictions.attributes), file_path=file_path,
                    details=details)
-
-
-def _get_utc_now() -> datetime:
-    return datetime.now(UTC).replace(microsecond=0)
 
 
 def _compute_file_sha256(path: Path) -> str:
@@ -197,7 +200,7 @@ def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind,
     connection.execute(
         "INSERT INTO actions (time, actor, action, submission_id, details)"
         " VALUES (?, ?, ?, ?, ?)",
-        (_get_utc_now().isoformat(), actor, action, submission_id, json.dumps(details)))
+        (get_utc_now().isoformat(), actor, action, submission_id, json.dumps(details)))
 
 
 def _check_seed_storable(seed: int | None) -> None:
@@ -240,7 +243,7 @@ class SubmissionArchive:
         self.data_dir = Path(data_dir)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "submissions").mkdir(exist_ok=True)
-        with self._connect() as connection:
+        with connect(self.database_path) as connection:
             connection.executescript(_SCHEMA)
 
     @property
@@ -254,10 +257,23 @@ class SubmissionArchive:
     def get_predictions_path(self, submission_id: int) -> Path:
         return self.data_dir / "submissions" / str(submission_id) / "predictions.parquet"
 
-    def make_upload_path(self, suffix: str = ".predictions.parquet") -> Path:
-        """A new path in `uploads_dir` for a file being uploaded, e.g. with the suffix '.zip' for
-        an archive."""
+    def make_upload_path(self, file_name: str) -> Path:
+        """A new path in `uploads_dir` for an uploaded file, a .zip archive (see
+        `is_archive_upload`) if `file_name` has that suffix, otherwise a prediction file.
+
+        Args:
+            file_name: The name of the file on the uploader's computer.
+        """
+        suffix = (_ARCHIVE_SUFFIX if file_name.lower().endswith(_ARCHIVE_SUFFIX)
+                  else _PREDICTIONS_SUFFIX)
         return self.uploads_dir / f"{uuid.uuid4().hex}{suffix}"
+
+    def get_upload_path(self, upload_name: str) -> Path | None:
+        """The path of an upload by the name of its file, None if `make_upload_path` does not
+        make such names, e.g. if a browser sent a name that points outside `uploads_dir`."""
+        if _UPLOAD_NAME_PATTERN.fullmatch(upload_name) is None:
+            return None
+        return self.uploads_dir / upload_name
 
     def remove_uploads(self, *, older_than_s: float | None = None) -> int:
         """Removes the files in `uploads_dir`, e.g. those left when the server stopped, or those
@@ -281,35 +297,10 @@ class SubmissionArchive:
                 pass
         return num_removed
 
-    @contextlib.contextmanager
-    def _connect(self) -> T.Iterator[sqlite3.Connection]:
-        # Autocommit mode, so that transactions are explicit (`_begin_write`).
-        connection = sqlite3.connect(self.database_path, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-        finally:
-            connection.close()
-
-    @contextlib.contextmanager
-    def _begin_write(self) -> T.Iterator[sqlite3.Connection]:
-        """A write transaction. It holds the database lock from the start, so that a check and
-        the write that depends on it are not interleaved with another write."""
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                yield connection
-            except BaseException:
-                # SQLite has already rolled back after some errors, e.g. a full disk.
-                if connection.in_transaction:
-                    connection.execute("ROLLBACK")
-                raise
-            connection.execute("COMMIT")
-
     def list_submissions(self, *, include_deleted: bool = False) -> list[Submission]:
         """The submissions, newest first."""
         where = "" if include_deleted else "WHERE deleted_at IS NULL"
-        with self._connect() as connection:
+        with connect(self.database_path) as connection:
             rows = connection.execute(f"SELECT * FROM submissions {where} ORDER BY id DESC")
             return [_to_submission(row) for row in rows]
 
@@ -319,7 +310,7 @@ class SubmissionArchive:
         Raises:
             LookupError: If there is no such submission.
         """
-        with self._connect() as connection:
+        with connect(self.database_path) as connection:
             return _get_submission(connection, submission_id)
 
     def list_actions(self, *, submission_id: int | None = None) -> list[ActionLogEntry]:
@@ -327,7 +318,7 @@ class SubmissionArchive:
         query, parameters = "SELECT * FROM actions", ()
         if submission_id is not None:
             query, parameters = query + " WHERE submission_id = ?", (submission_id,)
-        with self._connect() as connection:
+        with connect(self.database_path) as connection:
             rows = connection.execute(query + " ORDER BY id DESC", parameters)
             return [_to_action_log_entry(row) for row in rows]
 
@@ -343,7 +334,7 @@ class SubmissionArchive:
             ValueError: If the run cannot be stored.
         """
         _check_seed_storable(method.seed)
-        with self._connect() as connection:
+        with connect(self.database_path) as connection:
             _check_run_distinct(connection, dataset, split, method)
 
     def add_submissions(self, new_submissions: T.Sequence[NewSubmission], *, submitter: str,
@@ -362,7 +353,7 @@ class SubmissionArchive:
         file_sha256s = [_compute_file_sha256(new.file_path) for new in new_submissions]
         moved_paths: list[tuple[Path, Path]] = []  # (target, source)
         try:
-            with self._begin_write() as connection:
+            with begin_write(self.database_path) as connection:
                 submission_ids = []
                 for new, file_sha256 in zip(new_submissions, file_sha256s, strict=True):
                     header = new.header
@@ -377,7 +368,7 @@ class SubmissionArchive:
                          header.method.seed,
                          None if offsets is None else json.dumps(list(offsets)),
                          new.output_kind, new.num_segments, new.num_attributes, submitter,
-                         description.strip(), _get_utc_now().isoformat()))
+                         description.strip(), get_utc_now().isoformat()))
                     submission_id = cursor.lastrowid
                     submission_ids.append(submission_id)
                     _log_action(connection, submitter, "upload", submission_id, new.details)
@@ -404,7 +395,7 @@ class SubmissionArchive:
                 restored run is no longer distinct from the runs of its method.
         """
         actor = _check_actor(actor)
-        with self._begin_write() as connection:
+        with begin_write(self.database_path) as connection:
             submission = _get_submission(connection, submission_id)
             if submission.is_deleted == is_deleted:
                 state = "deleted" if is_deleted else "not deleted"
@@ -413,17 +404,20 @@ class SubmissionArchive:
                 _check_run_distinct(connection, submission.dataset, submission.split,
                                     submission.method, excluded_id=submission_id)
             connection.execute("UPDATE submissions SET deleted_at = ? WHERE id = ?",
-                               (_get_utc_now().isoformat() if is_deleted else None,
+                               (get_utc_now().isoformat() if is_deleted else None,
                                 submission_id))
             _log_action(connection, actor, "delete" if is_deleted else "restore",
                         submission_id, {})
             return _get_submission(connection, submission_id)
 
 
-def replace_method_seed(predictions: ie.Predictions, seed: int | None) -> ie.Predictions:
-    header = predictions.header
-    return dc.replace(predictions,
-                      header=dc.replace(header, method=dc.replace(header.method, seed=seed)))
+def _override_seed(method: ie.MethodInfo, seed: int | None) -> ie.MethodInfo:
+    """The method with the seed given at the upload, if it is not None."""
+    return method if seed is None else dc.replace(method, seed=seed)
+
+
+def _replace_method(predictions: ie.Predictions, method: ie.MethodInfo) -> ie.Predictions:
+    return dc.replace(predictions, header=dc.replace(predictions.header, method=method))
 
 
 def _get_rewritten_path(uploaded_path: Path) -> Path:
@@ -453,23 +447,21 @@ def _prepare_upload(
         The new submission and the notes of `select_evaluation_sets`.
     """
     header = uploaded.header
-    original_seed = header.method.seed
-    is_seed_replaced = seed is not None and seed != original_seed
+    method = _override_seed(header.method, seed)
+    is_seed_replaced = method != header.method
     if header.dataset not in dataset_contexts:
         raise ValueError(f"The predictions are of the dataset {header.dataset!r}, which the"
                          f" server does not have. Its datasets: {', '.join(dataset_contexts)}.")
-    archive.check_new_run(header.dataset, header.split,
-                          dc.replace(header.method, seed=seed) if is_seed_replaced
-                          else header.method)
+    archive.check_new_run(header.dataset, header.split, method)
     # After the cheap checks, since it validates the predictions again.
-    predictions = replace_method_seed(uploaded, seed) if is_seed_replaced else uploaded
+    predictions = _replace_method(uploaded, method) if is_seed_replaced else uploaded
     context = dataset_contexts[header.dataset]
     context.check_predicted_classes(predictions)
     _, notes = context.select_evaluation_sets(predictions)
     details = {**details, "notes": notes}
     if not is_seed_replaced:
         return NewSubmission.from_predictions(predictions, uploaded_path, details), notes
-    details |= {"original_seed": original_seed,
+    details |= {"original_seed": header.method.seed,
                 "uploaded_file_sha256": _compute_file_sha256(uploaded_path)}
     rewritten_path = _get_rewritten_path(uploaded_path)
     ie.write_predictions(rewritten_path, predictions)
@@ -494,7 +486,7 @@ def add_uploaded_submission(
     e.g. with another seed.
 
     Args:
-        uploaded_path: The uploaded file, at `archive.make_upload_path()`.
+        uploaded_path: The uploaded file, at `archive.make_upload_path`.
         file_name: The name of the file on the uploader's computer, for the action log.
         seed: If not None, it replaces the seed in the header (`MethodInfo.seed`), e.g. to make
             the run distinct from another run of its method. The file is then rewritten, and
@@ -554,10 +546,10 @@ class _ArchiveRun:
     @classmethod
     def from_header(cls, header: ie.PredictionHeader, seed: int | None) -> T.Self:
         """Args:
-            seed: If not None, it replaces the seed of the header.
+            seed: The seed given at the upload (see `_override_seed`).
         """
-        return cls(dataset=header.dataset, method_name=header.method.name,
-                   method_seed=header.method.seed if seed is None else seed,
+        method = _override_seed(header.method, seed)
+        return cls(dataset=header.dataset, method_name=method.name, method_seed=method.seed,
                    context_offsets=header.context_offsets)
 
     def __str__(self) -> str:
@@ -601,7 +593,7 @@ def add_uploaded_archive(
     is kept, so that the upload can be retried, e.g. with another seed.
 
     Args:
-        uploaded_path: The uploaded archive, at `archive.make_upload_path(".zip")`.
+        uploaded_path: The uploaded archive, at `archive.make_upload_path`.
         file_name: The name of the archive on the uploader's computer, for the action log, which
             also records the name of each file in it.
         seed: If not None, it replaces the seed in each header, as in `add_uploaded_submission`.
@@ -627,7 +619,7 @@ def add_uploaded_archive(
             first_run_and_member_name: tuple[_ArchiveRun, str] | None = None
             split_to_member_name: dict[str, str] = {}
             for member in _list_archive_members(zip_file, file_name):
-                path = archive.make_upload_path()
+                path = archive.make_upload_path(member.filename)
                 extracted_paths.append(path)
                 try:
                     _extract_archive_member(zip_file, member, path)
@@ -660,3 +652,26 @@ def add_uploaded_archive(
             _get_rewritten_path(path).unlink(missing_ok=True)
     uploaded_path.unlink()
     return [(s, notes) for s, (_, notes) in zip(submissions, prepared, strict=True)]
+
+
+def is_archive_upload(uploaded_path: Path) -> bool:
+    """Whether an upload at `SubmissionArchive.make_upload_path` is a .zip archive."""
+    return uploaded_path.name.endswith(_ARCHIVE_SUFFIX)
+
+
+def add_upload(
+    archive: SubmissionArchive,
+    dataset_contexts: T.Mapping[str, DatasetContext],
+    uploaded_path: Path,
+    *,
+    file_name: str,
+    submitter: str,
+    description: str,
+    seed: int | None = None,
+) -> list[tuple[Submission, list[str]]]:
+    """`add_uploaded_archive` for a .zip archive (`is_archive_upload`), otherwise
+    `add_uploaded_submission`, with the same arguments, errors and the submissions in a list."""
+    kwargs = dict(file_name=file_name, submitter=submitter, description=description, seed=seed)
+    if is_archive_upload(uploaded_path):
+        return add_uploaded_archive(archive, dataset_contexts, uploaded_path, **kwargs)
+    return [add_uploaded_submission(archive, dataset_contexts, uploaded_path, **kwargs)]

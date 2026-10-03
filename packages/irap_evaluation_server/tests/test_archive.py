@@ -9,6 +9,7 @@ import zipfile
 import irap_evaluation as ie
 import pytest
 from irap_data.metadata import MetaFiles
+from run_helpers import make_run, write_upload
 from synthetic_vietnam import SPLIT, make_predictions
 
 from irap_evaluation_server import archive as archive_module
@@ -21,15 +22,8 @@ from irap_evaluation_server.config import DatasetConfig
 from irap_evaluation_server.datasets import DatasetContext, load_dataset_contexts
 
 
-def make_run(dataset_contexts, name="m", method_seed=None, **kwargs) -> ie.Predictions:
-    metadata = dataset_contexts["vietnam"].metadata
-    return make_predictions(metadata.vocabulary, list(metadata.splits[SPLIT]), name=name, seed=0,
-                            method_seed=method_seed, **kwargs)
-
-
 def upload(archive, dataset_contexts, predictions, submitter="Ana", seed=None):
-    path = archive.make_upload_path()
-    ie.write_predictions(path, predictions)
+    path = write_upload(archive, predictions)
     return path, lambda: add_uploaded_submission(
         archive, dataset_contexts, path, file_name="m.predictions.parquet", submitter=submitter,
         description=" first run ", seed=seed)
@@ -79,7 +73,7 @@ def write_archive(path, member_name_to_contents, tmp_path):
 
 
 def upload_archive(archive, dataset_contexts, member_name_to_contents, tmp_path, seed=None):
-    path = write_archive(archive.make_upload_path(".zip"), member_name_to_contents, tmp_path)
+    path = write_archive(archive.make_upload_path("m.zip"), member_name_to_contents, tmp_path)
     return path, lambda: add_uploaded_archive(
         archive, dataset_contexts, path, file_name="m.zip", submitter="Ana",
         description="all splits", seed=seed)
@@ -251,7 +245,7 @@ def test_duplicate_run_is_refused_before_the_file_is_checked(archive, dataset_co
     def fail(*args, **kwargs):
         raise AssertionError("The file is checked or rewritten.")
 
-    monkeypatch.setattr(archive_module, "replace_method_seed", fail)
+    monkeypatch.setattr(archive_module, "_replace_method", fail)
     monkeypatch.setattr(DatasetContext, "select_evaluation_sets", fail)
     monkeypatch.setattr(ie, "write_predictions", fail)
     with pytest.raises(ValueError, match="same seed"):
@@ -277,17 +271,30 @@ def test_evaluation_sets_are_computed_once(dataset_contexts, monkeypatch):
 
 
 def test_remove_uploads(archive):
-    archive.make_upload_path().write_bytes(b"x")
+    archive.make_upload_path("m.parquet").write_bytes(b"x")
     assert archive.remove_uploads() == 1
     assert not list(archive.uploads_dir.iterdir())
 
-    old_path, new_path = archive.make_upload_path(), archive.make_upload_path()
+    old_path = archive.make_upload_path("old.parquet")
+    new_path = archive.make_upload_path("new.parquet")
     old_path.write_bytes(b"x")
     new_path.write_bytes(b"x")
     old_time_s = time.time() - 3600
     os.utime(old_path, (old_time_s, old_time_s))
     assert archive.remove_uploads(older_than_s=600) == 1
     assert list(archive.uploads_dir.iterdir()) == [new_path]
+
+
+def test_upload_paths(archive):
+    file_path = archive.make_upload_path("run.parquet")
+    archive_path = archive.make_upload_path("RUN.ZIP")
+    assert not archive_module.is_archive_upload(file_path)
+    assert archive_module.is_archive_upload(archive_path)
+    for path in (file_path, archive_path):
+        assert path.parent == archive.uploads_dir
+        assert archive.get_upload_path(path.name) == path
+    for name in ("../archive.sqlite3", f"../{file_path.name}", "x.zip", file_path.stem):
+        assert archive.get_upload_path(name) is None
 
 
 def test_add_uploaded_archive(archive, two_split_contexts, tmp_path):
@@ -372,7 +379,7 @@ def test_archive_contents_are_checked(archive, two_split_contexts, tmp_path,
 
 
 def test_upload_that_is_not_a_zip_archive_is_refused(archive, dataset_contexts):
-    path = archive.make_upload_path(".zip")
+    path = archive.make_upload_path("m.zip")
     path.write_bytes(b"not a zip")
     with pytest.raises(ValueError, match=r"m\.zip is not a \.zip archive"):
         add_uploaded_archive(archive, dataset_contexts, path, file_name="m.zip",
@@ -389,7 +396,7 @@ def test_macos_metadata_in_an_archive_is_skipped(archive, two_split_contexts, tm
 
 
 def test_encrypted_archive_member_is_refused(archive, dataset_contexts):
-    path = archive.make_upload_path(".zip")
+    path = archive.make_upload_path("m.zip")
     with zipfile.ZipFile(path, "w") as zip_file:
         zip_file.writestr("m.parquet", b"x")
     data = bytearray(path.read_bytes())
@@ -401,13 +408,11 @@ def test_encrypted_archive_member_is_refused(archive, dataset_contexts):
     assert path.exists()
 
 
-def test_failed_storing_moves_back_all_files(archive, two_split_contexts, tmp_path,
-                                             monkeypatch):
+def test_failed_storing_moves_back_all_files(archive, two_split_contexts, monkeypatch):
     new_submissions = []
     for split in (SPLIT, OTHER_SPLIT):
         predictions = with_split(make_run(two_split_contexts), split)
-        path = archive.make_upload_path()
-        ie.write_predictions(path, predictions)
+        path = write_upload(archive, predictions)
         new_submissions.append(NewSubmission.from_predictions(predictions, path, {}))
 
     def fail(*args):

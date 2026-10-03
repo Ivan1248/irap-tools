@@ -3,7 +3,6 @@ the endpoints for uploading and downloading prediction files."""
 
 import dataclasses as dc
 import html
-import re
 import shutil
 import typing as T
 import urllib.parse
@@ -14,12 +13,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from irap_evaluation.reports.evaluation_report import to_file_name
 from nicegui import app, run, ui
 
-from ..archive import (
-    Submission,
-    SubmissionArchive,
-    add_uploaded_archive,
-    add_uploaded_submission,
-)
+from ..archive import Submission, SubmissionArchive, add_upload, is_archive_upload
 from ..components.formatting import (
     format_utc_time,
     make_action_table_html,
@@ -43,12 +37,6 @@ from ..components.routes import (
     get_submission_path,
 )
 from ..datasets import DatasetContext
-
-#: The names of `SubmissionArchive.make_upload_path`, so that a name sent by the browser cannot
-#: point outside the uploads directory.
-_UPLOAD_NAME_PATTERN = re.compile(r"[0-9a-f]{32}\.(predictions\.parquet|zip)")
-
-_ARCHIVE_SUFFIX = ".zip"
 
 #: Uploaded files that are not stored are removed after this time, e.g. those of a closed page
 #: whose client NiceGUI has not deleted.
@@ -100,20 +88,26 @@ class _UploadFormState:
 
     Attributes:
         upload_id: The latest upload of the file input (see `create_file_upload_input`).
-        upload_name: The file of that upload in the uploads directory, from when it is uploaded
-            until a check takes it.
+        upload_path: The file of that upload (see `SubmissionArchive.get_upload_path`), from
+            when it is uploaded until a check takes it.
     """
 
     upload_id: int | None = None
-    upload_name: str | None = None
+    upload_path: Path | None = None
     file_name: str = ""
     description: str = ""
     seed_text: str = ""
 
 
+#: Gets the ids of submissions that were added, deleted or restored, e.g. to score them. It is
+#: called off the event loop, since it may read the database.
+SubmissionsChangedHandler = T.Callable[[T.Sequence[int]], None]
+
+
 def _create_upload_form(archive: SubmissionArchive,
                         dataset_contexts: T.Mapping[str, DatasetContext],
-                        on_archive_stored: T.Callable[[], None]) -> None:
+                        on_archive_stored: T.Callable[[], None],
+                        on_submissions_changed: SubmissionsChangedHandler) -> None:
     """The form for uploading a prediction file or a .zip archive of the files of one run.
 
     A stored file opens its submission page. After an archive is stored, the page stays, its
@@ -122,13 +116,10 @@ def _create_upload_form(archive: SubmissionArchive,
     """
     form = _UploadFormState()
 
-    def remove_upload(upload_name: str) -> None:
-        (archive.uploads_dir / upload_name).unlink(missing_ok=True)
-
     def remove_pending_upload() -> None:
-        if form.upload_name is not None:
-            remove_upload(form.upload_name)
-            form.upload_name = None
+        if form.upload_path is not None:
+            form.upload_path.unlink(missing_ok=True)
+            form.upload_path = None
 
     def on_upload_status_changed(status: dict) -> None:
         if status["status"] == "uploading":
@@ -136,13 +127,13 @@ def _create_upload_form(archive: SubmissionArchive,
             form.upload_id = status["upload_id"]
             _set_status(status_label, f"Uploading {status['file_name']}…")
             return
-        is_uploaded = (status["status"] == "uploaded"
-                       and _UPLOAD_NAME_PATTERN.fullmatch(status["upload_name"]) is not None)
+        upload_path = (archive.get_upload_path(status["upload_name"])
+                       if status["status"] == "uploaded" else None)
         if status["upload_id"] != form.upload_id:  # A newer upload replaced this one.
-            if is_uploaded:
-                remove_upload(status["upload_name"])
-        elif is_uploaded:
-            form.upload_name, form.file_name = status["upload_name"], status["file_name"]
+            if upload_path is not None:
+                upload_path.unlink(missing_ok=True)
+        elif upload_path is not None:
+            form.upload_path, form.file_name = upload_path, status["file_name"]
             _set_status(status_label, f"{form.file_name} is uploaded. Click Add to check and"
                                       f" store it.")
         else:
@@ -150,11 +141,11 @@ def _create_upload_form(archive: SubmissionArchive,
                         is_error=True)
 
     async def on_add_clicked() -> None:
-        if form.upload_name is None:
+        if form.upload_path is None:
             _set_status(status_label, "Choose a file first.", is_error=True)
             return
-        if not (archive.uploads_dir / form.upload_name).exists():
-            form.upload_name = None
+        if not form.upload_path.exists():
+            form.upload_path = None
             _set_status(status_label, f"{form.file_name} is no longer on the server, since"
                                       f" uploads are removed after"
                                       f" {_ABANDONED_UPLOAD_AGE_S / 3600:g} h. Choose it again.",
@@ -169,23 +160,21 @@ def _create_upload_form(archive: SubmissionArchive,
             _set_status(status_label, str(e), is_error=True)
             return
         # The check takes the file, so that a new upload does not remove it.
-        upload_name, upload_id, file_name = form.upload_name, form.upload_id, form.file_name
-        form.upload_name = None
+        upload_path, upload_id, file_name = form.upload_path, form.upload_id, form.file_name
+        form.upload_path = None
 
         def give_back_upload() -> None:
             if form.upload_id == upload_id:  # Kept for a retry, e.g. with another seed.
-                form.upload_name = upload_name
+                form.upload_path = upload_path
             else:
-                remove_upload(upload_name)
+                upload_path.unlink(missing_ok=True)
 
-        is_archive = upload_name.endswith(_ARCHIVE_SUFFIX)
         _set_status(status_label, f"Checking {file_name}…")
         add_button.props["disabled"] = True
         add_button.update()
         try:
-            result = await run.io_bound(
-                add_uploaded_archive if is_archive else add_uploaded_submission, archive,
-                dataset_contexts, archive.uploads_dir / upload_name, file_name=file_name,
+            results = await run.io_bound(
+                add_upload, archive, dataset_contexts, upload_path, file_name=file_name,
                 submitter=get_submitter_name(), description=form.description, seed=seed)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             give_back_upload()
@@ -199,15 +188,16 @@ def _create_upload_form(archive: SubmissionArchive,
         finally:
             add_button.props["disabled"] = False
             add_button.update()
-        if result is None:  # The server is stopping.
+        if results is None:  # The server is stopping.
             give_back_upload()
             _set_status(status_label, f"{file_name} is not stored, since the server is"
                                       f" stopping.", is_error=True)
             return
-        if not is_archive:
-            ui.navigate.to(get_submission_path(result[0].id))
+        await run.io_bound(on_submissions_changed, [s.id for s, _ in results])
+        if not is_archive_upload(upload_path):
+            ui.navigate.to(get_submission_path(results[0][0].id))
             return
-        stored = ", ".join(f"#{s.id} ({s.split})" for s, _ in result)
+        stored = ", ".join(f"#{s.id} ({s.split})" for s, _ in results)
         _set_status(status_label, f"Stored {stored} from {file_name}.")
         on_archive_stored()
 
@@ -230,7 +220,8 @@ def _create_upload_form(archive: SubmissionArchive,
         status_label = ui.label().classes("muted")
 
 
-def _create_submission_details(archive: SubmissionArchive, submission_id: int) -> None:
+def _create_submission_details(archive: SubmissionArchive, submission_id: int,
+                               on_submissions_changed: SubmissionsChangedHandler) -> None:
     @ui.refreshable
     def show_details() -> None:
         submission = archive.get_submission(submission_id)
@@ -283,20 +274,19 @@ def _create_submission_details(archive: SubmissionArchive, submission_id: int) -
                             is_error=True)
                 raise
             if result is not None:  # None if the server is stopping.
+                await run.io_bound(on_submissions_changed, [submission_id])
                 show_details.refresh()
 
     show_details()
 
 
 def register_submission_pages(archive: SubmissionArchive,
-                              dataset_contexts: T.Mapping[str, DatasetContext]) -> None:
+                              dataset_contexts: T.Mapping[str, DatasetContext],
+                              on_submissions_changed: SubmissionsChangedHandler) -> None:
     @app.post(UPLOAD_PATH)
     async def receive_upload(file: UploadFile) -> dict:
         await run.io_bound(archive.remove_uploads, older_than_s=_ABANDONED_UPLOAD_AGE_S)
-        if (file.filename or "").lower().endswith(_ARCHIVE_SUFFIX):
-            path = archive.make_upload_path(_ARCHIVE_SUFFIX)
-        else:
-            path = archive.make_upload_path()
+        path = archive.make_upload_path(file.filename or "")
         await run.io_bound(_write_upload, file.file, path)
         return {"status": "uploaded", "upload_name": path.name, "file_name": file.filename}
 
@@ -334,7 +324,8 @@ def register_submission_pages(archive: SubmissionArchive,
             ui.html(make_submissions_table_html(submissions), sanitize=False).classes("w-full")
 
         with create_page_frame(SUBMISSIONS_PATH):
-            _create_upload_form(archive, dataset_contexts, show_table.refresh)
+            _create_upload_form(archive, dataset_contexts, show_table.refresh,
+                                on_submissions_changed)
             with ui.element("section").classes("panel"):
                 ui.label("Submissions").classes("section-title")
                 with ui.element("div").classes("form-row"):
@@ -353,4 +344,4 @@ def register_submission_pages(archive: SubmissionArchive,
             except LookupError as e:
                 ui.label(str(e)).classes("error")
                 return
-            _create_submission_details(archive, submission_id)
+            _create_submission_details(archive, submission_id, on_submissions_changed)

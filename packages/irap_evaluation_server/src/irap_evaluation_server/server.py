@@ -12,6 +12,8 @@ from pathlib import Path
 from .archive import SubmissionArchive
 from .config import load_server_config
 from .datasets import load_dataset_contexts
+from .scoring import ScoreStore
+from .scoring_worker import ScoringWorker
 
 
 def _load_storage_secret(data_dir: Path) -> str:
@@ -43,8 +45,13 @@ def main(argv: list[str] | None = None) -> None:
     archive = SubmissionArchive(config.data_dir)
     if num_removed := archive.remove_uploads():
         print(f"Removed {num_removed} unfinished uploads.")
+    scoring_worker = ScoringWorker(archive, ScoreStore(archive.database_path), dataset_contexts)
+    # Scores what is new or out of date, e.g. after a metadata update, in the background.
+    scoring_worker.update_all_submissions()
+    scoring_worker.start()
+    app.on_shutdown(scoring_worker.stop)
 
-    register_submission_pages(archive, dataset_contexts)
+    register_submission_pages(archive, dataset_contexts, scoring_worker.update_submissions)
     register_action_log_page(archive)
     # No ripple effects on clicks, and no loading bar on requests.
     app.config.quasar_config["ripple"] = False

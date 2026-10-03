@@ -48,7 +48,15 @@ A `.zip` archive uploads the files of one run on several splits at once. Each fi
 
 Either all files of an archive are stored, each as its own submission, or none. The action log records the archive name and the name of each file in it.
 
-The data directory holds `archive.sqlite3` (the index and the action log), `submissions/<id>/predictions.parquet` and NiceGUI's per-browser storage.
+The data directory holds `archive.sqlite3` (the index, the action log and the score cache), `submissions/<id>/predictions.parquet` and NiceGUI's per-browser storage.
+
+## Scoring
+
+A background thread scores each submission after its upload, on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all runs are scored on the same attributes. Then it computes the intervals of each run and of the mean over the runs of each method.
+
+The scores are cached in the database, with the attribute averages and the per-attribute values. The means over runs, also over a subset of the attributes, are computed from them. Intervals need the per-sequence statistics, which are too large to cache, so the thread computes intervals over a subset from the files when a page asks for them, and caches them.
+
+Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the runs of a method change. At its start, the server scores again the submissions whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason.
 
 ## Layout
 
@@ -56,13 +64,16 @@ The data directory holds `archive.sqlite3` (the index and the action log), `subm
 irap_evaluation_server/
 ├─ config.py        ServerConfig, DatasetConfig, load_server_config
 ├─ datasets.py      DatasetContext: the metadata of a dataset and its evaluation sets
+├─ database.py      Connections to the SQLite database
 ├─ archive.py       SubmissionArchive: files, SQLite index and action log, upload checks
+├─ scoring.py       Scoring settings, the score cache, means over runs and intervals
+├─ scoring_worker.py  The background thread that scores and computes intervals
 ├─ components/      Page frame, native form controls, CSS, HTML fragments
 ├─ pages/           One module per page or group of pages
 └─ server.py        The irap-eval-server command
 ```
 
-The logic modules (`config`, `datasets`, `archive`) do not import NiceGUI and are tested with pytest:
+The logic modules (all but `components`, `pages` and `server`) do not import NiceGUI and are tested with pytest:
 
 ```bash
 python -m pytest packages/irap_evaluation_server/tests
