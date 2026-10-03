@@ -17,6 +17,7 @@ from irap_evaluation.bootstrap import (
     draw_group_weights,
 )
 from irap_evaluation.evaluation import (
+    align_to_evaluation_set,
     compute_class_metrics,
     evaluate_predictions,
     group_runs_by_method,
@@ -180,6 +181,23 @@ def test_evaluation_is_independent_of_the_predicted_class_order(metadata, refere
                            probs={a: p[:, ::-1].copy() for a, p in reversed_.probs.items()})
     np.testing.assert_equal(dc.asdict(evaluate_predictions(predictions, reference_set).metrics),
                             dc.asdict(evaluate_predictions(realigned, reference_set).metrics))
+
+
+def test_align_to_evaluation_set(metadata, reference_set):
+    segments = list(metadata.splits[SPLIT])
+    reversed_ = make_predictions(metadata.vocabulary.restrict_to_attributes(["Curvature"]),
+                                 segments[::-1], name="m", seed=0, reverse_classes=True)
+    aligned = align_to_evaluation_set(reversed_, reference_set, ["Curvature", "Lane width"],
+                                      missing_attribute_policy="invalid")
+    assert aligned.segment_ids == reference_set.segment_ids
+    assert aligned.attribute_to_irap_codes == {
+        a: metadata.vocabulary.get_irap_codes(a) for a in ["Curvature", "Lane width"]}
+    rows = [segments[::-1].index(s) for s in reference_set.segment_ids]
+    np.testing.assert_array_equal(aligned.probs["Curvature"],
+                                  reversed_.probs["Curvature"][rows][:, ::-1])
+    assert not aligned.is_valid["Lane width"].any()
+    with pytest.raises(PredictionFormatError, match="not predicted"):
+        align_to_evaluation_set(reversed_, reference_set, ["Lane width"])
 
 
 def test_null_policies(reference_set, predictions):

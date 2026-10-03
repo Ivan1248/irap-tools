@@ -31,6 +31,7 @@ from .evaluation import (
     EvaluationResult,
     MissingAttributePolicy,
     NullPolicy,
+    align_to_evaluation_set,
     check_runs_distinct,
     compute_class_metrics,
     evaluate_predictions,

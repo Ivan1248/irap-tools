@@ -167,6 +167,47 @@ def group_runs_by_method(
     return {name: tuple(runs) for name, runs in name_to_runs.items()}
 
 
+def align_to_evaluation_set(
+    predictions: Predictions,
+    evaluation_set: EvaluationSet,
+    attributes: T.Sequence[str],
+    *,
+    missing_attribute_policy: MissingAttributePolicy = "error",
+) -> Predictions:
+    """Selects and orders the predictions to match the labels of `evaluation_set`: its segments
+    in its order, `attributes`, and the classes of each attribute in the order of its
+    vocabulary.
+
+    So `to_class_indices` of the result compares directly with `evaluation_set.class_indices`.
+    `evaluate_predictions` scores the predictions aligned this way.
+
+    Args:
+        missing_attribute_policy: See `MissingAttributePolicy`.
+
+    Raises:
+        ValueError: For attributes that are not in the dataset, or an unknown
+            `missing_attribute_policy`.
+        PredictionFormatError: If the release or split differ, an attribute is not predicted
+            and `missing_attribute_policy='error'`, the predicted iRAP codes of an attribute
+            differ from the dataset's, or a segment of the evaluation set has no prediction.
+    """
+    header = predictions.header
+    if (header.dataset, header.split) != (evaluation_set.dataset, evaluation_set.split):
+        raise PredictionFormatError(
+            f"Predictions of {header.dataset}/{header.split} cannot be scored on"
+            f" {evaluation_set.dataset}/{evaluation_set.split}.")
+    if missing_attribute_policy not in MISSING_ATTRIBUTE_POLICIES:
+        raise ValueError(f"missing_attribute_policy must be one of {MISSING_ATTRIBUTE_POLICIES},"
+                         f" got {missing_attribute_policy!r}.")
+    _check_attributes_in_vocabulary(attributes, evaluation_set.vocabulary)
+    attribute_to_irap_codes = evaluation_set.vocabulary.restrict_to_attributes(
+        attributes).attribute_to_irap_codes
+    if missing_attribute_policy == "invalid":
+        predictions = add_invalid_attributes(predictions, attribute_to_irap_codes)
+    return select_segments(align_classes(predictions, attribute_to_irap_codes),
+                           evaluation_set.segment_ids)
+
+
 def evaluate_predictions(
     predictions: Predictions,
     evaluation_set: EvaluationSet,
@@ -190,25 +231,15 @@ def evaluate_predictions(
             predictions.
 
     Raises:
-        ValueError: For probabilistic metrics of hard predictions, per-class metric names,
-            attributes that are not in the dataset, if there is no attribute to score, or if
-            `null_policy='exclude'` would leave an attribute without scored segments, since
-            every labeled cell of it is invalid or, with `missing_attribute_policy='invalid'`,
-            it is not predicted.
-        PredictionFormatError: If the release or split differ, an attribute is not predicted
-            and `missing_attribute_policy='error'`, the predicted iRAP codes of an attribute
-            differ from the dataset's, or a segment of the evaluation set has no prediction.
+        ValueError: For probabilistic metrics of hard predictions, per-class metric names, if
+            there is no attribute to score, if `null_policy='exclude'` would leave an attribute
+            without scored segments, since every labeled cell of it is invalid or, with
+            `missing_attribute_policy='invalid'`, it is not predicted, and as
+            `align_to_evaluation_set` does.
+        PredictionFormatError: See `align_to_evaluation_set`.
     """
-    header = predictions.header
-    if (header.dataset, header.split) != (evaluation_set.dataset, evaluation_set.split):
-        raise PredictionFormatError(
-            f"Predictions of {header.dataset}/{header.split} cannot be scored on"
-            f" {evaluation_set.dataset}/{evaluation_set.split}.")
     if null_policy not in NULL_POLICIES:
         raise ValueError(f"null_policy must be one of {NULL_POLICIES}, got {null_policy!r}.")
-    if missing_attribute_policy not in MISSING_ATTRIBUTE_POLICIES:
-        raise ValueError(f"missing_attribute_policy must be one of {MISSING_ATTRIBUTE_POLICIES},"
-                         f" got {missing_attribute_policy!r}.")
     if metric_names is None:
         metric_names = get_default_metric_names(predictions.output_kind)
     if per_class := [n for n in metric_names if is_per_class_metric(n)]:
@@ -218,15 +249,10 @@ def evaluate_predictions(
                        else attributes)
     if not attributes:
         raise ValueError("There is no attribute to score.")
-    _check_attributes_in_vocabulary(attributes, evaluation_set.vocabulary)
-    attribute_to_irap_codes = evaluation_set.vocabulary.restrict_to_attributes(
-        attributes).attribute_to_irap_codes
-    missing_attributes = ()
-    if missing_attribute_policy == "invalid":
-        missing_attributes = tuple(a for a in attributes if a not in predictions.attributes)
-        predictions = add_invalid_attributes(predictions, attribute_to_irap_codes)
-    aligned = select_segments(align_classes(predictions, attribute_to_irap_codes),
-                              evaluation_set.segment_ids)
+    missing_attributes = (tuple(a for a in attributes if a not in predictions.attributes)
+                          if missing_attribute_policy == "invalid" else ())
+    aligned = align_to_evaluation_set(predictions, evaluation_set, attributes,
+                                      missing_attribute_policy=missing_attribute_policy)
     num_invalid = {attr: int((~aligned.is_valid[attr]
                               & (evaluation_set.class_indices[attr] != IGNORE_LABEL_INDEX)).sum())
                    for attr in attributes}
@@ -257,7 +283,7 @@ def evaluate_predictions(
 
     statistics = {attr: get_statistics(attr) for attr in attributes}
     return EvaluationResult(
-        method=header.method, output_kind=predictions.output_kind,
+        method=predictions.header.method, output_kind=predictions.output_kind,
         evaluation_set=evaluation_set, null_policy=null_policy,
         statistics=statistics, num_invalid=num_invalid,
         metrics=_compute_result_metrics(statistics, metric_names),
