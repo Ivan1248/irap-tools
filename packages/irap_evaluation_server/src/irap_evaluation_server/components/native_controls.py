@@ -3,6 +3,11 @@
 Each `create_*` function creates the control in the current NiceGUI container and returns its
 element. The class `native-control` (`styles.css`) restores the browser's style, which
 Tailwind's reset removes.
+
+A change by the user is also stored in the element's props. NiceGUI renders native tags in the
+render function of the page's root, so any update of the page, e.g. a refreshed table, renders
+them again, and Vue sets the DOM `value` of an input or select from the props, which would
+restore the initial value.
 """
 
 import json
@@ -10,6 +15,18 @@ import typing as T
 
 from nicegui import ui
 from nicegui.elements.mixins.text_element import TextElement
+
+
+def _on_user_change(element: ui.element, prop: str,
+                    on_change: T.Callable[[T.Any], None]) -> T.Callable[[T.Any], None]:
+    """A handler of a change event that stores the new value in `element.props[prop]` (see the
+    module docstring) before it calls `on_change`."""
+    def handle(event: T.Any) -> None:
+        element.props[prop] = event.args
+        element.update()
+        on_change(event.args)
+
+    return handle
 
 
 def _create_field(label: str) -> ui.element:
@@ -31,7 +48,8 @@ def create_native_select(label: str, options: T.Mapping[str, str], value: str,
         with select:
             for option_value, text in options.items():
                 TextElement(tag="option", text=text).props["value"] = option_value
-    select.on("change", lambda e: on_change(e.args), js_handler="(e) => emit(e.target.value)")
+    select.on("change", _on_user_change(select, "value", on_change),
+              js_handler="(e) => emit(e.target.value)")
     return select
 
 
@@ -50,7 +68,8 @@ def create_native_input(label: str, value: str, on_change: T.Callable[[str], Non
     element.props.update(type=input_type, value=value, placeholder=placeholder)
     if size is not None:
         element.props["size"] = size
-    element.on("change", lambda e: on_change(e.args), js_handler="(e) => emit(e.target.value)")
+    element.on("change", _on_user_change(element, "value", on_change),
+               js_handler="(e) => emit(e.target.value)")
     return element
 
 
@@ -60,7 +79,7 @@ def create_native_checkbox(label: str, value: bool,
         element = ui.element("input").classes("native-control")
         element.props.update(type="checkbox", checked=value)
         ui.label(label)
-    element.on("change", lambda e: on_change(bool(e.args)),
+    element.on("change", _on_user_change(element, "checked", lambda v: on_change(bool(v))),
                js_handler="(e) => emit(e.target.checked)")
     return element
 
@@ -70,6 +89,12 @@ def create_native_button(text: str, on_click: T.Callable[[], T.Any]) -> ui.eleme
     button.props["type"] = "button"
     button.on("click", lambda _: on_click())
     return button
+
+
+def set_status(label: ui.label, text: str, is_error: bool = False) -> None:
+    """Shows the status of a form in `label`, e.g. the result of a click."""
+    label.set_text(text)
+    label.classes(replace="error" if is_error else "muted")
 
 
 def create_file_upload_input(label: str, upload_url: str, accept: str,

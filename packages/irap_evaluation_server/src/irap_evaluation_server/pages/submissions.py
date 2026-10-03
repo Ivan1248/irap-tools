@@ -1,11 +1,10 @@
-"""The Submissions pages (the list with the upload form, and the page of one submission), and
-the endpoints for uploading and downloading prediction files."""
+"""The Submissions page (the list with the upload form), and the endpoints for uploading and
+downloading prediction files."""
 
 import dataclasses as dc
 import html
 import shutil
 import typing as T
-import urllib.parse
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
@@ -14,27 +13,23 @@ from irap_evaluation.reports.evaluation_report import to_file_name
 from nicegui import app, run, ui
 
 from ..archive import Submission, SubmissionArchive, add_upload, is_archive_upload
-from ..components.formatting import (
-    format_utc_time,
-    make_action_table_html,
-    make_submission_link_html,
-    make_table_html,
-)
+from ..components.formatting import format_utc_time, make_submission_link_html, make_table_html
 from ..components.native_controls import (
     create_file_upload_input,
     create_native_button,
     create_native_checkbox,
     create_native_input,
     create_native_select,
+    set_status,
 )
 from ..components.page_frame import create_page_frame, get_submitter_name
 from ..components.routes import (
+    SCORES_PATH,
     PREDICTIONS_DOWNLOAD_PATH,
-    SUBMISSION_PATH,
     SUBMISSIONS_PATH,
     UPLOAD_PATH,
-    get_download_path,
     get_submission_path,
+    make_query_path,
 )
 from ..datasets import DatasetContext
 
@@ -75,11 +70,6 @@ def _parse_seed(text: str) -> int | None:
 def _write_upload(source: T.BinaryIO, path: Path) -> None:
     with path.open("wb") as file:
         shutil.copyfileobj(source, file)
-
-
-def _set_status(label: ui.label, text: str, is_error: bool = False) -> None:
-    label.set_text(text)
-    label.classes(replace="error" if is_error else "muted")
 
 
 @dc.dataclass
@@ -125,7 +115,7 @@ def _create_upload_form(archive: SubmissionArchive,
         if status["status"] == "uploading":
             remove_pending_upload()
             form.upload_id = status["upload_id"]
-            _set_status(status_label, f"Uploading {status['file_name']}…")
+            set_status(status_label, f"Uploading {status['file_name']}…")
             return
         upload_path = (archive.get_upload_path(status["upload_name"])
                        if status["status"] == "uploaded" else None)
@@ -134,30 +124,30 @@ def _create_upload_form(archive: SubmissionArchive,
                 upload_path.unlink(missing_ok=True)
         elif upload_path is not None:
             form.upload_path, form.file_name = upload_path, status["file_name"]
-            _set_status(status_label, f"{form.file_name} is uploaded. Click Add to check and"
-                                      f" store it.")
+            set_status(status_label, f"{form.file_name} is uploaded. Click Add to check and"
+                                     f" store it.")
         else:
-            _set_status(status_label, f"The upload failed: {status.get('message', status)}",
-                        is_error=True)
+            set_status(status_label, f"The upload failed: {status.get('message', status)}",
+                       is_error=True)
 
     async def on_add_clicked() -> None:
         if form.upload_path is None:
-            _set_status(status_label, "Choose a file first.", is_error=True)
+            set_status(status_label, "Choose a file first.", is_error=True)
             return
         if not form.upload_path.exists():
             form.upload_path = None
-            _set_status(status_label, f"{form.file_name} is no longer on the server, since"
-                                      f" uploads are removed after"
-                                      f" {_ABANDONED_UPLOAD_AGE_S / 3600:g} h. Choose it again.",
-                        is_error=True)
+            set_status(status_label, f"{form.file_name} is no longer on the server, since"
+                                     f" uploads are removed after"
+                                     f" {_ABANDONED_UPLOAD_AGE_S / 3600:g} h. Choose it again.",
+                       is_error=True)
             return
         if not get_submitter_name():
-            _set_status(status_label, "Enter your name in the top bar first.", is_error=True)
+            set_status(status_label, "Enter your name in the top bar first.", is_error=True)
             return
         try:
             seed = _parse_seed(form.seed_text)
         except ValueError as e:
-            _set_status(status_label, str(e), is_error=True)
+            set_status(status_label, str(e), is_error=True)
             return
         # The check takes the file, so that a new upload does not remove it.
         upload_path, upload_id, file_name = form.upload_path, form.upload_id, form.file_name
@@ -169,7 +159,7 @@ def _create_upload_form(archive: SubmissionArchive,
             else:
                 upload_path.unlink(missing_ok=True)
 
-        _set_status(status_label, f"Checking {file_name}…")
+        set_status(status_label, f"Checking {file_name}…")
         add_button.props["disabled"] = True
         add_button.update()
         try:
@@ -178,27 +168,27 @@ def _create_upload_form(archive: SubmissionArchive,
                 submitter=get_submitter_name(), description=form.description, seed=seed)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             give_back_upload()
-            _set_status(status_label, f"{file_name} is not stored: {e}", is_error=True)
+            set_status(status_label, f"{file_name} is not stored: {e}", is_error=True)
             return
         except Exception as e:
             give_back_upload()
-            _set_status(status_label, f"Internal error while checking {file_name}: {e!r}. See"
-                                      f" the server log.", is_error=True)
+            set_status(status_label, f"Internal error while checking {file_name}: {e!r}. See"
+                                     f" the server log.", is_error=True)
             raise
         finally:
             add_button.props["disabled"] = False
             add_button.update()
         if results is None:  # The server is stopping.
             give_back_upload()
-            _set_status(status_label, f"{file_name} is not stored, since the server is"
-                                      f" stopping.", is_error=True)
+            set_status(status_label, f"{file_name} is not stored, since the server is"
+                                     f" stopping.", is_error=True)
             return
         await run.io_bound(on_submissions_changed, [s.id for s, _ in results])
         if not is_archive_upload(upload_path):
             ui.navigate.to(get_submission_path(results[0][0].id))
             return
         stored = ", ".join(f"#{s.id} ({s.split})" for s, _ in results)
-        _set_status(status_label, f"Stored {stored} from {file_name}.")
+        set_status(status_label, f"Stored {stored} from {file_name}.")
         on_archive_stored()
 
     ui.context.client.on_delete(remove_pending_upload)
@@ -218,66 +208,6 @@ def _create_upload_form(archive: SubmissionArchive,
                                 placeholder="from the file", size=10)
             add_button = create_native_button("Add", on_add_clicked)
         status_label = ui.label().classes("muted")
-
-
-def _create_submission_details(archive: SubmissionArchive, submission_id: int,
-                               on_submissions_changed: SubmissionsChangedHandler) -> None:
-    @ui.refreshable
-    def show_details() -> None:
-        submission = archive.get_submission(submission_id)
-        actions = archive.list_actions(submission_id=submission_id)
-        notes = [note for a in actions if a.action == "upload" for note in a.details["notes"]]
-        offsets = submission.context_offsets
-        rows = {
-            "Run": submission.run_label,
-            "Dataset and split": f"{submission.dataset}/{submission.split}",
-            "Output": submission.output_kind,
-            "Context offsets": "unknown" if offsets is None else ", ".join(map(str, offsets)),
-            "Segments": str(submission.num_segments),
-            "Attributes": str(submission.num_attributes),
-            "Submitter": submission.submitter,
-            "Uploaded": format_utc_time(submission.uploaded_at),
-            "Description": submission.description or "–",
-            "SHA-256": submission.file_sha256,
-        }
-        if submission.is_deleted:
-            rows["Deleted"] = format_utc_time(submission.deleted_at)
-        with ui.element("section").classes("panel"):
-            ui.label(f"Submission #{submission.id}"
-                     f"{' (deleted)' if submission.is_deleted else ''}").classes("section-title")
-            with ui.element("div").classes("key-values"):
-                for key, value in rows.items():
-                    ui.label(key).classes("key")
-                    ui.label(value)
-            for note in notes:
-                ui.label(note).classes("muted")
-            with ui.element("div").classes("form-row items-center"):
-                ui.link("Download the prediction file", get_download_path(submission.id))
-                create_native_button(
-                    "Restore" if submission.is_deleted else "Delete",
-                    lambda: on_deletion_clicked(not submission.is_deleted))
-            status_label = ui.label().classes("muted")
-        with ui.element("section").classes("panel"):
-            ui.label("Actions").classes("section-title")
-            ui.html(make_action_table_html(actions), sanitize=False)
-
-        async def on_deletion_clicked(is_deleted: bool) -> None:
-            try:
-                # Off the event loop, since it may wait for the database lock.
-                result = await run.io_bound(archive.set_submission_deleted, submission_id,
-                                            is_deleted, actor=get_submitter_name())
-            except ValueError as e:
-                _set_status(status_label, str(e), is_error=True)
-                return
-            except Exception as e:
-                _set_status(status_label, f"Internal error: {e!r}. See the server log.",
-                            is_error=True)
-                raise
-            if result is not None:  # None if the server is stopping.
-                await run.io_bound(on_submissions_changed, [submission_id])
-                show_details.refresh()
-
-    show_details()
 
 
 def register_submission_pages(archive: SubmissionArchive,
@@ -302,7 +232,7 @@ def register_submission_pages(archive: SubmissionArchive,
 
     @ui.page("/")
     def index_page() -> RedirectResponse:
-        return RedirectResponse(SUBMISSIONS_PATH)
+        return RedirectResponse(SCORES_PATH)
 
     @ui.page(SUBMISSIONS_PATH, title="Submissions · iRAP evaluation")
     def submissions_page(dataset: str = "", deleted: bool = False) -> None:
@@ -310,8 +240,8 @@ def register_submission_pages(archive: SubmissionArchive,
 
         def on_filter_changed(key: str, value: str | bool) -> None:
             filters[key] = value
-            query = {k: 1 if v is True else v for k, v in filters.items() if v}
-            ui.navigate.history.replace(f"{SUBMISSIONS_PATH}?{urllib.parse.urlencode(query)}")
+            ui.navigate.history.replace(make_query_path(
+                SUBMISSIONS_PATH, {k: "1" if v is True else v for k, v in filters.items()}))
             show_table.refresh()
 
         @ui.refreshable
@@ -335,13 +265,3 @@ def register_submission_pages(archive: SubmissionArchive,
                     create_native_checkbox("Show deleted", filters["deleted"],
                                            lambda v: on_filter_changed("deleted", v))
                 show_table()
-
-    @ui.page(SUBMISSION_PATH, title="Submission · iRAP evaluation")
-    def submission_page(submission_id: int) -> None:
-        with create_page_frame(SUBMISSIONS_PATH):
-            try:
-                archive.get_submission(submission_id)
-            except LookupError as e:
-                ui.label(str(e)).classes("error")
-                return
-            _create_submission_details(archive, submission_id, on_submissions_changed)

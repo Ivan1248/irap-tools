@@ -24,7 +24,7 @@ from irap_evaluation_server.scoring import (
     make_interval_request,
     select_scored_runs,
 )
-from irap_evaluation_server.scoring_worker import ScoringWorker
+from irap_evaluation_server.scoring_worker import ScoringWorker, TaskPriority
 
 
 def assert_close(a, b, label=""):
@@ -132,6 +132,33 @@ def test_method_scores_and_intervals_over_a_subset(archive, dataset_contexts, wo
     # The order of the subset does not matter.
     assert make_interval_request(method_to_runs["m"], subset[::-1],
                                  worker.settings).key == request.key
+
+
+def test_set_requested_intervals_withdraws_left_subsets(archive, dataset_contexts, worker):
+    submission = add_run(archive, dataset_contexts, make_run(dataset_contexts, "m"))
+    [run] = score_and_get_runs(worker, [submission.id])
+    attributes = run.scores.attributes
+    first, second, default = (make_interval_request([run], subset, worker.settings)
+                              for subset in (attributes[:2], attributes[1:3], attributes[2:4]))
+
+    worker.set_requested_intervals("page 1", [first])
+    assert worker.is_intervals_pending(first)
+    # The page leaves the first subset.
+    worker.set_requested_intervals("page 1", [second])
+    assert not worker.is_intervals_pending(first) and worker.is_intervals_pending(second)
+    # A request that another page waits for is kept.
+    worker.set_requested_intervals("page 2", [second])
+    worker.set_requested_intervals("page 1", [])
+    assert worker.is_intervals_pending(second)
+    # A withdrawn request that is also queued otherwise stays queued.
+    worker.request_intervals(default, TaskPriority.DEFAULT_INTERVALS)
+    worker.set_requested_intervals("page 1", [default])
+    worker.set_requested_intervals("page 1", [])
+    assert worker.is_intervals_pending(default)
+    worker.run_pending()
+    assert worker.get_intervals(second).intervals is not None
+    assert worker.get_intervals(default).intervals is not None
+    assert worker.get_intervals(first) is None
 
 
 def test_missing_attribute(archive, dataset_contexts, worker):

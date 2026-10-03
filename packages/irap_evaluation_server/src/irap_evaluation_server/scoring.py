@@ -220,11 +220,12 @@ def _metric_values_to_json(values: ie.MetricValues) -> str:
     return json.dumps(dc.asdict(values))
 
 
-def _metric_values_from_json(text: str,
-                             convert: T.Callable[[T.Any], T.Any] = lambda v: v) -> ie.MetricValues:
+def _metric_values_from_json(text: str, convert: T.Callable[[T.Any], T.Any] | None = None
+                             ) -> ie.MetricValues:
     values = json.loads(text)
-    return ie.map_metric_values(convert, ie.MetricValues(averages=values["averages"],
-                                                         per_attribute=values["per_attribute"]))
+    metric_values = ie.MetricValues(averages=values["averages"],
+                                    per_attribute=values["per_attribute"])
+    return metric_values if convert is None else ie.map_metric_values(convert, metric_values)
 
 
 def _to_evaluation_set_scores(row: sqlite3.Row) -> EvaluationSetScores:
@@ -261,9 +262,10 @@ class ScoreStore:
         with connect(database_path) as connection:
             connection.executescript(_SCHEMA)
 
-    def _select_run_scorings(self, where: str = "",
-                             parameters: tuple[T.Any, ...] = ()) -> dict[int, RunScoring]:
-        """Submission id -> its scoring, for the scored submissions that `where` selects."""
+    def get_run_scorings(self, submission_ids: T.Iterable[int]) -> dict[int, RunScoring]:
+        """Submission id -> its scoring, for those of `submission_ids` that are scored."""
+        where = "WHERE submission_id IN (SELECT value FROM json_each(?))"
+        parameters = (json.dumps(list(submission_ids)),)
         with connect(self.database_path) as connection:
             submission_id_to_scores: dict[int, list[EvaluationSetScores]] = {}
             for row in connection.execute(
@@ -276,13 +278,8 @@ class ScoreStore:
                     for row in connection.execute(f"SELECT * FROM run_scorings {where}",
                                                   parameters)}
 
-    def list_run_scorings(self) -> dict[int, RunScoring]:
-        """Submission id -> its scoring, for the scored submissions."""
-        return self._select_run_scorings()
-
     def get_run_scoring(self, submission_id: int) -> RunScoring | None:
-        return self._select_run_scorings("WHERE submission_id = ?",
-                                         (submission_id,)).get(submission_id)
+        return self.get_run_scorings([submission_id]).get(submission_id)
 
     def set_run_scoring(self, scoring: RunScoring,
                         reports: T.Mapping[str, T.Mapping[str, T.Any]]) -> None:
@@ -469,15 +466,21 @@ def compute_method_scores(method_name: str, runs: T.Sequence[ScoredRun],
                           attributes: T.Sequence[str]) -> MethodScores:
     """The means over the runs of a method of their metrics over `attributes`.
 
-    Errors of combining the runs are in `MethodScores.error`, so that a page can show them next
-    to the other methods.
+    Errors of combining the runs, and attributes that they are not scored on, are in
+    `MethodScores.error`, so that a page can show them next to the other methods.
 
     Raises:
-        ValueError: If `attributes` is empty or has attributes that the runs are not scored on.
+        ValueError: If `attributes` is empty.
     """
+    if not attributes:
+        raise ValueError("At least one attribute is required.")
     runs = tuple(sorted(runs, key=lambda r: r.submission.id))
     unpredicted = {a for r in runs for a in r.scores.missing_attributes}
     error = get_combination_error(runs)
+    if error is None and (unscored := [a for a in attributes
+                                       if a not in runs[0].scores.attributes]):
+        error = (f"The runs are not scored on {', '.join(unscored)}, e.g. since their evaluation"
+                 f" set has no labels of them.")
     metrics = None if error is not None else ie.compute_mean_metrics(
         [ie.select_metric_attributes(r.scores.metrics, attributes) for r in runs])
     return MethodScores(method_name=method_name, runs=runs, metrics=metrics, error=error,

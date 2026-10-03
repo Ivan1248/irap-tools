@@ -29,7 +29,8 @@ class DatasetContext:
     #: (split, context offsets or None for the reference set) -> the set.
     _evaluation_set_cache: dict[tuple[str, tuple[int, ...] | None], ie.EvaluationSet] = dc.field(
         default_factory=dict, init=False, repr=False)
-    #: Held while a set is computed, so that concurrent first uses compute it once.
+    #: Held while a set is computed, so that concurrent first uses compute it once. Cached sets
+    #: are read without it, so that a page does not wait for the computation of another set.
     _cache_lock: threading.Lock = dc.field(default_factory=threading.Lock, init=False,
                                            repr=False)
 
@@ -46,6 +47,8 @@ class DatasetContext:
             ValueError: If the dataset has no such split.
         """
         key = (split, None if context_offsets is None else tuple(context_offsets))
+        if (evaluation_set := self._evaluation_set_cache.get(key)) is not None:
+            return evaluation_set
         with self._cache_lock:
             if key not in self._evaluation_set_cache:
                 if split not in self.metadata.splits:

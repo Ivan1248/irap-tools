@@ -16,14 +16,28 @@ def format_utc_time(time: datetime) -> str:
     return time.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def make_submission_link_html(submission_id: int) -> str:
-    return f'<a href="{get_submission_path(submission_id)}">#{submission_id}</a>'
+def make_submission_link_html(submission_id: int, attributes: T.Sequence[str] = ()) -> str:
+    """A link to the submission page (see `routes.get_submission_path`)."""
+    path = html.escape(get_submission_path(submission_id, attributes))
+    return f'<a href="{path}">#{submission_id}</a>'
 
 
-def make_table_html(header_cells: list[str], rows: list[str]) -> str:
+def make_table_html(header_cells: T.Sequence[str], rows: T.Sequence[str],
+                    fits_content: bool = False) -> str:
     """A `data-table` (`styles.css`) of escaped header texts and `<tr>` rows."""
-    header = "".join(f"<th>{html.escape(cell)}</th>" for cell in header_cells)
-    return (f'<table class="data-table"><thead><tr>{header}</tr></thead>'
+    return make_table_html_from_header(
+        "".join(f"<th>{html.escape(cell)}</th>" for cell in header_cells), rows, fits_content)
+
+
+def make_table_html_from_header(header_html: str, rows: T.Sequence[str],
+                                fits_content: bool = False) -> str:
+    """A `data-table` (`styles.css`) of `<th>` header cells and `<tr>` rows.
+
+    Args:
+        fits_content: Whether the table is as wide as its content instead of its container.
+    """
+    classes = "data-table fits-content" if fits_content else "data-table"
+    return (f'<table class="{classes}"><thead><tr>{header_html}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 

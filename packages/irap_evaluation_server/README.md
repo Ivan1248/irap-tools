@@ -3,7 +3,8 @@
 An internal web app for saved iRAP model predictions, built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/):
 
 - an archive of submissions (prediction files) with an action log,
-- (planned) scoring and a leaderboard, method comparison, prediction analysis with a map, ensembling and coding-table export.
+- scores and the method table,
+- (planned) method comparison, prediction analysis with a map, ensembling and coding-table export.
 
 There are no logins. Anyone who can open the app can upload, delete and restore submissions. Each user enters a name in the top bar, which the action log records. Deleted submissions are kept and can be restored.
 
@@ -58,6 +59,14 @@ The scores are cached in the database, with the attribute averages and the per-a
 
 Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the runs of a method change. At its start, the server scores again the submissions whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason.
 
+## Scores page
+
+The Scores page (`/scores`, also the start page) ranks the methods of a dataset split by an attribute average, with the means over the runs of each method and their bootstrap intervals. A click on a metric header sorts by it, best first. The View select shows one per-attribute metric instead, with attribute rows and method columns. The cells are shaded by their value relative to the other methods in the column (in the row for a per-attribute metric), darkest for the best. The best value is bold, and so are the values whose interval overlaps its interval, a rough sign that they are not clearly worse. Submissions that are being scored, or whose scoring failed, are listed below the table with the reason. Deleted submissions are left out.
+
+The page of a submission shows its scores on each evaluation set: the attribute averages, and the iRAP metrics and the invalid cells of each attribute, with the metrics shaded relative to the other attributes. A link downloads the `irap-eval evaluate` JSON document over all attributes, without intervals (`/api/submissions/<id>/scores/<set>.json`).
+
+The attribute filter of both pages chooses the attributes that the averages cover. The URL keeps the subset in repeated `attribute` parameters, so a filtered view can be shared as a link. Values change at once. Intervals over a subset are computed from the files a second after the last change of the filter, which takes about 0.4 s per run on Vietnam val and 1–2 s on train, and are cached.
+
 ## Layout
 
 ```
@@ -68,8 +77,9 @@ irap_evaluation_server/
 ├─ archive.py       SubmissionArchive: files, SQLite index and action log, upload checks
 ├─ scoring.py       Scoring settings, the score cache, means over runs and intervals
 ├─ scoring_worker.py  The background thread that scores and computes intervals
-├─ components/      Page frame, native form controls, CSS, HTML fragments
-├─ pages/           One module per page or group of pages
+├─ method_ranking.py  The rows of the method table and their order
+├─ components/      Page frame, native form controls, attribute filter, score tables, CSS
+├─ pages/           One module per page
 └─ server.py        The irap-eval-server command
 ```
 

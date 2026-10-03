@@ -31,7 +31,7 @@ class DatasetConfig:
         metadata_dir: The metadata directory of the release (see `irap_data.load_irap_metadata`).
         images_dir: The dataset directory with the segment images, or None without images.
         analysis_splits: The splits with confusion matrices, the map and the error browser. All
-            splits get scores and a leaderboard, so that e.g. the test labels can be kept out of
+            splits get scores and the Scores page, so that e.g. the test labels can be kept out of
             error browsing.
     """
 

@@ -2,7 +2,9 @@
 
 Tasks run one at a time, by priority: scoring first, then intervals that a page waits for, then
 the intervals of the default views (all scored attributes), which are computed in advance so
-that pages show them at once. A task that is already queued is not queued again.
+that pages show them at once. A task can be queued at several priorities, e.g. default intervals
+that a page waits for. It runs once, at the first of them, and withdrawing the request of a page
+(`ScoringWorker.set_requested_intervals`) leaves it queued at the others.
 """
 
 import enum
@@ -49,7 +51,7 @@ class ScoringWorker:
     calling thread (`run_pending`, e.g. in tests).
 
     Pages read the results from the store and ask for missing ones with `update_submissions` and
-    `request_intervals`.
+    `set_requested_intervals`.
     """
 
     def __init__(self, archive: SubmissionArchive, store: ScoreStore,
@@ -60,30 +62,24 @@ class ScoringWorker:
         self.dataset_contexts = dataset_contexts
         self.settings = settings
         self._condition = threading.Condition()
-        #: Priority -> the queued tasks, in the order of queuing.
+        #: Priority -> the tasks queued at it, in the order of queuing.
         self._priority_to_tasks: dict[TaskPriority, dict[TaskKey, T.Callable[[], None]]] = {
             priority: {} for priority in TaskPriority}
         self._running_keys: set[TaskKey] = set()
         #: Interval key -> an unexpected error of computing them, which is not cached, so that
         #: the next start computes the intervals again.
         self._interval_key_to_error: dict[str, CachedIntervals] = {}
+        #: Owner -> the keys of the intervals that it waits for (see `set_requested_intervals`).
+        self._owner_to_interval_keys: dict[T.Hashable, set[str]] = {}
         self._is_stopping = False
         self._thread: threading.Thread | None = None
 
     # Queue ########################################################################################
 
-    def _get_queued_priority(self, key: TaskKey) -> TaskPriority | None:
-        return next((p for p, tasks in self._priority_to_tasks.items() if key in tasks), None)
-
     def _enqueue(self, key: TaskKey, priority: TaskPriority,
                  function: T.Callable[[], None]) -> None:
         with self._condition:
-            queued_priority = self._get_queued_priority(key)
-            if queued_priority is not None:
-                if queued_priority <= priority:
-                    return
-                del self._priority_to_tasks[queued_priority][key]
-            self._priority_to_tasks[priority][key] = function
+            self._priority_to_tasks[priority].setdefault(key, function)
             self._condition.notify_all()
 
     def _pop_task(self, block: bool) -> tuple[TaskKey, T.Callable[[], None]] | None:
@@ -93,9 +89,11 @@ class ScoringWorker:
             while not (block and self._is_stopping):
                 for tasks in self._priority_to_tasks.values():
                     if tasks:
-                        key = next(iter(tasks))
+                        key, function = next(iter(tasks.items()))
+                        for queued in self._priority_to_tasks.values():
+                            queued.pop(key, None)
                         self._running_keys.add(key)
-                        return key, tasks.pop(key)
+                        return key, function
                 if not block:
                     return None
                 self._condition.wait()
@@ -114,7 +112,8 @@ class ScoringWorker:
 
     def _is_task_pending(self, key: TaskKey) -> bool:
         with self._condition:
-            return self._get_queued_priority(key) is not None or key in self._running_keys
+            return (key in self._running_keys
+                    or any(key in tasks for tasks in self._priority_to_tasks.values()))
 
     def run_pending(self) -> None:
         """Runs the queued tasks, also those that they queue, in the calling thread."""
@@ -153,23 +152,36 @@ class ScoringWorker:
         """None for a dataset that is no longer configured, whose submissions are not shown."""
         return self.dataset_contexts.get(submission.dataset)
 
-    def _select_current_scorings(self,
-                                 submissions: T.Iterable[Submission]) -> dict[int, RunScoring]:
-        """Submission id -> its scoring, for those of `submissions` whose scoring is current (see
+    def is_scoring_current(self, submission: Submission, scoring: RunScoring | None) -> bool:
+        """Whether `scoring`, the stored one of `submission`, is current (see
         `scoring.is_run_scoring_current`)."""
-        submission_id_to_scoring = self.store.list_run_scorings()
-        current = {}
-        for submission in submissions:
-            scoring = submission_id_to_scoring.get(submission.id)
-            context = self._get_context(submission)
-            if (scoring is not None and context is not None
-                    and is_run_scoring_current(scoring, submission, context, self.settings)):
-                current[submission.id] = scoring
-        return current
+        context = self._get_context(submission)
+        return (scoring is not None and context is not None
+                and is_run_scoring_current(scoring, submission, context, self.settings))
 
-    def get_current_scorings(self) -> dict[int, RunScoring]:
-        """`_select_current_scorings` of all submissions, also the deleted ones."""
-        return self._select_current_scorings(self.archive.list_submissions(include_deleted=True))
+    def select_current_scorings(
+            self, submissions: T.Iterable[Submission],
+            submission_id_to_scoring: T.Mapping[int, RunScoring]) -> dict[int, RunScoring]:
+        """Submission id -> its scoring, for those of `submissions` whose scoring is current (see
+        `is_scoring_current`).
+
+        Args:
+            submission_id_to_scoring: The stored scorings (`ScoreStore.get_run_scorings`).
+        """
+        return {s.id: submission_id_to_scoring[s.id] for s in submissions
+                if self.is_scoring_current(s, submission_id_to_scoring.get(s.id))}
+
+    def get_current_scorings(self, submissions: T.Collection[Submission] | None = None
+                             ) -> dict[int, RunScoring]:
+        """`select_current_scorings` of `submissions` with their stored scorings.
+
+        Args:
+            submissions: By default all submissions, also the deleted ones.
+        """
+        if submissions is None:
+            submissions = self.archive.list_submissions(include_deleted=True)
+        return self.select_current_scorings(
+            submissions, self.store.get_run_scorings(s.id for s in submissions))
 
     def is_scoring_pending(self, submission_id: int) -> bool:
         return self._is_task_pending(("score", submission_id))
@@ -193,14 +205,14 @@ class ScoringWorker:
         """Queues what changes when submissions are added, deleted or restored: the scoring of
         those that are not current and not deleted, and the default intervals of their methods."""
         id_to_submission = {s.id: s for s in self.archive.list_submissions(include_deleted=True)}
-        current = self._select_current_scorings(id_to_submission.values())
-        for submission_id in submission_ids:
-            submission = id_to_submission[submission_id]
+        submissions = [id_to_submission[i] for i in submission_ids]
+        current = self.get_current_scorings(submissions)
+        for submission in submissions:
             if self._get_context(submission) is None:
                 continue
-            if not submission.is_deleted and submission_id not in current:
-                self._enqueue(("score", submission_id), TaskPriority.SCORING,
-                              lambda i=submission_id: self._score(i))
+            if not submission.is_deleted and submission.id not in current:
+                self._enqueue(("score", submission.id), TaskPriority.SCORING,
+                              lambda i=submission.id: self._score(i))
             else:  # Scoring queues them otherwise.
                 self._enqueue_default_intervals(submission.dataset, submission.split,
                                                 submission.method.name)
@@ -248,6 +260,27 @@ class ScoringWorker:
                       lambda: self._compute_intervals(request))
         return None
 
+    def set_requested_intervals(self, owner: T.Hashable,
+                                requests: T.Iterable[IntervalRequest]) -> None:
+        """Requests the intervals that `owner`, e.g. a page, waits for, instead of those that it
+        requested before.
+
+        Earlier requests that no other owner waits for are withdrawn, e.g. those of an attribute
+        subset that the user has left: they leave the queue, unless they are also queued
+        otherwise, e.g. as default intervals. A running computation finishes.
+        """
+        key_to_request = {r.key: r for r in requests}
+        with self._condition:
+            earlier_keys = self._owner_to_interval_keys.pop(owner, set())
+            if key_to_request:
+                self._owner_to_interval_keys[owner] = set(key_to_request)
+            held_keys = set().union(*self._owner_to_interval_keys.values())
+            queued = self._priority_to_tasks[TaskPriority.REQUESTED_INTERVALS]
+            for key in earlier_keys - held_keys:
+                queued.pop(("intervals", key), None)
+        for request in key_to_request.values():
+            self.request_intervals(request)
+
     def _enqueue_default_intervals(self, dataset: str, split: str, method_name: str) -> None:
         self._enqueue(("default intervals", dataset, split, method_name),
                       TaskPriority.DEFAULT_INTERVALS,
@@ -258,7 +291,7 @@ class ScoringWorker:
         that are not deleted, on each evaluation set."""
         submissions = [s for s in self.archive.list_submissions()
                        if (s.dataset, s.split, s.method.name) == (dataset, split, method_name)]
-        current = self._select_current_scorings(submissions)
+        current = self.get_current_scorings(submissions)
         for evaluation_set in EVALUATION_SET_NAMES:
             runs = sorted(select_scored_runs(submissions, current, evaluation_set),
                           key=lambda r: r.submission.id)

@@ -7,10 +7,11 @@ from pathlib import Path
 from nicegui import app, ui
 
 from .native_controls import create_native_input
-from .routes import ACTION_LOG_PATH, SUBMISSIONS_PATH
+from .routes import ACTION_LOG_PATH, SCORES_PATH, SUBMISSIONS_PATH
 
 #: (Title, path) of the pages in the navigation.
-NAVIGATION_PAGES = (("Submissions", SUBMISSIONS_PATH), ("Action log", ACTION_LOG_PATH))
+NAVIGATION_PAGES = (("Scores", SCORES_PATH), ("Submissions", SUBMISSIONS_PATH),
+                    ("Action log", ACTION_LOG_PATH))
 
 _STYLES = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
 _SUBMITTER_NAME_KEY = "submitter_name"

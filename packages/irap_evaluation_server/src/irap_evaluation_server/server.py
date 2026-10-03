@@ -36,6 +36,8 @@ def main(argv: list[str] | None = None) -> None:
     from nicegui import app, ui
 
     from .pages.action_log import register_action_log_page
+    from .pages.scores import register_scores_page
+    from .pages.submission import register_submission_page
     from .pages.submissions import register_submission_pages
 
     start_time_s = time.perf_counter()
@@ -51,7 +53,9 @@ def main(argv: list[str] | None = None) -> None:
     scoring_worker.start()
     app.on_shutdown(scoring_worker.stop)
 
+    register_scores_page(archive, dataset_contexts, scoring_worker)
     register_submission_pages(archive, dataset_contexts, scoring_worker.update_submissions)
+    register_submission_page(archive, dataset_contexts, scoring_worker)
     register_action_log_page(archive)
     # No ripple effects on clicks, and no loading bar on requests.
     app.config.quasar_config["ripple"] = False
