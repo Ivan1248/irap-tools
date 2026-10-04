@@ -3,7 +3,6 @@ subset of the attributes (see `scoring` for the scores), and the highlights of c
 
 import dataclasses as dc
 import math
-import re
 import typing as T
 
 import irap_evaluation as ie
@@ -154,16 +153,18 @@ def describe_split_use(split_use: ie.SplitUse, split: str) -> str:
             "unknown": "training splits unknown", "held_out": ""}[split_use]
 
 
-def select_shown_methods(rows: T.Iterable[MethodScores], pattern: re.Pattern[str],
+def select_shown_methods(rows: T.Iterable[MethodScores],
+                         matching_method_names: T.AbstractSet[str],
                          reference_method: str = "",
                          hidden_training_split: str | None = None
                          ) -> tuple[list[MethodScores], int]:
-    """Selects the rows whose method name matches `pattern` (`re.Pattern.search`), and the row
-    of `reference_method`, in their order.
+    """Selects the rows of the methods in `matching_method_names`, e.g. those that a filter
+    matches (`components.view_queries.select_matching_names`), and the row of
+    `reference_method`, in their order.
 
     Args:
-        reference_method: The method that the others are compared with, shown even if it does
-            not match `pattern` or was trained on `hidden_training_split`.
+        reference_method: The method that the others are compared with, shown even if it is not
+            in `matching_method_names` or was trained on `hidden_training_split`.
         hidden_training_split: If not None, the methods trained on this split
             (`get_method_split_use`) are hidden.
 
@@ -174,7 +175,7 @@ def select_shown_methods(rows: T.Iterable[MethodScores], pattern: re.Pattern[str
     for row in rows:
         if row.method_name == reference_method:
             shown.append(row)
-        elif not pattern.search(row.method_name):
+        elif row.method_name not in matching_method_names:
             continue
         elif (hidden_training_split is not None
               and get_method_split_use(row, hidden_training_split) == "training"):

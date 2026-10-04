@@ -27,6 +27,7 @@ from irap_evaluation_server.scoring import (
     group_scored_models_by_method,
     is_scoring_current,
     make_interval_request,
+    remove_class_scores,
 )
 from irap_evaluation_server.scoring_worker import ScoringWorker, TaskPriority
 
@@ -61,6 +62,19 @@ def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker
     assert cached.value is not None
     assert_close(cached.value, ie.compute_bootstrap_intervals(
         [result], num_resamples=worker.settings.num_resamples, seed=0))
+
+
+def test_remove_class_scores(archive, dataset_contexts, store, worker):
+    submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
+    score_and_get_models(worker, [submission.id])
+    report = store.get_score_report(submission.id, "reference")
+    original = json.loads(json.dumps(report))
+
+    reduced = remove_class_scores(report)
+    assert report["classes"] and reduced["classes"] is None
+    assert {k: v for k, v in reduced.items() if k != "classes"} == {
+        k: v for k, v in report.items() if k != "classes"}
+    assert report == original
 
 
 def test_method_scores_and_intervals_over_a_subset(archive, dataset_contexts, worker):

@@ -39,12 +39,18 @@ class DatasetConfig:
         metadata_dir: The metadata directory of the release (see `irap_data.load_irap_metadata`),
             e.g. `dataset_dir` for Vietnam.
         analysis_splits: The splits of the Analysis page, e.g. without test to keep its labels
-            unseen. All splits are scored.
+            unseen. All splits are scored. The others are protected (`is_protected_split`).
     """
 
     dataset_dir: Path
     metadata_dir: Path
     analysis_splits: tuple[str, ...]
+
+    def is_protected_split(self, split: str) -> bool:
+        """Returns whether the labels of a split are protected: it is not one of
+        `analysis_splits`, e.g. test. Everyone sees its per-attribute and averaged scores, but
+        only admins its per-class scores, and no one its segments on the Analysis page."""
+        return split not in self.analysis_splits
 
 
 @dc.dataclass(frozen=True)

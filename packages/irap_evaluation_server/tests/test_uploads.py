@@ -9,7 +9,12 @@ import pytest
 from run_helpers import OTHER_SPLIT, make_model, with_split, write_upload
 from synthetic_vietnam import SPLIT
 
-from irap_evaluation_server.uploads import apply_upload, is_archive_upload, plan_upload
+from irap_evaluation_server import uploads
+from irap_evaluation_server.uploads import (
+    apply_upload,
+    is_archive_upload,
+    plan_upload,
+)
 
 
 def make_model_files(dataset_contexts, splits=(SPLIT, OTHER_SPLIT), **kwargs):
@@ -104,7 +109,7 @@ def test_upload_of_an_archive(archive, two_split_contexts, tmp_path):
     planned = plan_archive(archive, two_split_contexts,
                            make_model_files(two_split_contexts, model_seed=1), tmp_path)
     member_sha256s = read_member_sha256s(planned.uploaded_path)
-    submissions = apply_upload(archive, planned, submitter="Ana")
+    submissions = apply_upload(archive, planned, submitter="Alice")
 
     assert not list(archive.uploads_dir.iterdir())
     assert [(s.split, s.label, s.model.description) for s in submissions] == [
@@ -124,7 +129,7 @@ def test_upload_of_an_archive(archive, two_split_contexts, tmp_path):
 def test_archive_seed_replaces_the_seeds_of_all_files(archive, two_split_contexts, tmp_path):
     planned = plan_archive(archive, two_split_contexts,
                            make_model_files(two_split_contexts, model_seed=1), tmp_path, seed=5)
-    submissions = apply_upload(archive, planned, submitter="Ana")
+    submissions = apply_upload(archive, planned, submitter="Alice")
     assert [s.label for s in submissions] == ["m/seed5", "m/seed5"]
     for submission in submissions:
         stored = ie.read_predictions(archive.get_predictions_path(submission.id))
@@ -199,3 +204,13 @@ def test_encrypted_archive_member_is_refused(archive, dataset_contexts):
     with pytest.raises(ValueError, match=r"^m\.parquet: It cannot be extracted: .*encrypted"):
         plan_upload(archive, dataset_contexts, path, file_name="m.zip")
     assert list(archive.uploads_dir.iterdir()) == [path]
+
+
+def test_archive_extraction_is_limited(archive, dataset_contexts, monkeypatch):
+    monkeypatch.setattr(uploads, "MAX_UPLOAD_NUM_BYTES", 1000)
+    path = archive.make_upload_path("m.zip")
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr("m.parquet", bytes(10 ** 6))  # A zip bomb, compressed to 1 kB.
+    with pytest.raises(ValueError, match=r"^m\.parquet: The files of the archive have more"):
+        plan_upload(archive, dataset_contexts, path, file_name="m.zip")
+    assert list(archive.uploads_dir.iterdir()) == [path]  # Without the extracted part.

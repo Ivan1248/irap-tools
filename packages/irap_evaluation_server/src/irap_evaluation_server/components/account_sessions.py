@@ -47,7 +47,7 @@ class AccountSessions:
         the archive.
 
         Raises:
-            ValueError: If no one is signed in, or the account cannot write.
+            ValueError: If no one is signed in or the account cannot write.
         """
         if (account := self.get_account()) is None:
             raise ValueError("You are not signed in. Sign in to change the archive.")

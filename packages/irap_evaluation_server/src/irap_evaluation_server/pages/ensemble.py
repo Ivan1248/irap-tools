@@ -20,7 +20,7 @@ from ..components.native_controls import (
 )
 from ..components.page_frame import create_page_frame, create_write_permission_panel
 from ..components.routes import ENSEMBLE_PATH, make_query_path
-from ..components.view_queries import compile_name_pattern, parse_dataset
+from ..components.view_queries import parse_dataset, select_matching_names
 from ..datasets import DatasetContext
 from ..ensembles import (
     EnsembleMember,
@@ -115,8 +115,8 @@ def _create_ensemble_form(archive: ModelArchive,
     id_to_checkbox: dict[int, ui.element] = {}
     id_to_container: dict[int, ui.element] = {}
     id_to_label = {m.model.id: m.model.label for m in member_models}
-    # The member filter: by model label.
-    member_pattern = compile_name_pattern("")
+    # The labels that the member filter matches.
+    matching_labels = set(id_to_label.values())
     form = {"name": "", "seed": "", "description": "", "intersect_segments": False}
 
     def get_plan(submissions: T.Sequence[Submission]) -> EnsemblePlan:
@@ -143,12 +143,12 @@ def _create_ensemble_form(archive: ModelArchive,
         of the plan is visible."""
         for model_id, container in id_to_container.items():
             container.set_visibility(is_selected.get(model_id, False)
-                                     or bool(member_pattern.search(id_to_label[model_id])))
+                                     or id_to_label[model_id] in matching_labels)
 
     def on_filter_changed(text: str) -> None:
-        nonlocal member_pattern
+        nonlocal matching_labels
         try:
-            member_pattern = compile_name_pattern(text)
+            matching_labels = select_matching_names(text, id_to_label.values())
         except ValueError as e:
             set_status(filter_status, str(e), is_error=True)
             return

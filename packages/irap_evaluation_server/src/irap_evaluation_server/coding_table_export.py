@@ -18,6 +18,10 @@ from .model_listing import ModelSummary
 
 #: The file formats (suffixes without the dot).
 CODING_TABLE_FORMATS = ("xlsx", "csv")
+#: The first characters that make spreadsheet programs read a .csv cell as a formula, which a
+#: coder name must not start with, since it can be a method name that a user chose. An .xlsx file
+#: has it as text (`irap_evaluation.reports.coding_tables.write_coding_table`).
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
 @dc.dataclass(frozen=True)
@@ -94,7 +98,8 @@ def export_model_coding_table(archive: ModelArchive,
     Raises:
         LookupError: If there is no such model.
         ValueError: For another format, an invalid date, a dataset that is not configured, no
-            splits, a split without an active file, and see `write_model_coding_table`.
+            splits, a split without an active file, a .csv coder name that spreadsheet
+            programs read as a formula, and see `write_model_coding_table`.
     """
     if file_format not in CODING_TABLE_FORMATS:
         raise ValueError(f"Unknown format {file_format!r}.")
@@ -112,9 +117,12 @@ def export_model_coding_table(archive: ModelArchive,
     submissions = [split_to_active[s] for s in dict.fromkeys(splits)]
     file_name = to_file_name(f"{model.label}.{'+'.join(s.split for s in submissions)}"
                              f".coding_table.{file_format}")
+    coder_name = coder_name or model.method_name
+    if file_format == "csv" and coder_name.startswith(_FORMULA_PREFIXES):
+        raise ValueError(f"The coder name {coder_name!r} starts with {coder_name[0]!r}, which"
+                         f" spreadsheet programs read as a formula. Enter another coder name.")
     with tempfile.TemporaryDirectory(prefix="coding_table_") as directory:
         path = Path(directory) / file_name
-        write_model_coding_table(archive, context, submissions, path,
-                                 coder_name=coder_name or model.method_name,
+        write_model_coding_table(archive, context, submissions, path, coder_name=coder_name,
                                  coding_date=coding_date)
         return CodingTableFile(file_name, path.read_bytes())

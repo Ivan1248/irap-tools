@@ -1,6 +1,7 @@
 """The Sign-in and Register pages (`accounts`), and the endpoints of their forms and of the
 sign-out button. All are plain forms, so that browsers can save the password."""
 
+import asyncio
 import typing as T
 
 from fastapi import Form, HTTPException, Request
@@ -26,6 +27,10 @@ from ..components.routes import (
 #: The key in the user storage of why a registration was refused, which the Register page shows
 #: once. It is not in the URL, so that a link cannot make the page show any text.
 _REGISTRATION_ERROR_KEY = "registration_error"
+#: The most passwords that are hashed at once (about 16 MiB and 50 ms each,
+#: `accounts.hash_password`), so that many sign-in or registration requests cannot take the
+#: memory or the threads of `run.io_bound`, which other work also uses.
+_MAX_CONCURRENT_HASHES = 2
 
 
 def _make_input_html(label: str, attributes: str) -> str:
@@ -80,12 +85,15 @@ def _create_form_panel(title: str, intro: str, account: Account | None, error: s
 
 
 def register_sign_in_pages(sessions: AccountSessions) -> None:
+    password_hashing = asyncio.Semaphore(_MAX_CONCURRENT_HASHES)
+
     @app.post(SIGN_IN_ENDPOINT_PATH)
     async def sign_in(name: T.Annotated[str, Form()], password: T.Annotated[str, Form()],
                       next_url: T.Annotated[str, Form(alias="next")] = "") -> RedirectResponse:
         next_path = _to_next_path(next_url)
-        # None also if the server is stopping.
-        account = await run.io_bound(sessions.accounts.verify, name.strip(), password)
+        async with password_hashing:
+            # None also if the server is stopping.
+            account = await run.io_bound(sessions.accounts.verify, name.strip(), password)
         if account is None:
             return RedirectResponse(make_query_path(SIGN_IN_PATH,
                                                     {"next": next_path, "failed": "1"}),
@@ -101,7 +109,8 @@ def register_sign_in_pages(sessions: AccountSessions) -> None:
         try:
             if repeated_password != password:
                 raise ValueError("The passwords differ.")
-            account = await run.io_bound(sessions.accounts.register, name, password)
+            async with password_hashing:
+                account = await run.io_bound(sessions.accounts.register, name, password)
         except ValueError as e:
             app.storage.user[_REGISTRATION_ERROR_KEY] = str(e)
             return RedirectResponse(get_register_path(next_path), status_code=303)

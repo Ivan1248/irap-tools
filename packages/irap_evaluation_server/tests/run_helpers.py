@@ -91,5 +91,5 @@ def add_model(archive, dataset_contexts, predictions, description=None):
     Returns the new submission."""
     planned = plan_upload(archive, dataset_contexts, write_upload(archive, predictions),
                           file_name="model.parquet", description=description)
-    [submission] = apply_upload(archive, planned, submitter="Ana")
+    [submission] = apply_upload(archive, planned, submitter="Al")
     return submission

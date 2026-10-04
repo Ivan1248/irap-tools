@@ -2,9 +2,10 @@
 
 Anyone can view the archive, also without an account. The permission of an account
 (`Permission`) says what else it may do: 'view' nothing else, 'write' also change the archive,
-and 'admin' also change the permissions of the accounts and remove them. The first account to
-register is an admin, and later ones can view until an admin gives them more. There is always an
-admin.
+and 'admin' also download the per-class scores of the protected splits
+(`config.DatasetConfig.is_protected_split`), and change the permissions of the accounts and
+remove them. The first account to register is an admin, and later ones can view until an admin
+gives them more. There is always an admin.
 
 The accounts are in `accounts.sqlite3` in the data directory, apart from the archive. Passwords
 are stored as scrypt hashes. Account names are unique regardless of the case of ASCII letters.
@@ -28,7 +29,8 @@ PERMISSION_DESCRIPTIONS: T.Mapping[Permission, str] = {
     "view": "Can view, like visitors without an account.",
     "write": "Can also upload, replace and delete files, delete and restore models, edit"
              " descriptions and create ensembles.",
-    "admin": "Can also change the permissions of the accounts and remove them.",
+    "admin": "Can also download the per-class scores of the splits that are not analysed, e.g."
+             " test, and change the permissions of the accounts and remove them.",
 }
 
 DATABASE_FILE_NAME = "accounts.sqlite3"
@@ -145,6 +147,15 @@ def _find_account(connection: sqlite3.Connection, name: str) -> Account | None:
     return None if row is None else _to_account(row)
 
 
+def _check_name_is_free(connection: sqlite3.Connection, name: str) -> None:
+    """
+    Raises:
+        ValueError: If an account has the name.
+    """
+    if _find_account(connection, name) is not None:
+        raise ValueError(f"The account name {name!r} is taken.")
+
+
 def _get_account_changed_by_admin(connection: sqlite3.Connection, name: str,
                                   actor: str) -> Account:
     """Returns the account that the admin `actor` changes.
@@ -220,11 +231,12 @@ class AccountStore:
         """
         name = check_account_name(name)
         check_new_password(password)
+        with connect(self.database_path) as connection:  # Before the slow hashing.
+            _check_name_is_free(connection, name)
         # Before the transaction, so that it does not hold the lock during the hashing.
         password_hash = hash_password(password)
         with begin_write(self.database_path) as connection:
-            if _find_account(connection, name) is not None:
-                raise ValueError(f"The account name {name!r} is taken.")
+            _check_name_is_free(connection, name)  # Also if it was registered meanwhile.
             account = Account(name, password_hash,
                               "view" if _has_accounts(connection) else "admin", get_utc_now())
             connection.execute(

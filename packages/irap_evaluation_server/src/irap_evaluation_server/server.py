@@ -19,14 +19,30 @@ from .prediction_analysis import AlignedPredictionsCache
 from .scoring import ScoreStore
 from .scoring_worker import ScoringWorker
 
+#: The length of the key of the session cookies, in hex digits (256 bits).
+_STORAGE_SECRET_LENGTH = 64
+
 
 def _load_storage_secret(data_dir: Path) -> str:
     """Loads the key of NiceGUI's session cookies, created on first use, so that the
-    per-browser storage (e.g. the user's name) survives restarts."""
+    per-browser storage (e.g. the signed-in account) survives restarts.
+
+    Raises:
+        ValueError: If the stored key is shorter than `_STORAGE_SECRET_LENGTH`, e.g. empty after
+            a crash, since cookies signed with it could be forged.
+    """
     path = data_dir / "storage_secret.txt"
     if not path.is_file():
-        path.write_text(secrets.token_hex(32), encoding="utf-8")
-    return path.read_text(encoding="utf-8").strip()
+        # Readable only by the server's user, since the key signs the session cookies.
+        file_descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file:
+            file.write(secrets.token_hex(_STORAGE_SECRET_LENGTH // 2))
+    secret = path.read_text(encoding="utf-8").strip()
+    if len(secret) < _STORAGE_SECRET_LENGTH:
+        raise ValueError(f"{path} has a key of {len(secret)} characters, fewer than"
+                         f" {_STORAGE_SECRET_LENGTH}. Delete it to make a new one, which signs"
+                         f" out all users.")
+    return secret
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -40,6 +56,7 @@ def main(argv: list[str] | None = None) -> None:
     from nicegui import app, ui
 
     from .components.account_sessions import AccountSessions
+    from .components.request_checks import SameOriginMiddleware
     from .components.routes import REGISTER_PATH, VENDOR_PATH
     from .pages.accounts import register_accounts_page
     from .pages.action_log import register_action_log_page
@@ -55,8 +72,10 @@ def main(argv: list[str] | None = None) -> None:
         ensure_map_libraries(vendor_dir)
         map_error = None
     except (OSError, ValueError, http.client.HTTPException) as e:
-        map_error = f"The map libraries could not be downloaded into {vendor_dir}: {e}"
-        print(f"{map_error} The Analysis page shows no map.")
+        print(f"The map libraries could not be downloaded into {vendor_dir}: {e} The Analysis"
+              f" page shows no map.")
+        # Without the path and the error, which visitors need not see.
+        map_error = "The map libraries could not be downloaded when the server started."
     start_time_s = time.perf_counter()
     dataset_contexts = load_dataset_contexts(config.datasets)
     print(f"Loaded the metadata of {', '.join(dataset_contexts)} in"
@@ -75,6 +94,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"There are no accounts yet. The first to register at {REGISTER_PATH} becomes the"
               f" admin.")
     sessions = AccountSessions(accounts)
+    # The session cookie is also sent with the requests of pages on other hosts of the domain.
+    app.add_middleware(SameOriginMiddleware)
     register_sign_in_pages(sessions)
     register_accounts_page(sessions)
     register_scores_page(dataset_contexts, scoring_worker, sessions)
@@ -92,9 +113,14 @@ def main(argv: list[str] | None = None) -> None:
     app.config.quasar_config["loadingBar"]["skipHijack"] = True
     # No sad face on NiceGUI's error pages (`nicegui/error.py`, whose SVG has the id "Ebene_1").
     ui.add_css("div:has(> svg#Ebene_1) { display: none; }", shared=True)
+    # Browsers refuse a cookie with the prefix __Host- from other hosts of the domain, e.g. one
+    # that a page on another host sets before a user signs in, so that its browser would share
+    # the session (session fixation). The prefix needs HTTPS.
+    session_cookie = "__Host-session" if config.is_served_over_https else "session"
     ui.run(host=config.host, port=config.port, title="iRAP evaluation", favicon="🛣️",
            reload=False, show=False, storage_secret=_load_storage_secret(config.data_dir),
-           session_middleware_kwargs={"https_only": config.is_served_over_https})
+           session_middleware_kwargs={"https_only": config.is_served_over_https,
+                                      "session_cookie": session_cookie})
 
 
 if __name__ == "__main__":

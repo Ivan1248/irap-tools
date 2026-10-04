@@ -29,7 +29,7 @@ def test_upload_creates_a_model(archive, dataset_contexts):
     planned = plan(archive, dataset_contexts, predictions, description=" first model ")
     assert planned.update.model is None and planned.update.confirmations == []
     uploaded_sha256 = hashlib.sha256(planned.uploaded_path.read_bytes()).hexdigest()
-    [submission] = apply_upload(archive, planned, submitter="Ana")
+    [submission] = apply_upload(archive, planned, submitter="Al")
 
     assert not planned.uploaded_path.exists()
     stored_path = archive.get_predictions_path(submission.id)
@@ -46,14 +46,14 @@ def test_upload_creates_a_model(archive, dataset_contexts):
     assert submission.output_kind == "probs"
     assert submission.num_segments == predictions.num_segments
     assert submission.num_attributes == len(predictions.attributes)
-    assert submission.submitter == "Ana"
+    assert submission.submitter == "Al"
     assert archive.list_models() == [model]
     assert archive.list_submissions() == [submission]
     assert archive.get_submission(submission.id) == submission
 
     [action] = archive.list_actions()
     assert (action.actor, action.action, action.model_id, action.submission_id) == (
-        "Ana", "upload", model.id, submission.id)
+        "Al", "upload", model.id, submission.id)
     assert action.details == {"file_name": "m.predictions.parquet", "notes": []}
 
 
@@ -81,7 +81,7 @@ def test_description_change_needs_confirmation(archive, dataset_contexts):
     planned = plan(archive, dataset_contexts, predictions, description="second")
     assert any("Changes the description of m from 'first' to 'second'" in c
                for c in planned.update.confirmations)
-    second = apply_upload(archive, planned, submitter="Ana")[0]
+    second = apply_upload(archive, planned, submitter="Al")[0]
     assert second.model.description == "second"
     assert archive.list_actions()[1].action == "edit_description"
     # A blank description keeps it.
@@ -99,7 +99,7 @@ def test_seed_override_adds_another_model(archive, dataset_contexts):
     planned = plan(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1), seed=2)
     uploaded_sha256 = hashlib.sha256(planned.uploaded_path.read_bytes()).hexdigest()
     assert planned.update.model is None
-    [second] = apply_upload(archive, planned, submitter="Ana")
+    [second] = apply_upload(archive, planned, submitter="Al")
 
     assert second.model.label == "m/seed2" and second.model != first.model
     stored = ie.read_predictions(archive.get_predictions_path(second.id))
@@ -162,14 +162,14 @@ def test_a_change_after_the_planning_is_refused(archive, dataset_contexts):
     other = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=2))
     apply_upload(archive, other, submitter="Bo")
     with pytest.raises(ValueError, match="model m has changed since the files were checked"):
-        apply_upload(archive, planned, submitter="Ana")
+        apply_upload(archive, planned, submitter="Al")
     assert planned.uploaded_path.exists()  # Kept for a retry.
 
     replanned = plan_upload(archive, dataset_contexts, planned.uploaded_path, file_name="m")
     newer = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=3))
     apply_upload(archive, newer, submitter="Bo")
     with pytest.raises(ValueError, match=f"{SPLIT} file of m has changed"):
-        apply_upload(archive, replanned, submitter="Ana")
+        apply_upload(archive, replanned, submitter="Al")
 
 
 def test_delete_and_restore_a_model(archive, dataset_contexts):
@@ -194,7 +194,7 @@ def test_delete_and_restore_a_model(archive, dataset_contexts):
     archive.set_model_deleted(other.model.id, True, actor="Bo")
     planned = plan(archive, dataset_contexts, make_model(dataset_contexts, name="other"))
     assert "Restores the deleted model other." in planned.update.confirmations
-    restored = apply_upload(archive, planned, submitter="Ana")[0]
+    restored = apply_upload(archive, planned, submitter="Al")[0]
     assert not restored.model.is_deleted and restored.is_in_use
     assert [a.action for a in archive.list_actions(model_id=other.model.id)] == [
         "upload", "restore_model", "delete_model", "upload"]
@@ -275,7 +275,7 @@ def test_failed_storing_moves_back_all_files(archive, two_split_contexts, monkey
     # Called after the files are moved, in the transaction.
     monkeypatch.setattr(archive_module, "_get_submission", fail)
     with pytest.raises(RuntimeError, match="after the moves"):
-        archive.apply_model_update(update, submitter="Ana")
+        archive.apply_model_update(update, submitter="Al")
     assert all(new.file_path.exists() for new in new_submissions)
     assert not archive.get_predictions_path(1).exists()
     assert not archive.get_predictions_path(2).exists()

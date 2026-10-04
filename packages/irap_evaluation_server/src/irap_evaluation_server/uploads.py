@@ -7,7 +7,6 @@ applied, so that a refused or cancelled upload can be tried again, e.g. with ano
 """
 
 import dataclasses as dc
-import shutil
 import typing as T
 import zipfile
 import zlib
@@ -26,6 +25,13 @@ from .archive import (
     get_differing_model_fields,
 )
 from .datasets import DatasetContext
+
+#: The most bytes of an uploaded file, and of the files extracted from an uploaded archive, whose
+#: parquet files hardly compress. As `request_body` of `/api/uploads` in deployment/Caddyfile.
+MAX_UPLOAD_NUM_BYTES = 2 * 10 ** 9
+#: `MAX_UPLOAD_NUM_BYTES` for messages.
+MAX_UPLOAD_SIZE_TEXT = f"{MAX_UPLOAD_NUM_BYTES / 1e9:g} GB"
+_COPY_CHUNK_NUM_BYTES = 2 ** 20
 
 
 def parse_seed(text: str) -> int | None:
@@ -144,19 +150,27 @@ def _check_same_model(new: NewSubmission, first: NewSubmission, first_member_nam
                          f" and training and early stopping splits.")
 
 
-def _extract_archive_member(zip_file: zipfile.ZipFile, member: zipfile.ZipInfo,
-                            path: Path) -> None:
-    """Extracts a member to `path`.
+def _extract_archive_member(zip_file: zipfile.ZipFile, member: zipfile.ZipInfo, path: Path,
+                            max_num_bytes: int) -> int:
+    """Extracts a member to `path`. Returns its size.
 
     Raises:
         ValueError: If the member cannot be extracted, e.g. it is encrypted, corrupt, or
-            compressed with an unsupported method.
+            compressed with an unsupported method, or it has more than `max_num_bytes`, e.g.
+            a zip bomb.
     """
+    num_bytes = 0
     try:
         with zip_file.open(member) as source, path.open("wb") as target:
-            shutil.copyfileobj(source, target)
+            while chunk := source.read(_COPY_CHUNK_NUM_BYTES):
+                num_bytes += len(chunk)
+                if num_bytes > max_num_bytes:
+                    raise ValueError(f"The files of the archive have more than"
+                                     f" {MAX_UPLOAD_SIZE_TEXT}.")
+                target.write(chunk)
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError) as e:
         raise ValueError(f"It cannot be extracted: {e}") from e
+    return num_bytes
 
 
 def _prepare_archive(archive: ModelArchive, dataset_contexts: T.Mapping[str, DatasetContext],
@@ -173,13 +187,15 @@ def _prepare_archive(archive: ModelArchive, dataset_contexts: T.Mapping[str, Dat
     except zipfile.BadZipFile as e:
         raise ValueError(f"{file_name} is not a .zip archive: {e}") from e
     prepared: list[NewSubmission] = []
+    num_extracted_bytes = 0
     with zip_file:
         split_to_member_name: dict[str, str] = {}
         for member in _list_archive_members(zip_file, file_name):
             path = archive.make_upload_path(member.filename)
             new_paths += [path, _get_rewritten_path(path)]
             try:
-                _extract_archive_member(zip_file, member, path)
+                num_extracted_bytes += _extract_archive_member(
+                    zip_file, member, path, MAX_UPLOAD_NUM_BYTES - num_extracted_bytes)
                 uploaded = ie.read_predictions(path)
                 split = uploaded.header.split
                 if split in split_to_member_name:

@@ -104,6 +104,11 @@ def test_export_model_coding_table(archive, disjoint_split_contexts):
             ([SPLIT], "csv", "03.10.2026", "YYYY-MM-DD")]:
         with pytest.raises(ValueError, match=message):
             export(splits, file_format, coding_date)
+    with pytest.raises(ValueError, match="formula"):
+        export_model_coding_table(archive, disjoint_split_contexts, first.model.id, [SPLIT],
+                                  "csv", coder_name="=1+1", coding_date="")
+    export_model_coding_table(archive, disjoint_split_contexts, first.model.id, [SPLIT], "xlsx",
+                              coder_name="=1+1", coding_date="")  # As text.
 
 
 def test_parse_coding_date():

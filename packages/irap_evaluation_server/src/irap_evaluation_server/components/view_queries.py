@@ -1,9 +1,10 @@
 """The view settings that several pages share, mostly query parameters."""
 
-import re
+import time
 import typing as T
 
 import irap_evaluation as ie
+import regex  # Unlike `re`, it has timeouts, so that a user's pattern cannot block the server.
 
 from ..datasets import EVALUATION_SET_NAMES, DatasetContext
 from ..method_ranking import PER_ATTRIBUTE_METRIC_NAMES
@@ -12,6 +13,10 @@ from ..method_ranking import PER_ATTRIBUTE_METRIC_NAMES
 #: metric (the `metric` parameter, `parse_per_attribute_metric`).
 VIEW_OPTIONS = {"": "Attribute averages",
                 **{m: f"Per attribute: {m}" for m in PER_ATTRIBUTE_METRIC_NAMES}}
+#: The longest time that a name filter may take over all names (`select_matching_names`).
+#: Plain filters take microseconds, while a catastrophic pattern, e.g. '^(\w|\w\w)*$', can take
+#: minutes.
+NAME_FILTER_TIMEOUT_S = 0.05
 
 
 def parse_dataset(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, DatasetContext],
@@ -73,15 +78,28 @@ def parse_per_attribute_metric(query: T.Mapping[str, str]) -> str:
     return metric_name
 
 
-def compile_name_pattern(text: str) -> re.Pattern[str]:
-    """Compiles the case-insensitive regular expression of a name filter, e.g. of the methods.
-    It is meant for `re.Pattern.search`, so that a part of a name matches, and '' matches all
-    names.
+def select_matching_names(text: str, names: T.Iterable[str]) -> set[str]:
+    """Selects the names that the case-insensitive regular expression of a name filter, e.g. of
+    the methods, matches in any part. '' matches all names.
 
     Raises:
-        ValueError: If `text` is not a valid regular expression.
+        ValueError: If `text` is not a valid regular expression, or matching it takes longer than
+            `NAME_FILTER_TIMEOUT_S` in total.
     """
     try:
-        return re.compile(text, re.IGNORECASE)
-    except re.error as e:
+        pattern = regex.compile(text, regex.IGNORECASE)
+    except regex.error as e:
         raise ValueError(f"Invalid regular expression {text!r}: {e}.") from None
+    deadline_s = time.perf_counter() + NAME_FILTER_TIMEOUT_S
+    matching = set()
+    try:
+        for name in names:
+            remaining_s = deadline_s - time.perf_counter()
+            if remaining_s <= 0:
+                raise TimeoutError
+            if pattern.search(name, timeout=remaining_s) is not None:
+                matching.add(name)
+    except TimeoutError:
+        raise ValueError(f"The regular expression {text!r} takes too long. Simplify it, e.g."
+                         f" without nested repetitions such as '(a+)+'.") from None
+    return matching

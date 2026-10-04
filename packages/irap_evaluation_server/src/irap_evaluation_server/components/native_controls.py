@@ -148,8 +148,8 @@ def set_status(label: ui.label, text: str, is_error: bool = False) -> None:
 
 def create_file_upload_input(label: str, upload_url: str, accept: str,
                              on_status: T.Callable[[dict], None]) -> ui.element:
-    """Creates a labeled file `<input>` that posts the chosen file to `upload_url` as the form field
-    'file'.
+    """Creates a labeled file `<input>` that posts the chosen file to `upload_url` as the request
+    body, with its name as the query parameter 'file_name'.
 
     Args:
         upload_url: An endpoint that stores the file and returns a JSON object.
@@ -167,10 +167,9 @@ def create_file_upload_input(label: str, upload_url: str, accept: str,
         const file = e.target.files[0];
         if (!file) return;
         const uploadId = e.target.uploadId = (e.target.uploadId || 0) + 1;
-        const body = new FormData();
-        body.append("file", file);
         emit({{status: "uploading", upload_id: uploadId, file_name: file.name}});
-        fetch({url}, {{method: "POST", body}})
+        fetch({url} + "?" + new URLSearchParams({{file_name: file.name}}),
+              {{method: "POST", body: file}})
             .then(async (r) => r.ok ? await r.json()
                                     : {{status: "error", message: await r.text()}})
             .catch((error) => ({{status: "error", message: String(error)}}))

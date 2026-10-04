@@ -40,7 +40,7 @@ is_served_over_https = false   # optional, true behind an HTTPS proxy: the sessi
 
 [datasets.vietnam]      # a key of irap_data.DATASET_PRESETS
 dataset_dir = "/data/IRAP_Vietnam"   # the images (FRAMES/) and the metadata
-analysis_splits = ["train", "val"]   # the splits of the Analysis page, e.g. without test to keep its labels unseen
+analysis_splits = ["train", "val"]   # the splits of the Analysis page, e.g. without test to keep its labels unseen; the others are protected
 
 [datasets.bh]
 dataset_dir = "/data/IRAP_BIH"
@@ -57,7 +57,7 @@ The data directory holds:
 - `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
 - `vendor/`: the map libraries,
 - `accounts.sqlite3`: the [accounts](#accounts),
-- `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie.
+- `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie. Keep them, and backups of the data directory, private. Deleting the key signs out all users.
 
 The databases have a schema version and no migrations: the server refuses a data directory of another version, so start with a new `data_dir`.
 
@@ -69,15 +69,21 @@ Users register and sign in with the links in the top bar. An account has one of 
 |---|---|
 | view | View, like visitors without an account. |
 | write | Also upload, replace and delete files, delete and restore models, edit descriptions and create ensembles. |
-| admin | Also change the permissions of the accounts and remove them, on the Accounts page. |
+| admin | Also download the per-class scores of [protected splits](#protected-splits), and change the permissions of the accounts and remove them, on the Accounts page. |
 
 The first account to register is an admin. Later accounts can view until an admin gives them more. The app keeps at least one admin: it refuses to remove the last admin or to take away its admin permission.
 
-`accounts.sqlite3` has scrypt hashes of the passwords. Account names are unique regardless of the case of ASCII letters. A permission change applies at once, also to accounts that are signed in. A session lasts 14 days, or until the account is removed. Every change is checked on the server when it is made, also if a page was opened before a sign-out or a permission change.
+`accounts.sqlite3` has scrypt hashes of the passwords. Account names are unique regardless of the case of ASCII letters. A permission change applies at once, also to accounts that are signed in. A session lasts until 14 days after the browser's first visit, also if it signed in later, or until the account is removed. Every change is checked on the server when it is made, also if a page was opened before a sign-out or a permission change.
 
 There is no password change. An admin can remove an account with a lost password, so that the user can register the name again. If no admin can sign in any more, stop the server and delete `accounts.sqlite3`, which removes all accounts, so that the next to register becomes the admin. The action log keeps the names.
 
 The app does not limit registrations or sign-in attempts. Use long passwords. See [Public deployment](#public-deployment) for HTTPS.
+
+### Protected splits
+
+The splits of a dataset that are not in its `analysis_splits`, e.g. test, are protected: their labels are not shown in detail. Everyone can store their files and see their per-attribute and averaged scores, but they are not on the Analysis page, and only admins get their per-class scores and confusion matrices, which are left out (`"classes": null`) of the scores JSON that others download.
+
+This does not keep the labels secret from writers, since the scores of chosen predictions can reveal labels. Give write permission only to trusted users. The action log shows who stored which file.
 
 ## Public deployment
 
@@ -138,7 +144,16 @@ On a server with a public DNS name, the app listens only on `127.0.0.1`, and [Ca
 
    A network firewall of the institution may also block incoming connections.
 
-To update the app, pull the checkout as `irap-eval` and run `sudo systemctl restart irap-eval-server`. Back up `/srv/irap-eval/data`.
+To update the app, also to the newest versions of its dependencies, e.g. with security fixes:
+
+```bash
+sudo -u irap-eval -H bash -c 'cd ~/irap-tools && git pull && cd ~ \
+    && VIRTUAL_ENV=~/venv uv pip install --upgrade -e irap-tools/packages/irap_data \
+       -e irap-tools/packages/irap_evaluation -e irap-tools/packages/irap_evaluation_server'
+sudo systemctl restart irap-eval-server
+```
+
+Back up `/srv/irap-eval/data`, and keep the backups private.
 
 ## Models and files
 
@@ -148,6 +163,7 @@ A model is, e.g., one trained network, identified by the dataset, method name an
 
 A file is refused if:
 
+- it has more than 2 GB, or the files of a `.zip` archive have more than 2 GB together,
 - it is not a valid prediction file,
 - its dataset is not configured, or its splits, attributes or iRAP codes are not those of the dataset,
 - it lacks segments of its [evaluation sets](../irap_evaluation/docs/evaluation.md#evaluation-sets),
@@ -188,7 +204,7 @@ The Scores page shows the means over each method's models with their bootstrap i
 - On the reference set, "Compare with" adds each method's difference from a reference method, with its interval (`irap_evaluation.compare_methods`, as in `irap-eval compare`). See [comparing methods](../irap_evaluation/docs/evaluation.md#comparing-methods) for how to read them.
 - The attribute filter, here and on the Model page, chooses the attributes that the averages cover. Intervals over a subset are computed a second after the last change and take about 0.4 s per model on Vietnam val and 1–2 s on train.
 
-The URL keeps the view, so it can be shared as a link. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`).
+The URL keeps the view, so it can be shared as a link. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`). For a [protected split](#protected-splits), only admins get its per-class scores (`classes`).
 
 ## Analysis
 

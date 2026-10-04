@@ -3,11 +3,10 @@ downloading prediction files."""
 
 import dataclasses as dc
 import html
-import shutil
 import typing as T
 from pathlib import Path
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from irap_evaluation.reports.evaluation_report import to_file_name
 from nicegui import app, run, ui
@@ -44,11 +43,19 @@ from ..datasets import DatasetContext
 from ..method_ranking import describe_split_use
 from ..model_listing import MethodGroup, ModelSummary, summarize_models_by_method
 from ..scoring_worker import ScoringWorker
-from ..uploads import apply_upload, parse_description, parse_seed, plan_upload
+from ..uploads import (
+    MAX_UPLOAD_NUM_BYTES,
+    MAX_UPLOAD_SIZE_TEXT,
+    apply_upload,
+    parse_description,
+    parse_seed,
+    plan_upload,
+)
 
 #: Uploaded files that are not stored are removed after this time, e.g. those of a closed page
 #: whose client NiceGUI has not deleted.
 _ABANDONED_UPLOAD_AGE_S = 24 * 3600
+_UPLOAD_TOO_LARGE_MESSAGE = f"A file can have at most {MAX_UPLOAD_SIZE_TEXT}."
 _UPLOAD_FORM_TITLE = "Upload predictions"
 
 #: The columns of the models table after the split columns.
@@ -123,9 +130,24 @@ def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Seque
     return make_table_html_from_header(header_html, rows)
 
 
-def _write_upload(source: T.BinaryIO, path: Path) -> None:
-    with path.open("wb") as file:
-        shutil.copyfileobj(source, file)
+async def _write_upload(request: Request, path: Path) -> None:
+    """Writes the body of an upload request to `path`. Removes `path` if that fails, also if the
+    client disconnects.
+
+    Raises:
+        HTTPException: 413 if the body has more than `uploads.MAX_UPLOAD_NUM_BYTES`.
+    """
+    num_bytes = 0
+    try:
+        with path.open("wb") as file:
+            async for chunk in request.stream():
+                num_bytes += len(chunk)
+                if num_bytes > MAX_UPLOAD_NUM_BYTES:
+                    raise HTTPException(status_code=413, detail=_UPLOAD_TOO_LARGE_MESSAGE)
+                file.write(chunk)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 @dc.dataclass
@@ -308,15 +330,18 @@ def register_models_pages(archive: ModelArchive,
                           dataset_contexts: T.Mapping[str, DatasetContext],
                           worker: ScoringWorker, sessions: AccountSessions) -> None:
     @app.post(UPLOAD_PATH)
-    async def receive_upload(file: UploadFile) -> dict:
+    async def receive_upload(request: Request, file_name: str = "") -> dict:
+        # Before the body is read, so that visitors cannot make the server store it.
         try:
             sessions.require_writer_name()
         except ValueError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
+        if int(request.headers.get("content-length", 0)) > MAX_UPLOAD_NUM_BYTES:
+            raise HTTPException(status_code=413, detail=_UPLOAD_TOO_LARGE_MESSAGE)
         await run.io_bound(archive.remove_uploads, older_than_s=_ABANDONED_UPLOAD_AGE_S)
-        path = archive.make_upload_path(file.filename or "")
-        await run.io_bound(_write_upload, file.file, path)
-        return {"status": "uploaded", "upload_name": path.name, "file_name": file.filename}
+        path = archive.make_upload_path(file_name)
+        await _write_upload(request, path)
+        return {"status": "uploaded", "upload_name": path.name, "file_name": file_name}
 
     @app.get(PREDICTIONS_DOWNLOAD_PATH)
     def download_predictions(submission_id: int) -> FileResponse:

@@ -5,7 +5,6 @@ the user shows them."""
 
 import dataclasses as dc
 import html
-import re
 import typing as T
 
 import irap_evaluation as ie
@@ -32,10 +31,10 @@ from ..components.score_tables import (
 )
 from ..components.view_queries import (
     VIEW_OPTIONS,
-    compile_name_pattern,
     parse_dataset_and_split,
     parse_evaluation_set,
     parse_per_attribute_metric,
+    select_matching_names,
 )
 from ..components.work_requests import WorkRequester
 from ..datasets import DatasetContext
@@ -72,7 +71,7 @@ class _ScoresView:
     Attributes:
         metric_name: The per-attribute metric of the per-attribute table, or '' for the
             attribute averages.
-        method_pattern: The regular expression of the shown methods (`compile_name_pattern`),
+        method_pattern: The regular expression of the shown methods (`select_matching_names`),
             '' for all.
         reference_method: The method that the others are compared with, on the reference set
             only, or '' for none.
@@ -167,7 +166,7 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
     requester = WorkRequester(worker)
 
     def show_methods(models: T.Sequence[ScoredModel], subset: AttributeSubset,
-                     pattern: re.Pattern[str]) -> None:
+                     matching_method_names: T.AbstractSet[str]) -> None:
         rows = rank_methods(models, subset.selected, view.sort_metric)
         name_to_comparable = {r.method_name: r for r in list_comparable_methods(rows)}
         with ui.element("div").classes("form-row"):
@@ -185,12 +184,12 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
         if view.reference_method and reference is None:
             ui.label(f"{view.reference_method} cannot be compared, since it has no scores on"
                      f" this split or its models cannot be combined.").classes("error")
-        elif reference is not None and not pattern.search(reference.method_name):
+        elif reference is not None and reference.method_name not in matching_method_names:
             ui.label(f"{reference.method_name} is shown as the reference, although the filter"
                      f" excludes it.").classes("muted")
         reference_method = "" if reference is None else reference.method_name
         shown, num_hidden = select_shown_methods(
-            rows, pattern, reference_method,
+            rows, matching_method_names, reference_method,
             hidden_training_split=None if view.shows_trained_methods else view.split)
         if num_hidden:
             ui.label(f"Number of hidden methods trained on {view.split}: {num_hidden}.").classes(
@@ -237,7 +236,7 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
             title += (f": {view.metric_name} of {subset.label}" if view.metric_name
                       else f": averages over {subset.label}")
         ui.label(title).classes("section-title")
-        pattern = None
+        matching_method_names = None
         if not models:
             ui.label("No models are scored on this evaluation set.").classes("muted")
             notes = {n for s in current.values() if s.get_scores(view.evaluation_set) is None
@@ -248,13 +247,14 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
             ui.label("Select at least one attribute.").classes("error")
         else:
             try:
-                pattern = compile_name_pattern(view.method_pattern)
+                matching_method_names = select_matching_names(
+                    view.method_pattern, {m.submission.model.method_name for m in models})
             except ValueError as e:
                 ui.label(str(e)).classes("error")
-        if pattern is None:
+        if matching_method_names is None:
             requester.update({})  # Withdraws the requests of an earlier render.
         else:
-            show_methods(models, subset, pattern)
+            show_methods(models, subset, matching_method_names)
 
         unlisted = [(s, reason) for s in submissions
                     if (reason := get_unscored_reason(s, submission_id_to_scoring.get(s.id),

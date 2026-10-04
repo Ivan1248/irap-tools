@@ -12,7 +12,7 @@ from irap_evaluation_server.components.score_tables import (
     make_method_table_html,
     make_per_attribute_table_html,
 )
-from irap_evaluation_server.components.view_queries import compile_name_pattern
+from irap_evaluation_server.components.view_queries import select_matching_names
 from irap_evaluation_server.method_ranking import (
     CellHighlight,
     compute_highlights,
@@ -112,8 +112,9 @@ def test_select_shown_methods():
             make_method_scores("t", {"amF1": 0.9}, training_splits=("val",))]
 
     def select(text, reference_method="", hidden_training_split=None):
-        shown, num_hidden = select_shown_methods(rows, compile_name_pattern(text),
-                                                 reference_method, hidden_training_split)
+        shown, num_hidden = select_shown_methods(
+            rows, select_matching_names(text, [r.method_name for r in rows]), reference_method,
+            hidden_training_split)
         return [r.method_name for r in shown], num_hidden
 
     assert select("") == (["a-1", "x", "B-2", "t"], 0)
@@ -127,8 +128,14 @@ def test_select_shown_methods():
     assert select("", hidden_training_split="test") == (["a-1", "x", "B-2", "t"], 0)
     assert select("", "t", hidden_training_split="val") == (["a-1", "x", "B-2", "t"], 0)
     assert select("^a", hidden_training_split="val") == (["a-1"], 0)  # Only matching rows.
+
+
+def test_select_matching_names_refuses_invalid_and_slow_patterns():
     with pytest.raises(ValueError, match="Invalid regular expression"):
-        compile_name_pattern("a(")
+        select_matching_names("a(", ["a"])
+    # Exponential backtracking, which `regex` does not avoid, unlike for e.g. '(a+)+#'.
+    with pytest.raises(ValueError, match="too long"):
+        select_matching_names(r"^(\w|\w\w)*$", ["a" * 40 + "!"])
 
 
 def test_summarize_models_by_method():

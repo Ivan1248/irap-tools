@@ -412,6 +412,13 @@ class ScoreStore:
                  cached.message, cached.computed_at.isoformat()))
 
 
+def remove_class_scores(report: T.Mapping[str, T.Any]) -> dict[str, T.Any]:
+    """Returns a copy of a score report (`ScoreStore.get_score_report`) with its per-class scores
+    and confusion matrices (`classes`) set to None, e.g. for a protected split
+    (`config.DatasetConfig.is_protected_split`)."""
+    return {**report, "classes": None}
+
+
 def is_scoring_current(scoring: SubmissionScoring, submission: Submission,
                        context: DatasetContext, settings: ScoringSettings) -> bool:
     """Checks whether a scoring holds for the current settings and evaluation sets, so that the

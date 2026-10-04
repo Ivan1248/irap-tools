@@ -114,7 +114,7 @@ def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts
 
 def test_an_ensemble_is_refused_if_a_member_changes(archive, two_split_contexts, submissions):
     update = _prepare(archive, two_split_contexts, submissions, "ab")
-    archive.delete_submission(submissions[("b", OTHER_SPLIT)].id, actor="Ana")
+    archive.delete_submission(submissions[("b", OTHER_SPLIT)].id, actor="Al")
     with pytest.raises(ValueError, match=f"{OTHER_SPLIT} file #.* of b, which the new files are"
                                          f" made of, or its model has been deleted"):
         archive.apply_model_update(update, submitter="Bo")
@@ -130,7 +130,7 @@ def test_an_ensemble_is_refused_if_its_model_gets_another_split(archive, two_spl
     other = _prepare(archive, two_split_contexts, submissions, "ab")
     archive.apply_model_update(archive.plan_model_update(
         [n for n in other.new_submissions if n.split == OTHER_SPLIT], action="upload",
-        description=None), submitter="Ana")
+        description=None), submitter="Al")
     discard_model_update(other)
     with pytest.raises(ValueError, match="files of ens have changed"):
         archive.apply_model_update(update, submitter="Bo")

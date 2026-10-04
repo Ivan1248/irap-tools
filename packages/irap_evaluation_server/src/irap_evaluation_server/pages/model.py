@@ -1,6 +1,7 @@
 """The Model page: a model's details, files, scores, coding-table export and actions, and the
 endpoint for downloading the scores of a submission."""
 
+import asyncio
 import dataclasses as dc
 import functools
 import html
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse
 from irap_evaluation.reports.evaluation_report import to_file_name
 from nicegui import app, run, ui
 
-from ..accounts import can_write
+from ..accounts import can_write, is_admin
 from ..archive import ADDING_ACTION_KINDS, ActionLogEntry, Model, ModelArchive, Submission
 from ..coding_table_export import (
     CODING_TABLE_FORMATS,
@@ -55,10 +56,17 @@ from ..components.routes import (
 )
 from ..components.score_tables import make_interval_note, make_model_scores_html
 from ..components.work_requests import WorkRequester
+from ..config import DatasetConfig
 from ..datasets import DatasetContext
 from ..method_ranking import collect_scored_attributes, get_unscored_reason
 from ..model_listing import ModelSummary
-from ..scoring import ResultState, ScoredModel, compute_method_scores, make_interval_request
+from ..scoring import (
+    ResultState,
+    ScoredModel,
+    compute_method_scores,
+    make_interval_request,
+    remove_class_scores,
+)
 from ..scoring_worker import ScoringWorker
 
 
@@ -68,6 +76,12 @@ def _make_attachment_header(file_name: str) -> str:
     quoted = urllib.parse.quote(file_name)
     return (f'attachment; filename="{file_name}"' if quoted == file_name
             else f"attachment; filename*=utf-8''{quoted}")
+
+
+def _can_see_class_scores(config: DatasetConfig, split: str, is_admin: bool) -> bool:
+    """Returns whether an account can see the per-class scores of a split, which are only for
+    admins on a protected split (`DatasetConfig.is_protected_split`)."""
+    return is_admin or not config.is_protected_split(split)
 
 
 @dc.dataclass(frozen=True)
@@ -98,18 +112,23 @@ class _ModelPage:
 
     def __init__(self, archive: ModelArchive,
                  dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
-                 get_actor: T.Callable[[], str], can_write: bool, snapshot: _ModelSnapshot):
+                 coding_table_lock: asyncio.Lock, get_actor: T.Callable[[], str], can_write: bool,
+                 is_admin: bool, snapshot: _ModelSnapshot):
         """
         Args:
+            coding_table_lock: Held while a coding table is made, shared by the pages.
             get_actor: See `run_change_in_thread`.
             can_write: Whether the account that was signed in when the page was created could
                 write.
+            is_admin: Whether that account was an admin.
         """
         self.archive = archive
         self.dataset_contexts = dataset_contexts
         self.worker = worker
+        self.coding_table_lock = coding_table_lock
         self.get_actor = get_actor
         self.can_write = can_write
+        self.is_admin = is_admin
         self.model_id = snapshot.model.id
         #: What the panels show, loaded again after each change.
         self.snapshot = snapshot
@@ -231,7 +250,14 @@ class _ModelPage:
                            " if (button) emit(button.dataset.deleteId); }")
 
         async def on_delete_clicked(submission_id: int) -> None:
-            submission = self.archive.get_submission(submission_id)
+            # From the shown files, so that only files of this model are deleted.
+            # `ModelArchive.delete_submission` refuses a file that was deleted meanwhile.
+            submission = next((s for s in self.snapshot.submissions if s.id == submission_id),
+                              None)
+            if submission is None:  # E.g. from a crafted event.
+                set_status(status_label, f"File #{submission_id} is not a file of this model.",
+                           is_error=True)
+                return
             changes = [f"Deletes the {submission.split} file #{submission.id} of"
                        f" {submission.label}, so that the model has no {submission.split} scores."
                        f" It can still be downloaded, but only an upload restores it."]
@@ -331,7 +357,10 @@ class _ModelPage:
         split_use = submission.model_info.get_split_use(submission.split)
         if (explanation := ie.explain_split_use(split_use, submission.split)) is not None:
             ui.label(explanation).classes("error" if split_use == "training" else "muted")
-        is_analysed = submission.is_in_use and submission.split in context.config.analysis_splits
+        is_analysed = (submission.is_in_use
+                       and not context.config.is_protected_split(submission.split))
+        can_see_class_scores = _can_see_class_scores(context.config, submission.split,
+                                                     self.is_admin)
         set_to_scores = {m.scores.evaluation_set: compute_method_scores(
                              submission.label, [m], subset.selected) for m in models}
         set_to_state = interval_requester.update(
@@ -348,6 +377,9 @@ class _ModelPage:
             with ui.element("div").classes("form-row"):
                 ui.link("Download the scores over all attributes (JSON)",
                         get_scores_download_path(submission.id, name))
+                if not can_see_class_scores:
+                    ui.label(f"Without per-class scores, since the labels of the"
+                             f" {submission.split} split are protected.").classes("muted")
                 if is_analysed:
                     ui.link("Open in Analysis", AnalysisView(
                         submission.dataset, submission.split, evaluation_set=name,
@@ -400,12 +432,17 @@ class _ModelPage:
                 return
             splits = [s for s, is_chosen in form["split_to_is_chosen"].items() if is_chosen]
             state["is_preparing"] = True
-            set_status(status_label, f"Preparing the .{file_format} file …")
             try:
-                coding_table = await run_in_thread_showing_errors(functools.partial(
-                    export_model_coding_table, self.archive, self.dataset_contexts,
-                    self.model_id, splits, file_format, coder_name=form["coder"],
-                    coding_date=form["date"]), status_label)
+                if self.coding_table_lock.locked():
+                    set_status(status_label, "Waiting for the coding table of another page …")
+                async with self.coding_table_lock:
+                    if self.client.is_deleted:
+                        return
+                    set_status(status_label, f"Preparing the .{file_format} file …")
+                    coding_table = await run_in_thread_showing_errors(functools.partial(
+                        export_model_coding_table, self.archive, self.dataset_contexts,
+                        self.model_id, splits, file_format, coder_name=form["coder"],
+                        coding_date=form["date"]), status_label)
             finally:
                 state["is_preparing"] = False
             if coding_table is None or self.client.is_deleted:
@@ -434,6 +471,10 @@ class _ModelPage:
 def register_model_page(archive: ModelArchive,
                         dataset_contexts: T.Mapping[str, DatasetContext],
                         worker: ScoringWorker, sessions: AccountSessions) -> None:
+    # One coding table at a time, since anyone can make one, and it can take tens of seconds in
+    # the threads of `run.io_bound`, which changes and sign-ins also use.
+    coding_table_lock = asyncio.Lock()
+
     @app.get(SCORES_DOWNLOAD_PATH)
     def download_scores(submission_id: int, evaluation_set: str) -> JSONResponse:
         try:
@@ -441,9 +482,15 @@ def register_model_page(archive: ModelArchive,
         except LookupError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         report = worker.store.get_score_report(submission_id, evaluation_set)
-        if report is None:
+        # Without the configuration of the dataset, it is not known whether the split is
+        # protected. The Model page does not show such scores either.
+        context = dataset_contexts.get(submission.dataset)
+        if report is None or context is None:
             raise HTTPException(status_code=404, detail=f"File #{submission_id} has no"
                                                         f" scores on the {evaluation_set} set.")
+        if not _can_see_class_scores(context.config, submission.split,
+                                     is_admin(sessions.get_account())):
+            report = remove_class_scores(report)
         file_name = to_file_name(f"{submission.label}.{submission.split}.{evaluation_set}"
                                  f".scores.json")
         return JSONResponse(report,
@@ -458,8 +505,9 @@ def register_model_page(archive: ModelArchive,
             except LookupError as e:
                 ui.label(str(e)).classes("error")
                 return
-            page = _ModelPage(archive, dataset_contexts, worker, sessions.require_writer_name,
-                              can_write(account), snapshot)
+            page = _ModelPage(archive, dataset_contexts, worker, coding_table_lock,
+                              sessions.require_writer_name, can_write(account),
+                              is_admin(account), snapshot)
             page.create_details()
             page.create_files()
             page.create_scores(request.query_params.get("split", ""),
