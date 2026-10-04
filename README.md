@@ -9,4 +9,4 @@ Tools and pipelines built for the iRAP Vietnam road-survey work.
 | [`irap_vietnam_data_preparation`](packages/irap_vietnam_data_preparation/) | End-to-end pipeline that turns raw iRAP-Vietnam data into a dataset compatible with the iRAP-BH dataset. |
 | [`irap_data`](packages/irap_data/) | iRAP-BH and iRAP-Vietnam metadata (torch-free), dataset loaders, a dataset viewer (CLI `irap-dataset-viewer`) and a dataset statistics report (CLI `irap-dataset-stats`). |
 | [`irap_evaluation`](packages/irap_evaluation/) | Evaluation, ensembling, coding-table export for saved model predictions. |
-| [`irap_evaluation_server`](packages/irap_evaluation_server/) | Web app for an archive of prediction files, with scoring, analysis and ensembling (CLI `irap-eval-server`). |
+| [`irap_evaluation_server`](packages/irap_evaluation_server/) | Web app for an archive of prediction files with scoring, analysis and ensembling (CLI `irap-eval-server`). |
