@@ -43,7 +43,7 @@ function computeBounds(longitudes, latitudes) {
 }
 
 export default {
-  template: '<div style="position: absolute; inset: 0"></div>',
+  template: '<div class="deck-map" style="position: absolute; inset: 0"></div>',
   props: {
     longitudes: Array,
     latitudes: Array,
@@ -84,6 +84,9 @@ export default {
     this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     this.overlay = new deck.MapboxOverlay({
       interleaved: false,
+      // The pointer over a clickable point. The deck.gl canvas does not get pointer events, so
+      // the cursor is set on the map canvas.
+      onHover: ({ picked }) => { this.map.getCanvas().style.cursor = picked ? "pointer" : ""; },
       getTooltip: ({ index, layer }) => {
         if (index < 0 || !layer || !this.outcomes) return null;
         const point = layer.id === "segments" ? index : layer.props.data[index];
@@ -161,7 +164,7 @@ export default {
         getFillColor: (point) => [...this.outcomeStyles[this.outcomes[point]][0].slice(0, 3), 255],
         // The data can stay the same while the outcomes change, e.g. with another model B.
         updateTriggers: { getFillColor: this.outcomes },
-        getRadius: 4.5,
+        getRadius: 6,
         radiusUnits: "pixels",
         stroked: true,
         getLineColor: [255, 255, 255, 255],
@@ -181,7 +184,7 @@ export default {
         data: selectedPoint === null ? [] : [selectedPoint],
         getPosition: (point) => this.getPointPosition(point),
         getLineColor: [20, 20, 20, 255],
-        getRadius: 9,
+        getRadius: 11,
         radiusUnits: "pixels",
         stroked: true,
         filled: false,

@@ -40,7 +40,7 @@ def _get_library_url(file: LibraryFile) -> str:
 def _get_outcome_style(name: str) -> tuple[list[int], float]:
     """Returns ([R, G, B, alpha], radius in pixels) of the points of an outcome."""
     is_background = name in _BACKGROUND_OUTCOMES
-    return [*OUTCOME_COLORS[name], 110 if is_background else 220], 1.5 if is_background else 2.5
+    return [*OUTCOME_COLORS[name], 110 if is_background else 220], 2.5 if is_background else 4
 
 
 class DeckMap(ui.element, component="deck_map.js"):
