@@ -24,7 +24,7 @@ from .metrics import (
     sum_statistics,
 )
 from .predictions import (
-    MethodInfo,
+    ModelInfo,
     OutputKind,
     PredictionFormatError,
     Predictions,
@@ -38,14 +38,14 @@ from .predictions import (
 #: - 'first_class': as class 0 in the metrics of the predicted classes, as in vidlu, and as the
 #:   uniform distribution in NLL and Brier.
 #: - 'exclude': not scored, like a missing label. Results with invalid cells are then scored on
-#:   different segments, so the means over runs and the comparisons of `bootstrap` refuse them.
+#:   different segments, so the means over models and the comparisons of `bootstrap` refuse them.
 #: `docs/evaluation.md#invalid-cells` gives the reasons.
 NullPolicy = T.Literal["first_class", "exclude"]
 NULL_POLICIES: tuple[str, ...] = T.get_args(NullPolicy)
 
 #: How an evaluated attribute that the predictions lack is scored:
 #: - 'error': not at all, `evaluate_predictions` raises an error.
-#: - 'invalid': as if every cell of it were invalid, so that runs that lack attributes are scored
+#: - 'invalid': as if every cell of it were invalid, so that models that lack attributes are scored
 #:   on the same attributes as the others and are not rewarded for leaving out attributes.
 #: `docs/evaluation.md#missing-attributes` gives the reasons.
 MissingAttributePolicy = T.Literal["error", "invalid"]
@@ -100,7 +100,7 @@ class EvaluationResult:
     """Scores of one set of predictions on one evaluation set.
 
     Attributes:
-        method: The method, and run, of the evaluated predictions.
+        model: The model of the evaluated predictions.
         null_policy: See `NullPolicy`.
         statistics: Attribute -> statistics with a leading (G,) axis, one entry per road
             sequence of `evaluation_set.sequence_ids`, from which any metric can be recomputed,
@@ -108,15 +108,15 @@ class EvaluationResult:
         num_invalid: Attribute -> number of labeled segments with an invalid prediction.
         metrics: The scores. The values of `n` and `nc_suppN` are ints, the others floats. For
             per-class metrics, see `compute_class_metrics`.
-        intervals: `bootstrap.BootstrapInterval`s of the metrics of this run alone, which cover the
-            sampling of road sequences but not of runs (see
+        intervals: `bootstrap.BootstrapInterval`s of the metrics of this model alone, which cover
+            the sampling of road sequences but not of models (see
             `bootstrap.compute_bootstrap_intervals`), or None.
         missing_attributes: The evaluated attributes that the predictions lack, scored as
             invalid cells (`MissingAttributePolicy` 'invalid'). `num_invalid` counts their cells
             too.
     """
 
-    method: MethodInfo
+    model: ModelInfo
     output_kind: OutputKind
     evaluation_set: EvaluationSet
     null_policy: NullPolicy
@@ -127,44 +127,50 @@ class EvaluationResult:
     missing_attributes: tuple[str, ...] = ()
 
     @property
-    def run_label(self) -> str:
-        return self.method.run_label
-
-    @property
     def attributes(self) -> tuple[str, ...]:
         return tuple(self.statistics)
 
 
-def check_runs_distinct(methods: T.Iterable[MethodInfo]) -> None:
-    """Checks that each method has distinct runs: different seeds, or a single run without a
-    seed.
+def check_method_models(models: T.Iterable[ModelInfo]) -> None:
+    """Checks that the models of each method can be averaged: they are distinct (different seeds,
+    or a single model without a seed), and have the same training and early stopping splits,
+    since a method is one training recipe.
+
+    Args:
+        models: The models of one dataset, e.g. of the files of one split, each once.
 
     Raises:
-        ValueError: If a method has a seed twice, or several runs of which one lacks a seed.
+        ValueError: If a method has a seed twice, several models of which one lacks a seed, or
+            models with different training or early stopping splits.
     """
-    name_to_seeds: dict[str, list[int | None]] = {}
-    for method in methods:
-        name_to_seeds.setdefault(method.name, []).append(method.seed)
-    for name, seeds in name_to_seeds.items():
+    name_to_models: dict[str, list[ModelInfo]] = {}
+    for model in models:
+        name_to_models.setdefault(model.method_name, []).append(model)
+    for name, method_models in name_to_models.items():
+        seeds = [m.seed for m in method_models]
         if len(seeds) > 1 and None in seeds:
-            raise ValueError(f"Method {name!r} has {len(seeds)} runs, so each needs a seed.")
+            raise ValueError(f"Method {name!r} has {len(seeds)} models, so each needs a seed.")
         if len(set(seeds)) < len(seeds):
-            raise ValueError(f"Method {name!r} has several runs with the same seed.")
+            raise ValueError(f"Method {name!r} has several models with the same seed.")
+        if len({(m.training_splits, m.early_stopping_splits) for m in method_models}) > 1:
+            raise ValueError(f"The models of method {name!r} have different training or early"
+                             f" stopping splits. Models trained on other data belong to another"
+                             f" method.")
 
 
-def group_runs_by_method(
+def group_models_by_method(
         results: T.Iterable[EvaluationResult]) -> dict[str, tuple[EvaluationResult, ...]]:
-    """Method name -> its results (runs), in the order of `results`.
+    """Groups results by method name, in the order of `results`.
 
     Raises:
-        ValueError: If the runs of a method are not distinct (see `check_runs_distinct`).
+        ValueError: See `check_method_models`.
     """
     results = list(results)
-    check_runs_distinct(r.method for r in results)
-    name_to_runs: dict[str, list[EvaluationResult]] = {}
+    check_method_models(r.model for r in results)
+    name_to_results: dict[str, list[EvaluationResult]] = {}
     for result in results:
-        name_to_runs.setdefault(result.method.name, []).append(result)
-    return {name: tuple(runs) for name, runs in name_to_runs.items()}
+        name_to_results.setdefault(result.model.method_name, []).append(result)
+    return {name: tuple(rs) for name, rs in name_to_results.items()}
 
 
 def align_to_evaluation_set(
@@ -283,7 +289,7 @@ def evaluate_predictions(
 
     statistics = {attr: get_statistics(attr) for attr in attributes}
     return EvaluationResult(
-        method=predictions.header.method, output_kind=predictions.output_kind,
+        model=predictions.header.model, output_kind=predictions.output_kind,
         evaluation_set=evaluation_set, null_policy=null_policy,
         statistics=statistics, num_invalid=num_invalid,
         metrics=_compute_result_metrics(statistics, metric_names),
@@ -311,7 +317,7 @@ def select_result_attributes(result: EvaluationResult,
     if not attributes:
         raise ValueError("At least one attribute is required.")
     if unknown := sorted(set(attributes) - set(result.attributes)):
-        raise ValueError(f"Attributes not scored in {result.run_label!r}: {unknown}.")
+        raise ValueError(f"Attributes not scored in {result.model.label!r}: {unknown}.")
     selected = [a for a in result.attributes if a in attributes]
     statistics = {a: result.statistics[a] for a in selected}
     return dc.replace(

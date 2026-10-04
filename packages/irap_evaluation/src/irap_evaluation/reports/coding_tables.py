@@ -8,11 +8,12 @@ import typing as T
 from importlib import resources
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from irap_data.metadata import IRAPMetadata, SegmentLocation, get_segment_location
 
-from ..predictions import INVALID_IRAP_CODE, Predictions, select_segments, to_irap_codes
+from ..predictions import INVALID_IRAP_CODE, PredictionFormatError, Predictions, to_irap_codes
 
 #: The fields that `predictions_to_coding_table` fills, besides the attributes.
 CODING_TABLE_FIELDS = ("coder_name", "coding_date", "segment_id", "section", "distance_km",
@@ -70,19 +71,57 @@ def get_unfilled_columns(template: CodingTableTemplate, attributes: T.Iterable[s
     return [c for c in template.columns if c not in filled]
 
 
-def _select_in_road_order(predictions: Predictions, metadata: IRAPMetadata) -> Predictions:
-    """The predictions ordered by road sequence and position, then those of segments of no
-    sequence in their order in `predictions`."""
+@dc.dataclass(frozen=True)
+class _RoadOrder:
+    """The predicted segments in road order (`_locate_in_road_order`), and where the prediction
+    of each is: row `rows[j]` of `predictions_seq[predictions_indices[j]]`."""
+
+    segment_ids: list[str]
+    predictions_indices: np.ndarray
+    rows: np.ndarray
+
+
+def _locate_in_road_order(predictions_seq: T.Sequence[Predictions],
+                          metadata: IRAPMetadata) -> _RoadOrder:
+    """Locates the predicted segments of all predictions, ordered by road sequence and position,
+    then the segments of no sequence in the order of `predictions_seq` and their rows.
+
+    Raises:
+        ValueError: If `predictions_seq` is empty.
+        PredictionFormatError: If the predictions are of different datasets or models, or a
+            segment is in several of them.
+    """
+    if not predictions_seq:
+        raise ValueError("At least one set of predictions is required.")
+    first = predictions_seq[0].header
+    if any((p.header.dataset, p.header.model) != (first.dataset, first.model)
+           for p in predictions_seq[1:]):
+        raise PredictionFormatError("A coding table is made of the predictions of one model on"
+                                    " one dataset.")
+    # (segment ID, index in `predictions_seq`, row)
+    located = [(sid, i, row) for i, p in enumerate(predictions_seq)
+               for row, sid in enumerate(p.segment_ids)]
+    if len({sid for sid, _, _ in located}) != len(located):
+        raise PredictionFormatError("A segment is in several of the predictions, e.g. of"
+                                    " overlapping splits.")
     road_rank = {road_id: i for i, road_id in enumerate(metadata.road_id_to_segment_id_sequence)}
     sequence_index = metadata.sequence_index
 
-    def key(segment_id: str):
+    def get_road_position(segment_id: str) -> tuple[float, int]:
         if segment_id not in sequence_index:
-            return (math.inf, 0)  # sorted() is stable
+            return (math.inf, 0)  # The sort is stable.
         road_id, position = sequence_index[segment_id]
         return (road_rank[road_id], position)
 
-    return select_segments(predictions, sorted(predictions.segment_ids, key=key))
+    located.sort(key=lambda item: get_road_position(item[0]))
+    return _RoadOrder([sid for sid, _, _ in located],
+                      np.array([i for _, i, _ in located], dtype=np.int64),
+                      np.array([row for _, _, row in located], dtype=np.int64))
+
+
+def _get_attributes(predictions_seq: T.Sequence[Predictions]) -> list[str]:
+    """The attributes that any of the predictions predict, in order of appearance."""
+    return list(dict.fromkeys(a for p in predictions_seq for a in p.attributes))
 
 
 def _get_next_segment_ids_with_road_data(metadata: IRAPMetadata) -> dict[str, str]:
@@ -126,25 +165,31 @@ def _get_attribute_columns(template: CodingTableTemplate,
 
 
 def predictions_to_coding_table(
-    predictions: Predictions,
+    predictions_seq: T.Sequence[Predictions],
     metadata: IRAPMetadata,
     template: CodingTableTemplate,
     *,
     coder_name: str,
     coding_date: str,
 ) -> pd.DataFrame:
-    """One coding-table row per predicted segment, with the argmax iRAP code per attribute.
+    """Makes one coding-table row per predicted segment, with the argmax iRAP code per attribute.
 
     Rows are ordered by road sequence and position. The end coordinates are the start of the
     next segment with road data if it starts where the segment ends, else blank. Invalid
-    predictions and the columns that no field or predicted attribute fills are blank.
+    predictions, the attributes that the predictions of a segment lack, and the columns that no
+    field or predicted attribute fills are blank.
 
     Args:
+        predictions_seq: The predictions of one model on disjoint segments, e.g. on several
+            splits.
         metadata: The metadata of the release, for the segment locations.
-        coder_name: Written to the coder-name column, e.g. the model name.
+        coder_name: Written to the coder-name column, e.g. the method name.
         coding_date: Written to the coding-date column, `YYYY-MM-DD`.
+
+    Raises:
+        ValueError: See `_locate_in_road_order`.
     """
-    selected = _select_in_road_order(predictions, metadata)
+    order = _locate_in_road_order(predictions_seq, metadata)
     road_data = metadata.segment_id_to_road_data
     segment_id_to_next = _get_next_segment_ids_with_road_data(metadata)
     get_location = functools.cache(lambda sid: get_segment_location(road_data[sid]))
@@ -163,34 +208,55 @@ def predictions_to_coding_table(
 
     field_rows = [dict(coder_name=coder_name, coding_date=coding_date, segment_id=sid,
                        **get_location_fields(sid))
-                  for sid in selected.segment_ids]
-    table = _make_blank_table(template, selected.num_segments)
+                  for sid in order.segment_ids]
+    table = _make_blank_table(template, len(order.segment_ids))
     for field, column in template.field_to_column.items():
         table[column] = [row.get(field) for row in field_rows]
-    codes = to_irap_codes(selected)
-    for attr, column in _get_attribute_columns(template, predictions.attributes).items():
-        table[column] = pd.arrays.IntegerArray(codes[attr], codes[attr] == INVALID_IRAP_CODE)
+    codes_seq = [to_irap_codes(p) for p in predictions_seq]
+    for attr, column in _get_attribute_columns(template, _get_attributes(predictions_seq)).items():
+        codes = _gather_attribute_values(order, codes_seq, attr, INVALID_IRAP_CODE)
+        table[column] = pd.arrays.IntegerArray(codes, codes == INVALID_IRAP_CODE)
     return table
 
 
-def predictions_to_confidence_table(predictions: Predictions,
+def _gather_attribute_values(order: _RoadOrder,
+                             values_seq: T.Sequence[T.Mapping[str, np.ndarray]], attr: str,
+                             missing_value: T.Any) -> np.ndarray:
+    """Gathers the value of `attr` of each segment in road order from the (N,) values of its
+    predictions (`values_seq[predictions_index]`), `missing_value` where they lack the
+    attribute."""
+    dtype = next(v[attr].dtype for v in values_seq if attr in v)
+    gathered = np.full(len(order.segment_ids), missing_value, dtype=dtype)
+    for i, values in enumerate(values_seq):
+        if attr in values:
+            is_from_values = order.predictions_indices == i
+            gathered[is_from_values] = values[attr][order.rows[is_from_values]]
+    return gathered
+
+
+def predictions_to_confidence_table(predictions_seq: T.Sequence[Predictions],
                                     metadata: IRAPMetadata,
                                     template: CodingTableTemplate) -> pd.DataFrame:
-    """The probability of each exported code, in the layout and row order of
+    """Makes a table of the probability of each exported code, in the layout and row order of
     `predictions_to_coding_table`.
 
     Only the segment ID column and the attribute columns are filled.
 
     Raises:
-        ValueError: For hard predictions, which have no probabilities.
+        ValueError: For hard predictions, which have no probabilities, and see
+            `_locate_in_road_order`.
     """
-    if predictions.output_kind == "hard":
+    if any(p.output_kind == "hard" for p in predictions_seq):
         raise ValueError("Hard predictions have no probabilities for a confidence table.")
-    selected = _select_in_road_order(predictions, metadata)
-    table = _make_blank_table(template, selected.num_segments)
-    table[template.field_to_column["segment_id"]] = list(selected.segment_ids)
-    for attr, column in _get_attribute_columns(template, predictions.attributes).items():
-        table[column] = selected.probs[attr].max(1)
+    order = _locate_in_road_order(predictions_seq, metadata)
+    table = _make_blank_table(template, len(order.segment_ids))
+    table[template.field_to_column["segment_id"]] = order.segment_ids
+    attribute_to_column = _get_attribute_columns(template, _get_attributes(predictions_seq))
+    confidences_seq = [{attr: probs.max(1) for attr, probs in p.probs.items()
+                        if attr in attribute_to_column}
+                       for p in predictions_seq]
+    for attr, column in attribute_to_column.items():
+        table[column] = _gather_attribute_values(order, confidences_seq, attr, np.nan)
     return table
 
 

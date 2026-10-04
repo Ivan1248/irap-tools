@@ -1,6 +1,6 @@
 # iRAP prediction file format
 
-A prediction file is an [Apache Parquet](https://parquet.apache.org/) file holding the predictions of a method for a split of an iRAP dataset. Files are conventionally named `<method>.predictions.parquet`, or `<method>_seed<seed>.predictions.parquet` when distinguishing runs.
+A prediction file is an [Apache Parquet](https://parquet.apache.org/) file holding the predictions of a model for a split of an iRAP dataset. Files are conventionally named `<method>.<split>.predictions.parquet`, or `<method>_seed<seed>.<split>.predictions.parquet` for one of several models of a method.
 
 Prediction file structure:
 ```
@@ -11,8 +11,10 @@ Parquet file
       dataset: Literal["bh", "vietnam"]
       split: str
       context_offsets?: list[int] | None
-      method:
-        name: str
+      model:
+        method_name: str
+        training_splits: list[str] | None
+        early_stopping_splits: list[str]
         seed?: int | None
         details?: dict | None
       attribute_to_irap_codes: dict[str, list[int]]
@@ -52,25 +54,29 @@ Pandas cannot write key-value metadata. Pandas, Polars, and DuckDB drop it when 
 | `dataset` | `str` | Dataset identifier: `"bh"` or `"vietnam"`. |
 | `split` | `str` | Segment split, e.g. `"val"`. |
 | `context_offsets` | `list[int] \| None` | Relative positions of sequence segments read by the model, e.g. `[0, -1, -4]`. Absent or `null` if unknown. Optional. |
-| `method` | `dict` | Method information (see [Method field](#method-field)). |
+| `model` | `dict` | Information about the model instance (see [Model field](#model-field)). |
 | `attribute_to_irap_codes` | `dict[str, list[int]]` | Attribute column name → iRAP codes defining class order for `probs` lists and `hard` class indices. |
 
 Along with `dataset` and `split`, `context_offsets` defines the model's [evaluation set](evaluation.md#evaluation-sets).
 
-### Method field
+### Model field
 
 | Field | Type | Content |
 |---|---|---|
-| `name` | `str` | Short name identifying the method in reports. |
-| `seed` | `int \| None` | Run identifier, e.g. training seed. Optional. |
-| `details` | `dict \| None` | Free-form JSON metadata. Optional. |
+| `method_name` | `str` | Short name identifying the method in reports. Files with the same method name are models of one method. |
+| `training_splits` | `list[str] \| None` | Splits used to fit the model, `[]` for none (e.g. a zero-shot model), `null` if unknown. Required. |
+| `early_stopping_splits` | `list[str]` | Splits used only for checkpoint selection, `[]` for none. Required. |
+| `seed` | `int \| None` | Seed representing a training run. Optional. |
+| `details` | `dict \| None` | Additional free-form JSON metadata about how the predictions were made, e.g. the code commit under `commit`, pre-training information, etc.. Optional. |
+
+A model is identified by its dataset, method name and seed. All its files must have the same training and early stopping splits. The models of a method must have the same training and early stopping splits. A model trained on other splits, e.g. on `val` in addition to `train`, should have a different method name, e.g. `resnet-seq-trainval`.
 
 #### Details field of an ensemble
 
-An ensemble written by `irap_evaluation` is a `probs` file whose `context_offsets` are the union of its members' offsets (or null if any member's offsets are unknown). It records member provenance in `details.ensemble`:
+An ensemble written by `irap_evaluation` is a `probs` file whose `context_offsets` are the union of its members' offsets (or null if any member's offsets are unknown). Its training splits are the union of its members' training splits (null if any are unknown), and its early stopping splits are the union of its members' early stopping splits that are not training splits of the ensemble (`make_ensemble_model`). It records member provenance in `details.ensemble`:
 
 ```json
-{"members": [{"method": ..., "context_offsets": ..., "weight": ...}, ...]}
+{"members": [{"model": ..., "context_offsets": ..., "weight": ...}, ...]}
 ```
 
 ## Examples
@@ -86,7 +92,8 @@ header = ie.PredictionHeader(
   dataset="vietnam",
   split="val",
   context_offsets=(0, -1, -4),
-  method=ie.MethodInfo(name="resnet-seq", seed=3)
+  model=ie.ModelInfo(method_name="resnet-seq", training_splits=("train",),
+                     early_stopping_splits=(), seed=3, details={"commit": "4f2a9c1"})
 )
 predictions = ie.Predictions.from_logits(
   header,
@@ -94,10 +101,10 @@ predictions = ie.Predictions.from_logits(
   segment_ids = ["<segment ID 1>", "<segment ID 2>"],
   logits = {"Lane width": np.array([[2.0, 0.1, -1.0], [0.3, 1.5, 0.2]])}
 )
-ie.write_predictions("resnet-seq_seed3.predictions.parquet", predictions)
+ie.write_predictions("resnet-seq_seed3.val.predictions.parquet", predictions)
 
 # Read predictions
-assert predictions == ie.read_predictions("resnet-seq_seed3.predictions.parquet")
+assert predictions == ie.read_predictions("resnet-seq_seed3.val.predictions.parquet")
 ```
 
 For hard predictions (e.g. VLM answers), use `ie.Predictions.from_class_indices` with class indices or `ie.Predictions.from_irap_codes` with iRAP codes, using `irap_data.IGNORE_LABEL_INDEX` or `ie.INVALID_IRAP_CODE` (both −1) for missing answers.
@@ -112,7 +119,8 @@ header = dict(
   format_version=1,
   dataset="vietnam",
   split="val",
-  method=dict(name="resnet-seq", seed=3),
+  model=dict(method_name="resnet-seq", training_splits=["train"], early_stopping_splits=[],
+             seed=3),
   context_offsets=[0, -1, -4],
   attribute_to_irap_codes={"Lane width": [1, 2, 3]}
 )
@@ -126,7 +134,7 @@ predictions = pl.DataFrame(
   schema={"segment_id": pl.String, "Lane width": pl.List(pl.Float32)}
 )
 metadata = {"irap_predictions": json.dumps(header)}
-predictions.write_parquet("resnet-seq_seed3.predictions.parquet", metadata=metadata)
+predictions.write_parquet("resnet-seq_seed3.val.predictions.parquet", metadata=metadata)
 ```
 
 For hard predictions, attribute columns are `pl.Int64` class indices, with `None` for invalid cells.

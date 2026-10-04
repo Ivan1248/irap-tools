@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from irap_data.metadata import ClassVocabulary, MetaFiles
-from irap_evaluation.predictions import MethodInfo, PredictionHeader, Predictions
+from irap_evaluation.predictions import ModelInfo, PredictionHeader, Predictions
 
 # Three attributes of the canonical subset and one outside it. The codes of "Lane width" are
 # not in ascending order, so class indices differ from code order.
@@ -54,20 +54,22 @@ def write_metadata_dir(path: Path) -> Path:
 
 
 def make_predictions(vocabulary: ClassVocabulary, segment_ids, *, name: str, seed: int,
-                     method_seed: int | None = None, context_offsets=(0, -1),
-                     reverse_classes: bool = False):
+                     model_seed: int | None = None, training_splits=(), early_stopping_splits=(),
+                     context_offsets=(0, -1), reverse_classes: bool = False):
     """Random predictions of every attribute, optionally with the class order reversed.
 
     Args:
+        name: `ModelInfo.method_name`.
         seed: Seed of the random predictions.
-        method_seed: `MethodInfo.seed`, which identifies the run.
+        model_seed: `ModelInfo.seed`, which identifies the model among those of the method.
     """
     rng = np.random.default_rng(seed)
     attribute_to_irap_codes = vocabulary.attribute_to_irap_codes
     if reverse_classes:
         attribute_to_irap_codes = {a: codes[::-1] for a, codes in attribute_to_irap_codes.items()}
-    header = PredictionHeader(dataset="vietnam", split=SPLIT,
-                              method=MethodInfo(name=name, seed=method_seed),
+    model = ModelInfo(method_name=name, training_splits=training_splits,
+                      early_stopping_splits=early_stopping_splits, seed=model_seed)
+    header = PredictionHeader(dataset="vietnam", split=SPLIT, model=model,
                               context_offsets=context_offsets)
     logits = {a: 3 * rng.normal(size=(len(segment_ids), len(codes)))
               for a, codes in attribute_to_irap_codes.items()}

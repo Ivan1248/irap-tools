@@ -13,9 +13,22 @@ from irap_evaluation.reports.coding_tables import (
     predictions_to_confidence_table,
     write_coding_table,
 )
-from irap_evaluation.predictions import Predictions, to_class_indices, to_irap_codes
+from irap_evaluation.predictions import (
+    PredictionFormatError,
+    Predictions,
+    select_segments,
+    to_class_indices,
+    to_irap_codes,
+)
 
 from synthetic_vietnam import ROAD_LENGTH, SPLIT, make_predictions
+
+
+def _without_attribute(predictions, attribute):
+    attribute_to_irap_codes = {a: c for a, c in predictions.attribute_to_irap_codes.items()
+                               if a != attribute}
+    return dc.replace(predictions, attribute_to_irap_codes=attribute_to_irap_codes,
+                      probs={a: predictions.probs[a] for a in attribute_to_irap_codes})
 
 
 @pytest.fixture
@@ -42,7 +55,7 @@ def test_template_rejects_unknown_columns(template):
 def test_coding_table(metadata, template, tmp_path):
     segments = list(reversed(metadata.splits[SPLIT]))
     predictions = make_predictions(metadata.vocabulary, segments, name="m", seed=0)
-    table = predictions_to_coding_table(predictions, metadata, template, coder_name="m",
+    table = predictions_to_coding_table([predictions], metadata, template, coder_name="m",
                                         coding_date="2026-09-28")
     assert tuple(table.columns) == template.columns
     # Rows follow the road sequences, whatever the order of the predictions.
@@ -59,7 +72,7 @@ def test_coding_table(metadata, template, tmp_path):
                                   codes["Carriageway label"][rows])
     assert table["Speed limit"].isna().all()
 
-    confidence = predictions_to_confidence_table(predictions, metadata, template)
+    confidence = predictions_to_confidence_table([predictions], metadata, template)
     assert list(confidence["Image reference"]) == list(table["Image reference"])
     np.testing.assert_allclose(confidence["Lane width"].astype(float),
                                predictions.probs["Lane width"][rows].max(1))
@@ -73,4 +86,34 @@ def test_confidence_table_refuses_hard_predictions(metadata, template, predictio
     hard = Predictions.from_class_indices(predictions.header, predictions.attribute_to_irap_codes,
                                           predictions.segment_ids, to_class_indices(predictions))
     with pytest.raises(ValueError, match="no probabilities"):
-        predictions_to_confidence_table(hard, metadata, template)
+        predictions_to_confidence_table([predictions, hard], metadata, template)
+
+
+def test_coding_table_of_several_predictions(metadata, template):
+    segments = list(metadata.splits[SPLIT])
+    whole = make_predictions(metadata.vocabulary, segments, name="m", seed=0)
+    # Two parts of the segments, e.g. of two splits, the second without 'Lane width'.
+    first = select_segments(whole, segments[1::2])
+    second = _without_attribute(select_segments(whole, segments[::2]), "Lane width")
+
+    def make_table(predictions_seq):
+        return predictions_to_coding_table(predictions_seq, metadata, template, coder_name="m",
+                                           coding_date="2026-09-28")
+
+    table, whole_table = make_table([first, second]), make_table([whole])
+    pd.testing.assert_frame_equal(table.drop(columns="Lane width"),
+                                  whole_table.drop(columns="Lane width"))
+    is_from_first = table["Image reference"].isin(first.segment_ids)
+    pd.testing.assert_series_equal(table["Lane width"][is_from_first],
+                                   whole_table["Lane width"][is_from_first])
+    assert table["Lane width"][~is_from_first].isna().all()
+    confidence = predictions_to_confidence_table([first, second], metadata, template)
+    assert confidence["Lane width"][~is_from_first].isna().all()
+    assert confidence["Grade"].isna().all()  # no attribute fills it
+
+    with pytest.raises(PredictionFormatError, match="several of the predictions"):
+        make_table([whole, first])
+    other_model = dc.replace(first, header=dc.replace(
+        first.header, model=dc.replace(first.header.model, method_name="other")))
+    with pytest.raises(PredictionFormatError, match="one model"):
+        make_table([other_model, second])

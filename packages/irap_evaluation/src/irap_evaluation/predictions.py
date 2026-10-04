@@ -29,36 +29,136 @@ class PredictionFormatError(ValueError):
     that do not match the other predictions or the evaluation set they are used with."""
 
 
+#: What a model used the segments of a split for (`ModelInfo.get_split_use`):
+#: - 'training': they were used to fit the model, so its scores on them are not of held-out data.
+#: - 'early_stopping': they were used only for early stopping or checkpoint selection, so its
+#:   scores on them are optimistic.
+#: - 'unknown': the training splits of the model are unknown, so it may have been fitted on them.
+#: - 'held_out': they were not used.
+SplitUse = T.Literal["training", "early_stopping", "unknown", "held_out"]
+
+
+def explain_split_use(split_use: SplitUse, split: str) -> str | None:
+    """Explains what it means for the scores of a model on `split` that it used the split, or
+    may have used it. None for 'held_out'."""
+    match split_use:
+        case "training":
+            return (f"The model was trained on {split}, so its scores on it are not of held-out"
+                    f" data.")
+        case "early_stopping":
+            return (f"{split} was used for early stopping or checkpoint selection of the model, so"
+                    f" its scores on it are optimistic.")
+        case "unknown":
+            return (f"The training splits of the model are unknown, so its scores on {split} may"
+                    f" not be of held-out data.")
+        case "held_out":
+            return None
+
+
+def format_model_label(method_name: str, seed: int | None) -> str:
+    """The label of a model in reports (`ModelInfo.label`): `<method>` or `<method>/seed<seed>`."""
+    return method_name if seed is None else f"{method_name}/seed{seed}"
+
+
+def _to_split_names(splits: T.Iterable[str], field: str) -> tuple[str, ...]:
+    """The split names in sorted order, so that their order does not matter."""
+    if isinstance(splits, str):
+        raise PredictionFormatError(f"{field} must be a sequence of split names, not a string.")
+    splits = tuple(splits)
+    if not all(isinstance(s, str) for s in splits):
+        raise PredictionFormatError(f"{field} must be split names, got {splits}.")
+    if len(set(splits)) != len(splits):
+        raise PredictionFormatError(f"{field} {splits} have duplicates.")
+    return tuple(sorted(splits))
+
+
 @dc.dataclass(frozen=True)
-class MethodInfo:
-    """What produced the predictions: a method and, optionally, which run of it.
+class ModelInfo:
+    """What produced the predictions: one model of a method, e.g. one trained network.
+
+    Two `ModelInfo`s are equal if they describe the same model: `details` are not compared. The
+    split names are stored sorted, so their order does not matter.
 
     Attributes:
-        name: A short name that identifies the method in reports. Files with the same name are
-            runs of one method, whose spread the bootstrap includes (see `bootstrap`).
-        seed: Identifies the run among the runs of the method, e.g. the training seed, or None
-            for a method with a single run.
-        details: JSON-compatible free-form details, e.g. the checkpoint, the code commit or the
-            training configuration.
+        method_name: A short name that identifies the method in reports. The models with the same
+            method name are models of one method, e.g. trained with different seeds, whose spread
+            the bootstrap includes (see `bootstrap`).
+        training_splits: The splits of the dataset whose segments (images or labels) were used to
+            fit the model, () for none, e.g. for a zero-shot model, or None if unknown. Other
+            training data belongs in `details`.
+        early_stopping_splits: The splits that were used only for early stopping or checkpoint
+            selection, () for none.
+        seed: Identifies the model among the models of the method, e.g. the training seed, or None
+            for a method with a single model.
+        details: JSON-compatible free-form details, e.g. the checkpoint, the code commit
+            (conventionally under 'commit') or the training configuration. They describe how the
+            predictions were made, not which model made them, so they are not compared.
+
+    Raises:
+        PredictionFormatError: If a split field has duplicates or is not a sequence of strings, or
+            a split is both a training and an early stopping split.
     """
 
-    name: str
+    method_name: str
+    training_splits: tuple[str, ...] | None
+    early_stopping_splits: tuple[str, ...]
     seed: int | None = None
-    details: T.Mapping[str, T.Any] | None = None
+    details: T.Mapping[str, T.Any] | None = dc.field(default=None, compare=False)
+
+    def __post_init__(self):
+        training = (None if self.training_splits is None
+                    else _to_split_names(self.training_splits, "The training splits"))
+        early_stopping = _to_split_names(self.early_stopping_splits, "The early stopping splits")
+        if both := set(training or ()) & set(early_stopping):
+            raise PredictionFormatError(f"The splits {sorted(both)} are both training and early"
+                                        f" stopping splits.")
+        object.__setattr__(self, "training_splits", training)
+        object.__setattr__(self, "early_stopping_splits", early_stopping)
 
     @property
-    def run_label(self) -> str:
-        return self.name if self.seed is None else f"{self.name}/seed{self.seed}"
+    def label(self) -> str:
+        return format_model_label(self.method_name, self.seed)
+
+    def get_split_use(self, split: str) -> SplitUse:
+        """Returns what the model used the segments of `split` for. Other training data in
+        `details` is not considered."""
+        if self.training_splits is None:
+            return "unknown"
+        if split in self.training_splits:
+            return "training"
+        return "early_stopping" if split in self.early_stopping_splits else "held_out"
+
+    def to_json_dict(self) -> dict[str, T.Any]:
+        """The JSON object of the model in the header of a prediction file
+        (`docs/prediction_format.md`), also used for the members of an ensemble."""
+        return {"method_name": self.method_name, "seed": self.seed,
+                "training_splits": (None if self.training_splits is None
+                                    else list(self.training_splits)),
+                "early_stopping_splits": list(self.early_stopping_splits),
+                "details": None if self.details is None else dict(self.details)}
+
+
+def check_split_names(model: ModelInfo, splits: T.Collection[str]) -> None:
+    """Checks that the training and early stopping splits of `model` are among `splits`, e.g. the
+    splits of the dataset's metadata (`IRAPMetadata.splits`).
+
+    Raises:
+        PredictionFormatError: For an unknown split.
+    """
+    named = [*(model.training_splits or ()), *model.early_stopping_splits]
+    if unknown := [s for s in named if s not in splits]:
+        raise PredictionFormatError(f"The model {model.label!r} names unknown splits {unknown}."
+                                    f" The splits are {sorted(splits)}.")
 
 
 @dc.dataclass(frozen=True)
 class PredictionHeader:
-    """The origin of a set of predictions: the method and the segments it was run on.
+    """The origin of a set of predictions: the model and the segments it was run on.
 
     Attributes:
         dataset: The iRAP release, a key of `irap_data.DATASET_PRESETS` ('bh', 'vietnam').
         split: The split the segments come from, e.g. 'val'.
-        method: See `MethodInfo`.
+        model: See `ModelInfo`.
         context_offsets: The distinct positions of the segments whose images the model reads,
             relative to the predicted segment in its road sequence, e.g. (0, -1, -4), where -1
             is the previous segment in driving order. With the dataset and split, they define the
@@ -70,7 +170,7 @@ class PredictionHeader:
 
     dataset: str
     split: str
-    method: MethodInfo
+    model: ModelInfo
     context_offsets: tuple[int, ...] | None = None
 
     def __post_init__(self):

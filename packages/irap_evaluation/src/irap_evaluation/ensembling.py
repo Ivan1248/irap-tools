@@ -1,12 +1,11 @@
-"""Combining the predictions of several methods or runs."""
+"""Combining the predictions of several methods or models."""
 
-import dataclasses as dc
 import typing as T
 
 import numpy as np
 
 from .predictions import (
-    MethodInfo,
+    ModelInfo,
     PredictionFormatError,
     PredictionHeader,
     Predictions,
@@ -37,6 +36,24 @@ def _get_union_of_context_offsets(
     return tuple(sorted(set().union(*offsets), reverse=True))
 
 
+def make_ensemble_model(members: T.Iterable[ModelInfo], method_name: str, *,
+                        seed: int | None = None,
+                        details: T.Mapping[str, T.Any] | None = None) -> ModelInfo:
+    """Makes the model of an ensemble, which uses every split that a member uses:
+    - Its training splits are the union of the members' training splits, or None if those of a
+      member are unknown.
+    - Its early stopping splits are the union of the members' early stopping splits that are not
+      training splits of the ensemble: a member that was fitted on a split makes the ensemble
+      fitted on it.
+    """
+    members = list(members)
+    training = (None if any(m.training_splits is None for m in members)
+                else set().union(*(m.training_splits for m in members)))
+    early_stopping = set().union(*(m.early_stopping_splits for m in members)) - (training or set())
+    return ModelInfo(method_name=method_name, training_splits=training,
+                     early_stopping_splits=early_stopping, seed=seed, details=details)
+
+
 def _compute_weighted_mean(probs: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """The weighted mean of (M, N, K) distributions with (M, N) weights, 0 for invalid cells.
 
@@ -50,24 +67,29 @@ def _compute_weighted_mean(probs: np.ndarray, weights: np.ndarray) -> np.ndarray
 
 def ensemble_predictions(
     predictions_seq: T.Sequence[Predictions],
-    method: MethodInfo,
+    method_name: str,
     *,
+    seed: int | None = None,
+    details: T.Mapping[str, T.Any] | None = None,
     weights: T.Sequence[float] | None = None,
     intersect_segments: bool = False,
 ) -> Predictions:
-    """The weighted mean of the distributions of several members (methods or runs) of the same
-    attributes, release and split. For hard predictions, it gives weighted vote shares.
+    """Computes the weighted mean of the distributions of several members (methods or models) of
+    the same attributes, release and split. For hard predictions, it gives weighted vote shares.
 
     Classes are matched by iRAP code, and the output uses the class order of the first member.
     A cell that is invalid in a member is left out of that cell's mean, and it is invalid in the
-    ensemble only if it is invalid in every member. The context offsets of the ensemble are the
-    union of the members' offsets, since it reads every frame a member reads, or None if the
-    offsets of a member are unknown.
+    ensemble only if it is invalid in every member. The ensemble uses whatever its members use:
+    - Its context offsets are the union of the members' offsets, since it reads every frame a
+      member reads, or None if the offsets of a member are unknown.
+    - Its training and early stopping splits are those of `make_ensemble_model`.
 
     Args:
         predictions_seq: The members.
-        method: Describes the ensemble. The members with their context offsets and weights are
-            added to its `details` under 'ensemble'.
+        method_name: The method name of the ensemble's model.
+        seed: The seed of the ensemble's model.
+        details: The details of the ensemble's model. The members with their context offsets and
+            weights are added under 'ensemble'.
         weights: A finite positive weight per member. None weights them equally.
         intersect_segments: Whether to combine only the segments that all members predict,
             rather than requiring the same segments.
@@ -97,13 +119,14 @@ def ensemble_predictions(
         mean = _compute_weighted_mean(np.stack([m.probs[attr] for m in members]), cell_weights)
         return mean.astype(np.float32)
 
-    ensemble = {"members": [{"method": dc.asdict(h.method),
+    ensemble = {"members": [{"model": h.model.to_json_dict(),
                              "context_offsets": (None if h.context_offsets is None
                                                  else list(h.context_offsets)),
                              "weight": float(w)}
                             for h, w in zip(headers, weights)]}
-    method = dc.replace(method, details={**(method.details or {}), "ensemble": ensemble})
-    header = PredictionHeader(dataset=dataset, split=split, method=method,
+    model = make_ensemble_model([h.model for h in headers], method_name, seed=seed,
+                                details={**(details or {}), "ensemble": ensemble})
+    header = PredictionHeader(dataset=dataset, split=split, model=model,
                               context_offsets=_get_union_of_context_offsets(headers))
     return Predictions(header, "probs", attribute_to_irap_codes, segment_ids,
                        {attr: combine_attribute(attr) for attr in attribute_to_irap_codes})

@@ -20,7 +20,7 @@ from irap_evaluation.evaluation import (
     align_to_evaluation_set,
     compute_class_metrics,
     evaluate_predictions,
-    group_runs_by_method,
+    group_models_by_method,
     select_evaluated_attributes,
     select_result_attributes,
 )
@@ -39,7 +39,7 @@ from irap_evaluation.metrics import (
     select_metric_attributes,
     sum_statistics,
 )
-from irap_evaluation.predictions import MethodInfo, PredictionFormatError, select_segments
+from irap_evaluation.predictions import ModelInfo, PredictionFormatError, select_segments
 from irap_evaluation.reports.evaluation_report import (
     get_partially_undefined_intervals,
     to_class_table,
@@ -59,7 +59,7 @@ def _invalidate(predictions, attr, is_valid):
 
 def test_reference_set_is_a_subset_of_each_model_compatible_set(metadata, reference_set):
     model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1))
-    assert (reference_set.name, model_compatible_set.name) == ("reference", "model")
+    assert (reference_set.name, model_compatible_set.name) == ("reference", "compatible")
     # The -4..0 window leaves out the first 4 segments of each road, (0, -1) only the first.
     assert reference_set.num_segments == NUM_ROADS * (ROAD_LENGTH - 4)
     assert model_compatible_set.num_segments == NUM_ROADS * (ROAD_LENGTH - 1)
@@ -95,18 +95,18 @@ def test_select_evaluation_sets(metadata, reference_set):
         sets, notes = select_evaluation_sets(segment_ids, reference_set, model_compatible_set)
         return [s.name for s in sets], notes
 
-    assert select(all_segments, model_compatible_set) == (["reference", "model"], [])
+    assert select(all_segments, model_compatible_set) == (["reference", "compatible"], [])
     names, notes = select(all_segments, None)
     assert names == ["reference"] and "not scored on its model-compatible set" in notes[0]
     names, notes = select(wide_model_compatible_set.segment_ids, wide_model_compatible_set)
-    assert names == ["model"] and "not scored on the reference set" in notes[0]
-    names, notes = select(all_segments, dc.replace(reference_set, name="model"))
+    assert names == ["compatible"] and "not scored on the reference set" in notes[0]
+    names, notes = select(all_segments, dc.replace(reference_set, name="compatible"))
     assert names == ["reference"] and "model-compatible set is left out" in notes[0]
     with pytest.raises(ValueError, match="cannot be scored"):
         select(without_a_reference_segment, None)
     # Incomplete predictions, also when the model-compatible set has the segments of the
     # reference set.
-    for incomplete_set in (model_compatible_set, dc.replace(reference_set, name="model")):
+    for incomplete_set in (model_compatible_set, dc.replace(reference_set, name="compatible")):
         with pytest.raises(ValueError, match="of the model-compatible set .* incomplete"):
             select(without_a_reference_segment, incomplete_set)
 
@@ -120,7 +120,7 @@ def test_sets_without_labels_are_left_out(metadata, reference_set):
     segment_ids = model_compatible_set.segment_ids
     sets, notes = select_evaluation_sets(segment_ids, without_labels(reference_set),
                                          model_compatible_set)
-    assert [s.name for s in sets] == ["model"]
+    assert [s.name for s in sets] == ["compatible"]
     assert notes == ["The reference set has no labels, so the model is not scored on it."]
     sets, notes = select_evaluation_sets(segment_ids, without_labels(reference_set),
                                          without_labels(model_compatible_set))
@@ -309,16 +309,17 @@ def test_select_result_attributes_equals_scoring_the_subset(reference_set, predi
 
 
 def test_compute_mean_metrics_equals_the_method_metrics(metadata, reference_set):
-    runs = _evaluate_runs(metadata, reference_set, "m", [0, 1, 2])
-    np.testing.assert_equal(dc.asdict(compute_mean_metrics([r.metrics for r in runs])),
-                            dc.asdict(compute_method_metrics(runs)))
+    models = _evaluate_models(metadata, reference_set, "m", [0, 1, 2])
+    np.testing.assert_equal(dc.asdict(compute_mean_metrics([r.metrics for r in models])),
+                            dc.asdict(compute_method_metrics(models)))
     subset = ["Number of lanes", "Lane width"]
     np.testing.assert_equal(
         dc.asdict(compute_mean_metrics([select_metric_attributes(r.metrics, subset)
-                                        for r in runs])),
-        dc.asdict(compute_method_metrics([select_result_attributes(r, subset) for r in runs])))
+                                        for r in models])),
+        dc.asdict(compute_method_metrics([select_result_attributes(r, subset) for r in models])))
     with pytest.raises(ValueError, match="differ"):
-        compute_mean_metrics([runs[0].metrics, select_metric_attributes(runs[1].metrics, subset)])
+        compute_mean_metrics([models[0].metrics,
+                              select_metric_attributes(models[1].metrics, subset)])
     with pytest.raises(ValueError, match="At least one"):
         compute_mean_metrics([])
 
@@ -342,7 +343,7 @@ def test_bootstrap_argument_errors(metadata, reference_set, predictions):
         compare_methods([result], [result], num_resamples=0)
     with pytest.raises(ValueError, match="confidence"):
         compute_bootstrap_intervals([result], num_resamples=10, confidence=95)
-    with pytest.raises(ValueError, match="at least one run"):
+    with pytest.raises(ValueError, match="at least one model"):
         compute_bootstrap_intervals([], num_resamples=10)
     # No segment has a context window of 100 segments.
     empty_set = get_evaluation_set(metadata, "vietnam", SPLIT, (0, -100), "empty")
@@ -381,12 +382,17 @@ def test_compare_methods(metadata, reference_set, predictions):
             [evaluate_predictions(predictions_b, reference_set, null_policy="exclude")])
 
 
-def _evaluate_runs(metadata, evaluation_set, name, prediction_seeds):
-    """Results of runs with seeds 0, 1, ... of random predictions with `prediction_seeds`."""
+def _evaluate_models(metadata, evaluation_set, name, prediction_seeds):
+    """Results of models with seeds 0, 1, ... of random predictions with `prediction_seeds`."""
     segments = list(metadata.splits[SPLIT])
     return [evaluate_predictions(make_predictions(metadata.vocabulary, segments, name=name,
-                                                  seed=s, method_seed=i), evaluation_set)
+                                                  seed=s, model_seed=i), evaluation_set)
             for i, s in enumerate(prediction_seeds)]
+
+
+def _with_model(result, method_name, seed=None, early_stopping_splits=()):
+    return dc.replace(result, model=ModelInfo(method_name, result.model.training_splits,
+                                              early_stopping_splits, seed))
 
 
 def _to_bounds(intervals):
@@ -396,68 +402,67 @@ def _to_bounds(intervals):
     return np.array([(i.low, i.high) for i in [*intervals.averages.values(), *per_attribute]])
 
 
-def test_identical_runs_add_no_uncertainty(metadata, reference_set):
-    [run] = _evaluate_runs(metadata, reference_set, "m", [0])
-    copies = [dc.replace(run, method=MethodInfo("m", seed=i)) for i in range(3)]
-    assert compute_method_metrics(copies) == run.metrics
+def test_identical_models_add_no_uncertainty(metadata, reference_set):
+    [model] = _evaluate_models(metadata, reference_set, "m", [0])
+    copies = [_with_model(model, "m", seed=i) for i in range(3)]
+    assert compute_method_metrics(copies) == model.metrics
     # The mean of the resampled values can differ from the value by rounding.
     np.testing.assert_allclose(
         _to_bounds(compute_bootstrap_intervals(copies, num_resamples=50, seed=4)),
-        _to_bounds(compute_bootstrap_intervals([run], num_resamples=50, seed=4)), rtol=1e-12)
+        _to_bounds(compute_bootstrap_intervals([model], num_resamples=50, seed=4)), rtol=1e-12)
 
 
-def test_resampled_method_values_add_the_run_term(metadata, reference_set):
-    runs = _evaluate_runs(metadata, reference_set, "m", [0, 1, 2])
+def test_resampled_method_values_add_the_model_term(metadata, reference_set):
+    models = _evaluate_models(metadata, reference_set, "m", [0, 1, 2])
     rng = np.random.default_rng(0)
     weights = draw_group_weights(len(reference_set.sequence_ids), 20, rng)
     t_values = rng.standard_t(2, size=20)
-    resampled = _resample_method_metrics(runs, ["amF1", "mF1"], weights, t_values)
-    run_values = np.stack([compute_grouped_metrics(r.statistics, ["amF1"], weights)
-                           .averages["amF1"] for r in runs])
+    resampled = _resample_method_metrics(models, ["amF1", "mF1"], weights, t_values)
+    model_values = np.stack([compute_grouped_metrics(r.statistics, ["amF1"], weights)
+                             .averages["amF1"] for r in models])
     np.testing.assert_allclose(
         resampled.averages["amF1"],
-        run_values.mean(0) + run_values.std(0, ddof=1) / np.sqrt(3) * t_values)
-    assert set(resampled.per_attribute["mF1"]) == set(runs[0].attributes)
+        model_values.mean(0) + model_values.std(0, ddof=1) / np.sqrt(3) * t_values)
+    assert set(resampled.per_attribute["mF1"]) == set(models[0].attributes)
 
-    point = compute_method_metrics(runs)
+    point = compute_method_metrics(models)
     assert point.averages["amF1"] == pytest.approx(
-        np.mean([r.metrics.averages["amF1"] for r in runs]))
-    interval = compute_bootstrap_intervals(runs, num_resamples=200).averages["amF1"]
+        np.mean([r.metrics.averages["amF1"] for r in models]))
+    interval = compute_bootstrap_intervals(models, num_resamples=200).averages["amF1"]
     assert interval.low <= point.averages["amF1"] <= interval.high
 
 
-def test_an_infinite_run_mean_stays_infinite(metadata, reference_set, predictions):
+def test_an_infinite_model_mean_stays_infinite(metadata, reference_set, predictions):
     # Probability 0 for every class but the first gives an infinite NLL.
     probs = np.zeros_like(predictions.probs["Lane width"])
     probs[:, 0] = 1
-    certain = dc.replace(predictions, probs={**predictions.probs, "Lane width": probs},
-                         header=dc.replace(predictions.header, method=MethodInfo("m", seed=1)))
-    runs = [evaluate_predictions(dc.replace(predictions, header=dc.replace(
-                predictions.header, method=MethodInfo("m", seed=0))), reference_set),
-            evaluate_predictions(certain, reference_set)]
-    assert compute_method_metrics(runs).averages["aNLL"] == np.inf
-    interval = compute_bootstrap_intervals(runs, num_resamples=50).averages["aNLL"]
+    certain = dc.replace(predictions, probs={**predictions.probs, "Lane width": probs})
+    models = [_with_model(evaluate_predictions(predictions, reference_set), "m", seed=0),
+              _with_model(evaluate_predictions(certain, reference_set), "m", seed=1)]
+    assert compute_method_metrics(models).averages["aNLL"] == np.inf
+    interval = compute_bootstrap_intervals(models, num_resamples=50).averages["aNLL"]
     assert (interval.low, interval.high) == (np.inf, np.inf)
 
 
-def test_runs_must_be_distinct_comparable_runs_of_one_method(metadata, reference_set):
-    run_0, run_1 = _evaluate_runs(metadata, reference_set, "m", [0, 1])
-    without_seed = dc.replace(run_1, method=MethodInfo("m"))
-    for runs, message in [
-        ([run_0, dc.replace(run_1, method=MethodInfo("m", seed=0))], "same seed"),
-        ([run_0, without_seed], "each needs a seed"),
-        ([run_0, dc.replace(run_1, method=MethodInfo("other", seed=1))], "different methods"),
-        ([run_0, dc.replace(run_1, null_policy="exclude")], "null policies"),
-        ([run_0, evaluate_predictions(
+def test_models_must_be_distinct_comparable_models_of_one_method(metadata, reference_set):
+    model_0, model_1 = _evaluate_models(metadata, reference_set, "m", [0, 1])
+    for models, message in [
+        ([model_0, _with_model(model_1, "m", seed=0)], "same seed"),
+        ([model_0, _with_model(model_1, "m")], "each needs a seed"),
+        ([model_0, _with_model(model_1, "other", seed=1)], "different methods"),
+        ([model_0, _with_model(model_1, "m", seed=1, early_stopping_splits=("val",))],
+         "different training or early stopping splits"),
+        ([model_0, dc.replace(model_1, null_policy="exclude")], "null policies"),
+        ([model_0, evaluate_predictions(
             make_predictions(metadata.vocabulary, list(metadata.splits[SPLIT]), name="m",
-                             seed=1, method_seed=1),
+                             seed=1, model_seed=1),
             reference_set, metric_names=["amF1"])], "different metrics"),
     ]:
         with pytest.raises(ValueError, match=message):
-            compute_bootstrap_intervals(runs, num_resamples=10)
+            compute_bootstrap_intervals(models, num_resamples=10)
     with pytest.raises(ValueError, match="same seed"):
-        group_runs_by_method([run_0, run_0])
-    assert group_runs_by_method([run_0, run_1]) == {"m": (run_0, run_1)}
+        group_models_by_method([model_0, model_0])
+    assert group_models_by_method([model_0, model_1]) == {"m": (model_0, model_1)}
 
 
 @pytest.mark.parametrize("values, expected", [

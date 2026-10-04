@@ -24,7 +24,7 @@ from .bootstrap import (
     compute_mean_metrics,
     compute_method_metrics,
 )
-from .ensembling import ensemble_predictions
+from .ensembling import ensemble_predictions, make_ensemble_model
 from .evaluation import (
     AttributeSelection,
     ClassMetrics,
@@ -32,11 +32,11 @@ from .evaluation import (
     MissingAttributePolicy,
     NullPolicy,
     align_to_evaluation_set,
-    check_runs_distinct,
+    check_method_models,
     compute_class_metrics,
     evaluate_predictions,
     get_default_metric_names,
-    group_runs_by_method,
+    group_models_by_method,
     select_evaluated_attributes,
     select_result_attributes,
 )
@@ -67,14 +67,18 @@ from .metrics import (
 from .prediction_io import read_predictions, write_predictions
 from .predictions import (
     INVALID_IRAP_CODE,
-    MethodInfo,
+    ModelInfo,
     OutputKind,
     PredictionFormatError,
     PredictionHeader,
     Predictions,
+    SplitUse,
     add_invalid_attributes,
     align_classes,
     check_class_codes,
+    check_split_names,
+    explain_split_use,
+    format_model_label,
     get_common_dataset_and_split,
     select_segments,
     to_class_indices,

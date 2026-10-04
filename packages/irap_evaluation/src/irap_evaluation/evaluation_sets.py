@@ -21,7 +21,7 @@ from irap_data.metadata import (
 )
 
 REFERENCE_SET_NAME = "reference"
-MODEL_COMPATIBLE_SET_NAME = "model"
+MODEL_COMPATIBLE_SET_NAME = "compatible"
 
 
 @dc.dataclass(frozen=True)

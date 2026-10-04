@@ -3,7 +3,6 @@
 `docs/prediction_format.md` specifies the file layout.
 """
 
-import dataclasses as dc
 import json
 import typing as T
 from pathlib import Path
@@ -15,7 +14,7 @@ import pyarrow.parquet as pq
 from irap_data.metadata import IGNORE_LABEL_INDEX
 
 from .predictions import (
-    MethodInfo,
+    ModelInfo,
     OutputKind,
     PredictionFormatError,
     PredictionHeader,
@@ -26,7 +25,7 @@ from .predictions import (
 FORMAT_VERSION = 1
 HEADER_METADATA_KEY = b"irap_predictions"
 SEGMENT_ID_COLUMN = "segment_id"
-_REQUIRED_HEADER_FIELDS = ("format_version", "dataset", "split", "method",
+_REQUIRED_HEADER_FIELDS = ("format_version", "dataset", "split", "model",
                            "attribute_to_irap_codes")
 
 
@@ -40,7 +39,7 @@ def _to_header_json_dict(predictions: Predictions) -> dict[str, T.Any]:
         "dataset": header.dataset,
         "split": header.split,
         "context_offsets": None if offsets is None else list(offsets),
-        "method": dc.asdict(header.method),
+        "model": header.model.to_json_dict(),
         "attribute_to_irap_codes": {attr: list(codes)
                                     for attr, codes in predictions.attribute_to_irap_codes.items()},
     }
@@ -48,6 +47,31 @@ def _to_header_json_dict(predictions: Predictions) -> dict[str, T.Any]:
 
 def _is_int(value: T.Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_string_list(value: T.Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _from_model_json_dict(d: T.Any) -> ModelInfo:
+    """Parses the object of `ModelInfo.to_json_dict`, ignoring unknown fields.
+
+    Raises:
+        PredictionFormatError: If it is malformed.
+    """
+    if not (isinstance(d, dict) and isinstance(d.get("method_name"), str)
+            and (d.get("seed") is None or _is_int(d["seed"]))
+            and "training_splits" in d
+            and (d["training_splits"] is None or _is_string_list(d["training_splits"]))
+            and _is_string_list(d.get("early_stopping_splits"))
+            and isinstance(d.get("details"), (dict, type(None)))):
+        raise PredictionFormatError(
+            "'model' must be an object with a string 'method_name', 'training_splits' (an array"
+            " of split names, or null if unknown), 'early_stopping_splits' (an array of split"
+            " names), an optional integer 'seed' and an optional object 'details'.")
+    return ModelInfo(method_name=d["method_name"], training_splits=d["training_splits"],
+                     early_stopping_splits=d["early_stopping_splits"], seed=d.get("seed"),
+                     details=d.get("details"))
 
 
 def _from_header_json_dict(d: T.Any) -> tuple[PredictionHeader, dict[str, list]]:
@@ -70,25 +94,17 @@ def _from_header_json_dict(d: T.Any) -> tuple[PredictionHeader, dict[str, list]]
                                     f" version is {FORMAT_VERSION}.")
     if missing := [f for f in _REQUIRED_HEADER_FIELDS if f not in d]:
         raise PredictionFormatError(f"The header has no fields {missing}.")
-    method = d["method"]
     offsets, attribute_to_irap_codes = d.get("context_offsets"), d["attribute_to_irap_codes"]
     if not (isinstance(d["dataset"], str) and isinstance(d["split"], str)):
         raise PredictionFormatError("'dataset' and 'split' must be strings.")
-    if not (isinstance(method, dict) and isinstance(method.get("name"), str)
-            and (method.get("seed") is None or _is_int(method["seed"]))
-            and isinstance(method.get("details"), (dict, type(None)))):
-        raise PredictionFormatError("'method' must be an object with a string 'name', an"
-                                    " optional integer 'seed' and an optional object"
-                                    " 'details'.")
+    model = _from_model_json_dict(d["model"])
     if not (offsets is None or (isinstance(offsets, list) and all(map(_is_int, offsets)))):
         raise PredictionFormatError("'context_offsets' must be null or an array of integers.")
     if not (isinstance(attribute_to_irap_codes, dict)
             and all(isinstance(codes, list) for codes in attribute_to_irap_codes.values())):
         raise PredictionFormatError("'attribute_to_irap_codes' must map attributes to arrays of"
                                     " iRAP codes.")
-    header = PredictionHeader(dataset=d["dataset"], split=d["split"],
-                              method=MethodInfo(name=method["name"], seed=method.get("seed"),
-                                                details=method.get("details")),
+    header = PredictionHeader(dataset=d["dataset"], split=d["split"], model=model,
                               context_offsets=offsets)
     return header, attribute_to_irap_codes
 
@@ -161,7 +177,7 @@ def to_arrow_table(predictions: Predictions) -> pa.Table:
         header = json.dumps(_to_header_json_dict(predictions), ensure_ascii=False,
                             allow_nan=False)
     except (TypeError, ValueError) as e:
-        raise PredictionFormatError(f"The header is not standard JSON, e.g. 'method.details' holds"
+        raise PredictionFormatError(f"The header is not standard JSON, e.g. 'model.details' holds"
                                     f" NaN or a NumPy value: {e}") from e
     return table.replace_schema_metadata({HEADER_METADATA_KEY: header.encode("utf-8")})
 

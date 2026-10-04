@@ -9,11 +9,18 @@ Scoring a file on an evaluation set (`evaluate_predictions`) has these steps:
 3. Accumulate statistics per road sequence ([statistics](#statistics)).
 4. Compute the metrics from the summed statistics ([metrics](#metrics)).
 
-The runs of a method are then combined by their mean ([methods](#methods)). `compute_bootstrap_intervals` and `compare_methods` resample the road sequences and add the spread of a method's runs ([confidence intervals](#confidence-intervals), [comparing methods](#comparing-methods)).
+The models of a method are then combined by their mean ([methods](#methods)). `compute_bootstrap_intervals` and `compare_methods` resample the road sequences and add the spread of a method's models ([confidence intervals](#confidence-intervals), [comparing methods](#comparing-methods)).
 
 ## Terms
 
-- **Method** and **run**: a file holds the predictions of one run of a method, e.g. one training seed. Files with the same `method.name` are runs of one method and are told apart by `method.seed` ([format](prediction_format.md#method)). A method with a single run needs no seed.
+- **Method** and **model**: a file holds the predictions of one model of a method, e.g. a network trained with one seed. Files with the same `model.method_name` are models of one method and are told apart by `model.seed` ([format](prediction_format.md#model-field)). A method with a single model needs no seed. The models of a method have the same training and early stopping splits (`check_method_models`), since a method is one training recipe.
+- **Training split**: a split whose segments were used to fit a model (`model.training_splits`). Scores on it are not of held-out data. What a model used the scored split for (`ModelInfo.get_split_use`, `split_use`) is one of:
+  - `training`: a training split,
+  - `early_stopping`: used only for early stopping or checkpoint selection, so the scores are optimistic,
+  - `unknown`: the training splits are unknown, so the model may have been fitted on it,
+  - `held_out`: not used.
+
+  `irap-eval evaluate` and `compare` print a note for the first three. `summary_long.csv`, `averages_*.csv`, `method_averages_*.csv` and the JSON documents of `irap-eval evaluate` have a `split_use` column or field.
 - **Road sequence**: the segments of one road in driving order, one entry of `road_id_to_segment_id_sequence.json`.
 - **Class index**: the position of a value in `attribute_value_to_irap_number` of `attribute_metadata.json`. It need not follow iRAP code order. Class 0 is the first value.
 - **Cell**: the predicted distribution of one attribute for one segment. It is invalid if the model gave no usable prediction (null in the file, see [Invalid cells](#invalid-cells)).
@@ -66,11 +73,11 @@ An invalid cell is a null in the file: the method gave no usable prediction of t
 The null policy (`NullPolicy`) selects how invalid cells are scored:
 
 - **`first_class`** (default): in metrics computed from predicted classes, the cell counts as a prediction of class 0, as in the training-time evaluation. In NLL and Brier, it counts as the uniform distribution, which gives $\ln K$ and $1 - 1/K$ for $K$ classes (a one-hot distribution of class 0 would give an infinite NLL for any other label).
-- **`exclude`**: the cell is not scored, as if unlabeled. Each run leaves out its own invalid cells, so runs with invalid cells are scored on different segments. An attribute with every labeled cell invalid would have no scored segments and would drop out of the attribute averages, which would reward leaving it empty. Scoring it is therefore an error.
+- **`exclude`**: the cell is not scored, as if unlabeled. Each model leaves out its own invalid cells, so models with invalid cells are scored on different segments. An attribute with every labeled cell invalid would have no scored segments and would drop out of the attribute averages, which would reward leaving it empty. Scoring it is therefore an error.
 
-Means over runs and comparisons therefore need `first_class`. `irap-eval evaluate` scores the runs with `--null-policy` (default `first_class`) and writes the means over the runs of a method (`method_averages_*.csv`) only with `first_class`. `irap-eval compare` always uses `first_class`.
+Means over models and comparisons therefore need `first_class`. `irap-eval evaluate` scores the models with `--null-policy` (default `first_class`) and writes the means over the models of a method (`method_averages_*.csv`) only with `first_class`. `irap-eval compare` always uses `first_class`.
 
-The tables and documents have a `null_policy` column or field. In the library, `compute_method_metrics` and `compute_bootstrap_intervals` refuse several runs scored with `exclude` if any of them has invalid cells, and `compare_methods` refuses runs scored with `exclude` if any of them has invalid cells.
+The tables and documents have a `null_policy` column or field. In the library, `compute_method_metrics` and `compute_bootstrap_intervals` refuse several models scored with `exclude` if any of them has invalid cells, and `compare_methods` refuses models scored with `exclude` if any of them has invalid cells.
 
 ## Statistics
 
@@ -124,47 +131,48 @@ Results keep only the attribute averages and per-attribute metrics. `compute_cla
 
 ## Methods
 
-The value of a metric for a method with runs $i = 1, \ldots, R$ on the same evaluation set is the mean $\bar m = \frac{1}{R} \sum_i m_i$ of the runs' values (`compute_method_metrics`, or `compute_mean_metrics` for the metric values alone, e.g. over a subset of the attributes). The runs must have the same segments, sequences, attributes, metrics and null policy. A method with a single run has the values of that run.
+The value of a metric for a method with models $i = 1, \ldots, M$ on the same evaluation set is the mean $\bar m = \frac{1}{M} \sum_i m_i$ of the models' values (`compute_method_metrics`, or `compute_mean_metrics` for the metric values alone, e.g. over a subset of the attributes). The models must have the same segments, sequences, attributes, metrics, null policy, and training and early stopping splits. A method with a single model has the values of that model.
 
 ## Confidence intervals
 
 The intervals cover two sources of variation (`--bootstrap B`, `--seed`, default 0):
 
 - **Road sequences.** Segments of a road sequence are correlated, so the bootstrap resamples sequences, not segments.
-- **Runs.** Runs of a method differ, e.g. by training seed. Their mean is uncertain, and more so with few runs.
+- **Models.** Models of a method differ, e.g. by training seed. Their mean is uncertain, and more so with few models.
 
-`compute_bootstrap_intervals(runs)` computes them as follows:
+`compute_bootstrap_intervals(models)` computes them as follows:
 
-1. Each of the $B$ resamples draws the $G$ sequences of the set $G$ times with replacement. This gives multiplicities $w \sim \mathrm{Multinomial}(G; 1/G, \ldots, 1/G)$. All runs share the resamples.
-2. All metrics of each run, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$ and $\sum_g w_g s^{(g)}$, giving $m^*_i$. A sequence with weight 0 adds nothing, also if its NLL sum is infinite.
+1. Each of the $B$ resamples draws the $G$ sequences of the set $G$ times with replacement. This gives multiplicities $w \sim \mathrm{Multinomial}(G; 1/G, \ldots, 1/G)$. All models share the resamples.
+2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$ and $\sum_g w_g s^{(g)}$, giving $m^*_i$. A sequence with weight 0 adds nothing, also if its NLL sum is infinite.
 3. The resampled value of the method is
-   $$v^* = \bar m^* + \frac{\mathrm{sd}(m^*_1, \ldots, m^*_R)}{\sqrt R}\, t^*, \qquad t^* \sim t_{R-1},$$
-   with the sample standard deviation and one Student-t draw per resample. This is the posterior of the mean of normally distributed run values under the prior $p(\mu, \sigma) \propto 1/\sigma$. With one run, $v^* = m^*_1$, and the interval covers only the road sequences. If $\bar m^*$ is infinite, $v^*$ is $\bar m^*$.
+   $$v^* = \bar m^* + \frac{\mathrm{sd}(m^*_1, \ldots, m^*_M)}{\sqrt M}\, t^*, \qquad t^* \sim t_{M-1},$$
+   with the sample standard deviation and one Student-t draw per resample. This is the posterior of the mean of normally distributed model values under the prior $p(\mu, \sigma) \propto 1/\sigma$. With one model, $v^* = m^*_1$, and the interval covers only the road sequences. If $\bar m^*$ is infinite, $v^*$ is $\bar m^*$.
 4. The interval at confidence $c$ (default 0.95) runs from the $(1-c)/2$ to the $(1+c)/2$ quantile of the $v^*$, with linear interpolation, as `numpy.quantile`. NaN values are left out, e.g. an MCC that is undefined in a resample, or the difference of two infinite values in a comparison. The interval then holds only for the resamples where the value is defined. Their number is reported (`BootstrapInterval.num_undefined`, `ci_num_undefined` in `summary_long.csv`, `num_undefined` in the JSON documents, the `undefined` column of `irap-eval compare`), and `irap-eval` prints the intervals that leave out some, but not all, resamples. Infinite values are kept, e.g. the NLL of a resample in which a label has probability 0. A bound interpolated between an infinite value and a finite or equal value is that infinite value.
 
 Intervals are computed for every metric of a result. Per-class metrics have no intervals. The same seed gives the same draws for every method scored on the same set.
 
 ## Comparing methods
 
-`compare_methods(runs_a, runs_b)` (`irap-eval compare --a A --b B`, on the reference set, default $B = 1000$) recomputes the runs of both methods on the same resamples, which pairs the comparison over road sequences:
+`compare_methods(models_a, models_b)` (`irap-eval compare --a A --b B`, on the reference set, default $B = 1000$) recomputes the models of both methods on the same resamples, which pairs the comparison over road sequences:
 
 - The point difference is $\Delta = \bar m_a - \bar m_b$.
-- Its interval is the percentile interval of the resampled differences $v^*_a - v^*_b$. The run terms of $a$ and $b$ use independent t draws.
+- Its interval is the percentile interval of the resampled differences $v^*_a - v^*_b$. The model terms of $a$ and $b$ use independent t draws.
 
 There are no p-values. A difference is significant at level $1 - c$ if its interval excludes 0.
 
-All runs of both methods must have the same segments, sequences, attributes and null policy.
+All models of both methods must have the same segments, sequences, attributes and null policy.
 
 ## Interpreting results
 
 - **Base conclusions on differences between methods on the same set.** Macro metrics (`mF1`, `_suppN`) depend on which classes the evaluation set contains, so a method's interval is not an interval for a population value.
 - **`amF1` is the main metric.** Differences per attribute or for many metrics are exploratory, since some will exclude 0 by chance.
-- **The intervals generalize to roads like those of the evaluated region, and to further runs of the methods.** The splits are by region, so they say nothing about other regions. For one region of a set, use `select_evaluation_subset`.
-- **Invalid cells.** With `first_class`, every run is scored on the same segments, but an invalid cell counts as class 0, which is often, but not always, the most common class. With `exclude`, the scores measure skill when the response is usable, and must be read together with the number of invalid cells (`num_invalid` in the JSON documents).
+- **The intervals generalize to roads like those of the evaluated region, and to further models of the methods.** The splits are by region, so they say nothing about other regions. For one region of a set, use `select_evaluation_subset`.
+- **Scores on a split that a model used** (`split_use`) are not of held-out data: those on a training split are not comparable with held-out scores, and those on an early stopping split are optimistic.
+- **Invalid cells.** With `first_class`, every model is scored on the same segments, but an invalid cell counts as class 0, which is often, but not always, the most common class. With `exclude`, the scores measure skill when the response is usable, and must be read together with the number of invalid cells (`num_invalid` in the JSON documents).
 
 Simulations on the Vietnam labels with synthetic predictors (2026-10-01, about 200 repetitions each) support the design of the intervals:
 
-- **Run variation is not negligible.** With 3–5 runs per method, intervals of $\Delta$ amF1 over road sequences alone contained the true difference in only 18–55 % of the repetitions. With the t term, they did so in 97–100 %, so the intervals are conservative. A bootstrap over the runs, instead of the t term, reached only 80–89 %, since 3–5 values say little about their spread.
-- **Single runs.** Intervals of the difference of two single runs covered the true difference in 85–96 %.
+- **Model variation is not negligible.** With 3–5 models per method, intervals of $\Delta$ amF1 over road sequences alone contained the true difference in only 18–55 % of the repetitions. With the t term, they did so in 97–100 %, so the intervals are conservative. A bootstrap over the models, instead of the t term, reached only 80–89 %, since 3–5 values say little about their spread.
+- **Single models.** Intervals of the difference of two single models covered the true difference in 85–96 %.
 - **Single methods.** 95 % intervals of a single method's amF1 contained the value on all roads in 69–90 % of the repetitions, and those of `amF1_supp10` in 0–68 %.
 - **Rejected alternatives.** Dirichlet weights (the Bayesian bootstrap) and bias-corrected intervals were not better, and in some cases worse.
