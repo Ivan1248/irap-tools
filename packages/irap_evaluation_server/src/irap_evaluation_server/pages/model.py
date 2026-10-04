@@ -1,25 +1,29 @@
 """The Model page: a model's details, files, scores, coding-table export and actions, and the
-endpoints for downloading the scores of a submission and the coding table of a model."""
+endpoint for downloading the scores of a submission."""
 
 import dataclasses as dc
+import functools
 import html
-import shutil
-import tempfile
 import typing as T
 import urllib.parse
-from pathlib import Path
 
 import irap_evaluation as ie
-from fastapi import HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 from irap_evaluation.reports.evaluation_report import to_file_name
 from nicegui import app, run, ui
-from starlette.background import BackgroundTask
 
+from ..accounts import can_write
 from ..archive import ADDING_ACTION_KINDS, ActionLogEntry, Model, ModelArchive, Submission
-from ..coding_table_export import CODING_TABLE_FORMATS, parse_coding_date, write_model_coding_table
+from ..coding_table_export import (
+    CODING_TABLE_FORMATS,
+    export_model_coding_table,
+    parse_coding_date,
+)
+from ..components.account_sessions import AccountSessions
 from ..components.analysis_view import AnalysisView
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
+from ..components.changes import run_change_in_thread, run_in_thread_showing_errors
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import (
     EVALUATION_SET_LABELS,
@@ -33,19 +37,18 @@ from ..components.formatting import (
 )
 from ..components.native_controls import (
     create_native_button,
+    create_native_checkbox,
     create_native_input,
     create_native_select,
     set_status,
 )
-from ..components.page_frame import create_page_frame, get_submitter_name
+from ..components.page_frame import create_page_frame
 from ..components.refresh_timer import RefreshTimer
 from ..components.routes import (
     ATTRIBUTE_PARAMETER,
-    CODING_TABLE_DOWNLOAD_PATH,
     MODEL_PATH,
     MODELS_PATH,
     SCORES_DOWNLOAD_PATH,
-    get_coding_table_download_path,
     get_download_path,
     get_model_path,
     get_scores_download_path,
@@ -65,23 +68,6 @@ def _make_attachment_header(file_name: str) -> str:
     quoted = urllib.parse.quote(file_name)
     return (f'attachment; filename="{file_name}"' if quoted == file_name
             else f"attachment; filename*=utf-8''{quoted}")
-
-
-async def _run_change(change: T.Callable[[], T.Any], status_label: ui.label) -> bool:
-    """Runs a change of the archive off the event loop, since it may wait for the database lock.
-    Shows a refused change in `status_label`. Returns whether it was done."""
-    try:
-        result = await run.io_bound(change)
-    except (ValueError, LookupError) as e:
-        if not status_label.client.is_deleted:
-            set_status(status_label, str(e), is_error=True)
-        return False
-    except Exception as e:
-        if not status_label.client.is_deleted:
-            set_status(status_label, f"Internal error: {e!r}. See the server log.",
-                       is_error=True)
-        raise
-    return result is not None  # None if the server is stopping.
 
 
 @dc.dataclass(frozen=True)
@@ -107,25 +93,38 @@ class _ModelSnapshot:
 
 
 class _ModelPage:
-    """The panels of the page and their refreshes after a change of the model."""
+    """The panels of the page and their refreshes after a change of the model. A user who cannot
+    write sees them without the controls that change the model."""
 
     def __init__(self, archive: ModelArchive,
                  dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
-                 snapshot: _ModelSnapshot):
+                 get_actor: T.Callable[[], str], can_write: bool, snapshot: _ModelSnapshot):
+        """
+        Args:
+            get_actor: See `run_change_in_thread`.
+            can_write: Whether the account that was signed in when the page was created could
+                write.
+        """
         self.archive = archive
         self.dataset_contexts = dataset_contexts
         self.worker = worker
+        self.get_actor = get_actor
+        self.can_write = can_write
         self.model_id = snapshot.model.id
         #: What the panels show, loaded again after each change.
         self.snapshot = snapshot
         self.client = ui.context.client
         self.refreshes: list[T.Callable[[], None]] = []
 
-    async def run_change(self, change: T.Callable[[], T.Any], status_label: ui.label) -> None:
-        """Runs a change of the model (`_run_change`), rescores what it affects and shows the
-        model as it is then, also after a refused change, e.g. of a model that another user has
-        changed."""
-        if await _run_change(change, status_label):
+    async def run_change(self, change: T.Callable[[str], T.Any], status_label: ui.label) -> None:
+        """Runs a change of the model (`run_change_in_thread`), rescores what it affects and shows
+        the model as it is then, also after a refused change, e.g. of a model that another user
+        has changed.
+
+        Args:
+            change: Gets the actor (`get_actor`).
+        """
+        if await run_change_in_thread(change, self.get_actor, status_label):
             await run.io_bound(self.worker.update_model_submissions, self.model_id)
         snapshot = await run.io_bound(_ModelSnapshot.load, self.archive, self.model_id)
         if snapshot is None or self.client.is_deleted:  # None if the server is stopping.
@@ -155,36 +154,36 @@ class _ModelPage:
             }
             if model.is_deleted:
                 rows["Deleted"] = format_utc_time(model.deleted_at)
+            if not self.can_write:  # Otherwise it is edited below.
+                rows["Description"] = model.description or "–"
             ui.label(f"Model {model.label}{' (deleted)' if model.is_deleted else ''}"
                      ).classes("section-title")
             with ui.element("div").classes("key-values"):
                 for key, value in rows.items():
                     ui.label(key).classes("key")
                     ui.label(value)
-            create_native_button("Restore model" if model.is_deleted else "Delete model",
-                                 lambda: on_deletion_clicked(not model.is_deleted))
+            if self.can_write:
+                create_native_button("Restore model" if model.is_deleted else "Delete model",
+                                     lambda: on_deletion_clicked(not model.is_deleted))
 
-        # The actor is read here, since the user storage is not available in the thread of the
-        # change.
         async def on_description_saved(description: str) -> None:
-            actor = get_submitter_name()
-            await self.run_change(lambda: self.archive.set_model_description(
+            await self.run_change(lambda actor: self.archive.set_model_description(
                 self.model_id, description, actor=actor), status_label)
 
         async def on_deletion_clicked(is_deleted: bool) -> None:
-            actor = get_submitter_name()
-            await self.run_change(lambda: self.archive.set_model_deleted(
+            await self.run_change(lambda actor: self.archive.set_model_deleted(
                 self.model_id, is_deleted, actor=actor), status_label)
 
         description = {"text": self.snapshot.model.description}
         with ui.element("section").classes("panel"):
             show_details()
             # Not refreshed with the details, so that a refresh does not undo an edit.
-            with ui.element("div").classes("form-row items-end"):
-                create_native_input("Description", description["text"],
-                                    lambda text: description.update(text=text), size=60)
-                create_native_button("Save description",
-                                     lambda: on_description_saved(description["text"]))
+            if self.can_write:
+                with ui.element("div").classes("form-row items-end"):
+                    create_native_input("Description", description["text"],
+                                        lambda text: description.update(text=text), size=60)
+                    create_native_button("Save description",
+                                         lambda: on_description_saved(description["text"]))
             status_label = ui.label().classes("muted")
         self.refreshes.append(show_details.refresh)
 
@@ -200,7 +199,7 @@ class _ModelPage:
             if ensemble is not None:
                 details += (f"<div>Ensemble of"
                             f" {make_ensemble_members_html(ensemble.details['members'])}</div>")
-            delete_button = ("" if submission.is_deleted else
+            delete_button = ("" if submission.is_deleted or not self.can_write else
                              f' <button class="native-control" type="button"'
                              f' data-delete-id="{submission.id}">Delete</button>')
             return (f'<tr class="{"deleted" if submission.is_deleted else ""}">'
@@ -233,7 +232,6 @@ class _ModelPage:
 
         async def on_delete_clicked(submission_id: int) -> None:
             submission = self.archive.get_submission(submission_id)
-            actor = get_submitter_name()
             changes = [f"Deletes the {submission.split} file #{submission.id} of"
                        f" {submission.label}, so that the model has no {submission.split} scores."
                        f" It can still be downloaded, but only an upload restores it."]
@@ -242,7 +240,7 @@ class _ModelPage:
                                f" active file. An upload of a file restores it.")
             if await confirm_changes(f"Delete file #{submission.id}", changes, "Delete"):
                 await self.run_change(
-                    lambda: self.archive.delete_submission(submission.id, actor=actor),
+                    lambda actor: self.archive.delete_submission(submission.id, actor=actor),
                     status_label)
 
         with ui.element("section").classes("panel"):
@@ -360,6 +358,10 @@ class _ModelPage:
     # Coding table and actions #####################################################################
 
     def create_coding_table_export(self) -> None:
+        # The values of the inputs, which `show_form` sets to the defaults.
+        form = {"split_to_is_chosen": {}, "coder": "", "date": ""}
+        state = {"is_preparing": False}
+
         @ui.refreshable
         def show_form() -> None:
             model, active = self.snapshot.model, self.snapshot.summary.split_to_submission
@@ -372,14 +374,48 @@ class _ModelPage:
                 " the iRAP coding-table layout, ordered by road and position. Invalid"
                 " predictions and columns without a predicted attribute are blank. A `.xlsx`"
                 " file of probabilistic predictions has the probability of each predicted code"
-                " on a second sheet."), sanitize=False).classes("muted")
+                " on a second sheet. Preparing a `.xlsx` file can take tens of seconds, a"
+                " `.csv` file is much faster."), sanitize=False).classes("muted")
             if not active_splits:
                 ui.label("The model has no active files.").classes("muted")
                 return
-            ui.html(_make_coding_table_form_html(model, active_splits), sanitize=False)
+            form.update(split_to_is_chosen=dict.fromkeys(active_splits, True),
+                        coder=model.method_name, date=parse_coding_date(""))
+            with ui.element("div").classes("form-row items-end"):
+                for split in active_splits:
+                    create_native_checkbox(
+                        split, True,
+                        lambda is_chosen, split=split: form["split_to_is_chosen"].update(
+                            {split: is_chosen}))
+                create_native_input("Coder", form["coder"], lambda text: form.update(coder=text),
+                                    size=24)
+                create_native_input("Coding date", form["date"],
+                                    lambda text: form.update(date=text), input_type="date")
+                for file_format in CODING_TABLE_FORMATS:
+                    create_native_button(f"Download .{file_format}",
+                                         lambda f=file_format: on_download_clicked(f))
+
+        async def on_download_clicked(file_format: str) -> None:
+            if state["is_preparing"]:  # The status label shows it.
+                return
+            splits = [s for s, is_chosen in form["split_to_is_chosen"].items() if is_chosen]
+            state["is_preparing"] = True
+            set_status(status_label, f"Preparing the .{file_format} file …")
+            try:
+                coding_table = await run_in_thread_showing_errors(functools.partial(
+                    export_model_coding_table, self.archive, self.dataset_contexts,
+                    self.model_id, splits, file_format, coder_name=form["coder"],
+                    coding_date=form["date"]), status_label)
+            finally:
+                state["is_preparing"] = False
+            if coding_table is None or self.client.is_deleted:
+                return
+            set_status(status_label, "")
+            ui.download.content(coding_table.content, coding_table.file_name)
 
         with ui.element("section").classes("panel"):
             show_form()
+            status_label = ui.label().classes("muted")
         self.refreshes.append(show_form.refresh)
 
     def create_actions(self) -> None:
@@ -395,27 +431,9 @@ class _ModelPage:
         self.refreshes.append(show_actions.refresh)
 
 
-def _make_coding_table_form_html(model: Model, splits: T.Sequence[str]) -> str:
-    """Makes a plain GET form of the coding-table endpoint, so that a download sends the values
-    that the inputs have when the button is clicked."""
-    checkboxes = "".join(
-        f'<label class="flex items-center gap-1"><input class="native-control" type="checkbox"'
-        f' name="split" value="{html.escape(s)}" checked>{html.escape(s)}</label>'
-        for s in splits)
-    buttons = "".join(
-        f'<button class="native-control" type="submit"'
-        f' formaction="{html.escape(get_coding_table_download_path(model.id, f))}">'
-        f"Download .{f}</button>" for f in CODING_TABLE_FORMATS)
-    return (f'<form method="get" class="form-row">{checkboxes}'
-            f'<label class="field">Coder<input class="native-control" name="coder" size="24"'
-            f' value="{html.escape(model.method_name)}"></label>'
-            f'<label class="field">Coding date<input class="native-control" type="date"'
-            f' name="date" value="{parse_coding_date("")}"></label>{buttons}</form>')
-
-
 def register_model_page(archive: ModelArchive,
                         dataset_contexts: T.Mapping[str, DatasetContext],
-                        worker: ScoringWorker) -> None:
+                        worker: ScoringWorker, sessions: AccountSessions) -> None:
     @app.get(SCORES_DOWNLOAD_PATH)
     def download_scores(submission_id: int, evaluation_set: str) -> JSONResponse:
         try:
@@ -431,57 +449,17 @@ def register_model_page(archive: ModelArchive,
         return JSONResponse(report,
                             headers={"Content-Disposition": _make_attachment_header(file_name)})
 
-    @app.get(CODING_TABLE_DOWNLOAD_PATH)
-    def download_coding_table(model_id: int, file_format: str,
-                              split: T.Annotated[list[str] | None, Query()] = None,
-                              coder: str = "", date: str = "") -> FileResponse:
-        # A sync endpoint, which FastAPI runs in a thread, since it reads the files.
-        if file_format not in CODING_TABLE_FORMATS:
-            raise HTTPException(status_code=404, detail=f"Unknown format {file_format!r}.")
-        try:
-            model = archive.get_model(model_id)
-            coding_date = parse_coding_date(date)
-        except LookupError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        context = dataset_contexts.get(model.dataset)
-        if context is None:
-            raise HTTPException(status_code=404, detail=f"The dataset {model.dataset!r} is not"
-                                                        f" configured.")
-        split_to_active = ModelSummary.from_submissions(
-            model, archive.list_model_submissions(model_id)).split_to_submission
-        if not split or (unknown := [s for s in split if s not in split_to_active]):
-            raise HTTPException(status_code=400, detail=(
-                "Choose at least one split." if not split
-                else f"The model has no active files of the splits {unknown}."))
-        submissions = [split_to_active[s] for s in dict.fromkeys(split)]
-        file_name = to_file_name(f"{model.label}.{'+'.join(s.split for s in submissions)}"
-                                 f".coding_table.{file_format}")
-        temporary_dir = Path(tempfile.mkdtemp(prefix="coding_table_"))
-        path = temporary_dir / file_name
-        try:
-            write_model_coding_table(archive, context, submissions, path,
-                                     coder_name=coder or model.method_name,
-                                     coding_date=coding_date)
-        except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
-            shutil.rmtree(temporary_dir)
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        except BaseException:
-            shutil.rmtree(temporary_dir)
-            raise
-        return FileResponse(path, filename=file_name,
-                            background=BackgroundTask(shutil.rmtree, temporary_dir))
-
     @ui.page(MODEL_PATH, title="Model · iRAP evaluation")
     def model_page(model_id: int, request: Request) -> None:
-        with create_page_frame(MODELS_PATH):
+        account = sessions.get_account()
+        with create_page_frame(MODELS_PATH, account):
             try:
                 snapshot = _ModelSnapshot.load(archive, model_id)
             except LookupError as e:
                 ui.label(str(e)).classes("error")
                 return
-            page = _ModelPage(archive, dataset_contexts, worker, snapshot)
+            page = _ModelPage(archive, dataset_contexts, worker, sessions.require_writer_name,
+                              can_write(account), snapshot)
             page.create_details()
             page.create_files()
             page.create_scores(request.query_params.get("split", ""),

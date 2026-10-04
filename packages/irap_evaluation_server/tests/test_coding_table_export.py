@@ -1,4 +1,5 @@
 import datetime
+import io
 import json
 
 import irap_evaluation as ie
@@ -10,6 +11,7 @@ from run_helpers import OTHER_SPLIT, add_model, make_model, with_split
 from synthetic_vietnam import SPLIT, make_predictions
 
 from irap_evaluation_server.coding_table_export import (
+    export_model_coding_table,
     parse_coding_date,
     write_model_coding_table,
 )
@@ -75,6 +77,33 @@ def test_coding_table_of_several_splits(archive, disjoint_split_contexts, tmp_pa
     with pytest.raises(ValueError, match="one model"):
         write_model_coding_table(archive, context, [first, other], path, coder_name="Bo",
                                  coding_date="2026-10-03")
+
+
+def test_export_model_coding_table(archive, disjoint_split_contexts):
+    metadata = disjoint_split_contexts["vietnam"].metadata
+    first, second = (
+        add_model(archive, disjoint_split_contexts, with_split(make_predictions(
+            metadata.vocabulary, list(metadata.splits[split]), name="m", seed=0), split))
+        for split in (SPLIT, OTHER_SPLIT))
+
+    def export(splits, file_format="csv", coding_date=""):
+        return export_model_coding_table(archive, disjoint_split_contexts, first.model.id,
+                                         splits, file_format, coder_name="",
+                                         coding_date=coding_date)
+
+    coding_table = export([OTHER_SPLIT, SPLIT])
+    assert coding_table.file_name == f"{first.model.label}.{OTHER_SPLIT}_{SPLIT}.coding_table.csv"
+    stored = pd.read_csv(io.BytesIO(coding_table.content))
+    assert len(stored) == first.num_segments + second.num_segments
+    coder_column = coding_tables.load_coding_table_template().field_to_column["coder_name"]
+    assert set(stored[coder_column]) == {"m"}  # The method name.
+    for splits, file_format, coding_date, message in [
+            ([], "csv", "", "at least one split"),
+            (["missing"], "csv", "", "no active files"),
+            ([SPLIT], "json", "", "Unknown format"),
+            ([SPLIT], "csv", "03.10.2026", "YYYY-MM-DD")]:
+        with pytest.raises(ValueError, match=message):
+            export(splits, file_format, coding_date)
 
 
 def test_parse_coding_date():

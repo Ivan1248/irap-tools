@@ -246,13 +246,13 @@ def test_list_submissions_of_deleted_models(archive, dataset_contexts):
 
 def test_actions_need_an_actor(archive, dataset_contexts):
     planned = plan(archive, dataset_contexts, make_model(dataset_contexts))
-    with pytest.raises(ValueError, match="Enter your name"):
+    with pytest.raises(ValueError, match="actor of an action"):
         apply_upload(archive, planned, submitter=" ")
     submission = add_model(archive, dataset_contexts, make_model(dataset_contexts))
     for change in (lambda: archive.delete_submission(submission.id, actor=""),
                    lambda: archive.set_model_deleted(submission.model.id, True, actor=""),
                    lambda: archive.set_model_description(submission.model.id, "x", actor="")):
-        with pytest.raises(ValueError, match="Enter your name"):
+        with pytest.raises(ValueError, match="actor of an action"):
             change()
     with pytest.raises(LookupError):
         archive.get_submission(submission.id + 1)

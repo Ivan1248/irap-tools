@@ -10,6 +10,7 @@ import secrets
 import time
 from pathlib import Path
 
+from .accounts import AccountStore
 from .archive import ModelArchive
 from .config import load_server_config
 from .datasets import load_dataset_contexts
@@ -38,13 +39,16 @@ def main(argv: list[str] | None = None) -> None:
     os.environ["NICEGUI_STORAGE_PATH"] = str(config.data_dir / "nicegui_storage")
     from nicegui import app, ui
 
-    from .components.routes import VENDOR_PATH
+    from .components.account_sessions import AccountSessions
+    from .components.routes import REGISTER_PATH, VENDOR_PATH
+    from .pages.accounts import register_accounts_page
     from .pages.action_log import register_action_log_page
     from .pages.analysis import register_analysis_page
     from .pages.ensemble import register_ensemble_page
     from .pages.model import register_model_page
     from .pages.models import register_models_pages
     from .pages.scores import register_scores_page
+    from .pages.sign_in import register_sign_in_pages
 
     vendor_dir = config.data_dir / "vendor"
     try:
@@ -66,13 +70,21 @@ def main(argv: list[str] | None = None) -> None:
     scoring_worker.start()
     app.on_shutdown(scoring_worker.stop)
 
-    register_scores_page(dataset_contexts, scoring_worker)
+    accounts = AccountStore(config.data_dir)
+    if not accounts.has_accounts():
+        print(f"There are no accounts yet. The first to register at {REGISTER_PATH} becomes the"
+              f" admin.")
+    sessions = AccountSessions(accounts)
+    register_sign_in_pages(sessions)
+    register_accounts_page(sessions)
+    register_scores_page(dataset_contexts, scoring_worker, sessions)
     register_analysis_page(dataset_contexts, scoring_worker,
-                           AlignedPredictionsCache(archive, scoring_worker.settings), map_error)
-    register_models_pages(archive, dataset_contexts, scoring_worker)
-    register_model_page(archive, dataset_contexts, scoring_worker)
-    register_ensemble_page(archive, dataset_contexts, scoring_worker)
-    register_action_log_page(archive)
+                           AlignedPredictionsCache(archive, scoring_worker.settings), map_error,
+                           sessions)
+    register_models_pages(archive, dataset_contexts, scoring_worker, sessions)
+    register_model_page(archive, dataset_contexts, scoring_worker, sessions)
+    register_ensemble_page(archive, dataset_contexts, scoring_worker, sessions)
+    register_action_log_page(archive, sessions)
     vendor_dir.mkdir(exist_ok=True)
     app.add_static_files(VENDOR_PATH, vendor_dir)
     # No ripple effects on clicks, and no loading bar on requests.

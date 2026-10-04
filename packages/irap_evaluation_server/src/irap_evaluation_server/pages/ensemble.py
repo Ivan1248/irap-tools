@@ -5,7 +5,9 @@ import typing as T
 from fastapi import Request
 from nicegui import run, ui
 
-from ..archive import ModelArchive, Submission, check_actor, discard_model_update
+from ..accounts import can_write
+from ..archive import ModelArchive, Submission, discard_model_update
+from ..components.account_sessions import AccountSessions
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import format_splits, make_model_link_html
 from ..components.native_controls import (
@@ -16,7 +18,7 @@ from ..components.native_controls import (
     set_native_checkbox_checked,
     set_status,
 )
-from ..components.page_frame import create_page_frame, get_submitter_name
+from ..components.page_frame import create_page_frame, create_write_permission_panel
 from ..components.routes import ENSEMBLE_PATH, make_query_path
 from ..components.view_queries import compile_name_pattern, parse_dataset
 from ..datasets import DatasetContext
@@ -31,19 +33,26 @@ from ..ensembles import (
 from ..scoring_worker import ScoringWorker
 from ..uploads import parse_description, parse_seed
 
+_FORM_TITLE = "Create an ensemble"
+
 
 def register_ensemble_page(archive: ModelArchive,
                            dataset_contexts: T.Mapping[str, DatasetContext],
-                           worker: ScoringWorker) -> None:
+                           worker: ScoringWorker, sessions: AccountSessions) -> None:
     @ui.page(ENSEMBLE_PATH, title="Ensemble · iRAP evaluation")
     def ensemble_page(request: Request) -> None:
-        with create_page_frame(ENSEMBLE_PATH):
+        account = sessions.get_account()
+        with create_page_frame(ENSEMBLE_PATH, account):
+            if not can_write(account):
+                create_write_permission_panel(account, _FORM_TITLE, "create ensembles")
+                return
             try:
                 dataset = parse_dataset(request.query_params, dataset_contexts)
             except ValueError as e:
                 ui.label(str(e)).classes("error")
                 return
-            _create_ensemble_form(archive, dataset_contexts, worker, dataset)
+            _create_ensemble_form(archive, dataset_contexts, worker, sessions.require_writer_name,
+                                  dataset)
 
 
 def _parse_members(member_models: T.Sequence[MemberModel], is_selected: T.Mapping[int, bool],
@@ -88,7 +97,13 @@ def _describe_plan(plan: EnsemblePlan) -> str:
 
 def _create_ensemble_form(archive: ModelArchive,
                           dataset_contexts: T.Mapping[str, DatasetContext],
-                          worker: ScoringWorker, dataset: str) -> None:
+                          worker: ScoringWorker, get_actor: T.Callable[[], str],
+                          dataset: str) -> None:
+    """
+    Args:
+        get_actor: Returns the name of the signed-in account that can write, or raises
+            `ValueError`.
+    """
     context = dataset_contexts[dataset]
     # The plan shown while the user chooses members uses this list. The Create button plans with
     # a new list.
@@ -162,7 +177,7 @@ def _create_ensemble_form(archive: ModelArchive,
             name = form["name"].strip()
             if not name:
                 raise ValueError("Enter the method name of the ensemble.")
-            check_actor(get_submitter_name())
+            actor = get_actor()
             seed = parse_seed(form["seed"])
         except ValueError as e:
             set_status(status_label, str(e), is_error=True)
@@ -173,7 +188,7 @@ def _create_ensemble_form(archive: ModelArchive,
         try:
             created = await _create(archive, context, plan, method_name=name, seed=seed,
                                     intersect_segments=form["intersect_segments"],
-                                    description=form["description"])
+                                    description=form["description"], actor=actor)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             if not client.is_deleted:
                 set_status(status_label, str(e), is_error=True)
@@ -200,7 +215,7 @@ def _create_ensemble_form(archive: ModelArchive,
             f" {', '.join(s.split for s in created)}. It is scored in the background.")
 
     with ui.element("section").classes("panel"):
-        ui.label("Create an ensemble").classes("section-title")
+        ui.label(_FORM_TITLE).classes("section-title")
         ui.label("The ensemble predicts the weighted mean of the members' distributions. A hard"
                  " prediction counts as one-hot, so an ensemble of hard predictions is a weighted"
                  " vote. A cell is invalid only if it is invalid in every member. The ensemble"
@@ -252,9 +267,12 @@ def _create_ensemble_form(archive: ModelArchive,
 
 async def _create(archive: ModelArchive, context: DatasetContext, plan: EnsemblePlan, *,
                   method_name: str, seed: int | None, intersect_segments: bool,
-                  description: str) -> list[Submission]:
+                  description: str, actor: str) -> list[Submission]:
     """Makes the ensemble files (`ensembles.prepare_ensemble`), asks the user to confirm the
     changes, if any, and stores them.
+
+    Args:
+        actor: The name of the signed-in account.
 
     Returns:
         The new submissions, or [] if the user cancelled, closed the page, or the server is
@@ -277,7 +295,6 @@ async def _create(archive: ModelArchive, context: DatasetContext, plan: Ensemble
         if update.confirmations and not await confirm_changes(
                 f"Ensemble {update.label} on {update.dataset}", update.confirmations, "Store"):
             return []
-        return await run.io_bound(archive.apply_model_update, update,
-                                  submitter=get_submitter_name()) or []
+        return await run.io_bound(archive.apply_model_update, update, submitter=actor) or []
     finally:
         discard_model_update(update)  # The files that are not moved into the archive.

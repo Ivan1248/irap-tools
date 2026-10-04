@@ -14,12 +14,19 @@ MODELS_PATH = "/models"
 #: (`ATTRIBUTE_PARAMETER`).
 MODEL_PATH = "/models/{model_id}"
 ACTION_LOG_PATH = "/actions"
+#: With the query parameters `next` (the path to return to) and `failed` ('1' after a wrong name
+#: or password).
+SIGN_IN_PATH = "/sign-in"
+#: With the query parameter `next`.
+REGISTER_PATH = "/register"
+ACCOUNTS_PATH = "/accounts"
+#: Endpoints of plain forms, with the form field `next`.
+SIGN_IN_ENDPOINT_PATH = "/api/sign-in"
+REGISTER_ENDPOINT_PATH = "/api/register"
+SIGN_OUT_ENDPOINT_PATH = "/api/sign-out"
 UPLOAD_PATH = "/api/uploads"
 PREDICTIONS_DOWNLOAD_PATH = "/api/submissions/{submission_id}/predictions.parquet"
 SCORES_DOWNLOAD_PATH = "/api/submissions/{submission_id}/scores/{evaluation_set}.json"
-#: With the query parameters `split` (repeated, the splits of the table), `coder` (default:
-#: the method name) and `date` (`YYYY-MM-DD`, default: today).
-CODING_TABLE_DOWNLOAD_PATH = "/api/models/{model_id}/coding_table.{file_format}"
 SEGMENT_IMAGE_PATH = "/api/datasets/{dataset}/images/{segment_id}"
 #: The static files of the map libraries (`map_libraries`).
 VENDOR_PATH = "/vendor"
@@ -33,6 +40,26 @@ def make_query_path(path: str, query: T.Mapping[str, str | T.Sequence[str]]) -> 
     parameters."""
     query = {k: v for k, v in query.items() if v}
     return f"{path}?{urllib.parse.urlencode(query, doseq=True)}" if query else path
+
+
+def to_local_path(url: str, default: str) -> str:
+    """Returns `url` if it is a path on this server, e.g. a `next` parameter, otherwise
+    `default`, so that a link cannot redirect to another site."""
+    parts = urllib.parse.urlsplit(url)
+    # Browsers read '/\' as '//', the start of another host, and remove tabs and line breaks.
+    is_local = (not parts.scheme and not parts.netloc and url.startswith("/")
+                and not url.startswith(("//", "/\\")) and url.isprintable())
+    return url if is_local else default
+
+
+def get_sign_in_path(next_path: str) -> str:
+    """Makes the path of the Sign-in page, which returns to `next_path`."""
+    return make_query_path(SIGN_IN_PATH, {"next": next_path})
+
+
+def get_register_path(next_path: str) -> str:
+    """Makes the path of the Register page, which returns to `next_path`."""
+    return make_query_path(REGISTER_PATH, {"next": next_path})
 
 
 def get_model_path(model_id: int, split: str = "", attributes: T.Sequence[str] = ()) -> str:
@@ -49,14 +76,6 @@ def get_segment_image_path(dataset: str, segment_id: str) -> str:
 
 def get_download_path(submission_id: int) -> str:
     return PREDICTIONS_DOWNLOAD_PATH.format(submission_id=submission_id)
-
-
-def get_coding_table_download_path(model_id: int, file_format: str) -> str:
-    """
-    Args:
-        file_format: See `coding_table_export.CODING_TABLE_FORMATS`.
-    """
-    return CODING_TABLE_DOWNLOAD_PATH.format(model_id=model_id, file_format=file_format)
 
 
 def get_scores_download_path(submission_id: int, evaluation_set: str) -> str:

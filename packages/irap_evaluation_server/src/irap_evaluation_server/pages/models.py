@@ -12,7 +12,9 @@ from fastapi.responses import FileResponse, RedirectResponse
 from irap_evaluation.reports.evaluation_report import to_file_name
 from nicegui import app, run, ui
 
-from ..archive import ModelArchive, Submission, check_actor
+from ..accounts import can_write
+from ..archive import ModelArchive, Submission
+from ..components.account_sessions import AccountSessions
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import (
     format_splits,
@@ -29,7 +31,7 @@ from ..components.native_controls import (
     create_native_select,
     set_status,
 )
-from ..components.page_frame import create_page_frame, get_submitter_name
+from ..components.page_frame import create_page_frame, create_write_permission_panel
 from ..components.routes import (
     MODELS_PATH,
     PREDICTIONS_DOWNLOAD_PATH,
@@ -47,6 +49,7 @@ from ..uploads import apply_upload, parse_description, parse_seed, plan_upload
 #: Uploaded files that are not stored are removed after this time, e.g. those of a closed page
 #: whose client NiceGUI has not deleted.
 _ABANDONED_UPLOAD_AGE_S = 24 * 3600
+_UPLOAD_FORM_TITLE = "Upload predictions"
 
 #: The columns of the models table after the split columns.
 _SUMMARY_COLUMNS = ("Output", "Segments", "Attributes", "Description", "Updated")
@@ -144,12 +147,16 @@ class _UploadFormState:
 
 def _create_upload_form(archive: ModelArchive,
                         dataset_contexts: T.Mapping[str, DatasetContext],
-                        worker: ScoringWorker) -> None:
+                        worker: ScoringWorker, get_actor: T.Callable[[], str]) -> None:
     """Creates the form for uploading a prediction file or a .zip archive of the files of one
     model.
 
     The upload is checked and planned (`uploads.plan_upload`), and the user confirms its changes,
     if any (`archive.ModelUpdate.confirmations`). A stored upload opens the page of its model.
+
+    Args:
+        get_actor: Returns the name of the signed-in account that can write, or raises
+            `ValueError`.
     """
     form = _UploadFormState()
 
@@ -193,7 +200,7 @@ def _create_upload_form(archive: ModelArchive,
                        is_error=True)
             return
         try:
-            check_actor(get_submitter_name())
+            actor = get_actor()
             seed = parse_seed(form.seed_text)
         except ValueError as e:
             set_status(status_label, str(e), is_error=True)
@@ -217,7 +224,7 @@ def _create_upload_form(archive: ModelArchive,
         try:
             submissions = await _check_and_store(archive, dataset_contexts, upload_path,
                                                  file_name=file_name, seed=seed,
-                                                 description=form.description)
+                                                 description=form.description, actor=actor)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             give_back_upload()
             if not client.is_deleted:
@@ -244,7 +251,7 @@ def _create_upload_form(archive: ModelArchive,
     ui.context.client.on_delete(remove_pending_upload)
 
     with ui.element("section").classes("panel"):
-        ui.label("Upload predictions").classes("section-title")
+        ui.label(_UPLOAD_FORM_TITLE).classes("section-title")
         ui.html(make_code_spans_html(
             "A `.predictions.parquet` file in the `irap_evaluation` format, whose header gives"
             " the dataset, split, method, seed and training splits, or a `.zip` archive with"
@@ -265,9 +272,12 @@ def _create_upload_form(archive: ModelArchive,
 
 async def _check_and_store(archive: ModelArchive,
                            dataset_contexts: T.Mapping[str, DatasetContext], upload_path: Path, *,
-                           file_name: str, seed: int | None,
-                           description: str) -> list[Submission]:
+                           file_name: str, seed: int | None, description: str,
+                           actor: str) -> list[Submission]:
     """Plans an upload, asks the user to confirm its changes, if any, and applies it.
+
+    Args:
+        actor: The name of the signed-in account.
 
     Returns:
         The new submissions, or [] if the user cancelled, closed the page, or the server is
@@ -289,17 +299,20 @@ async def _check_and_store(archive: ModelArchive,
         if update.confirmations and not await confirm_changes(
                 f"Upload of {update.label} on {update.dataset}", update.confirmations, "Store"):
             return []
-        return await run.io_bound(apply_upload, archive, planned,
-                                  submitter=get_submitter_name()) or []
+        return await run.io_bound(apply_upload, archive, planned, submitter=actor) or []
     finally:
         planned.discard()  # Also if the page is closed, or the server is stopping.
 
 
 def register_models_pages(archive: ModelArchive,
                           dataset_contexts: T.Mapping[str, DatasetContext],
-                          worker: ScoringWorker) -> None:
+                          worker: ScoringWorker, sessions: AccountSessions) -> None:
     @app.post(UPLOAD_PATH)
     async def receive_upload(file: UploadFile) -> dict:
+        try:
+            sessions.require_writer_name()
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
         await run.io_bound(archive.remove_uploads, older_than_s=_ABANDONED_UPLOAD_AGE_S)
         path = archive.make_upload_path(file.filename or "")
         await run.io_bound(_write_upload, file.file, path)
@@ -321,8 +334,9 @@ def register_models_pages(archive: ModelArchive,
 
     @ui.page(MODELS_PATH, title="Models · iRAP evaluation")
     def models_page(dataset: str = "", deleted: bool = False) -> None:
+        account = sessions.get_account()
         if dataset and dataset not in dataset_contexts:
-            with create_page_frame(MODELS_PATH):
+            with create_page_frame(MODELS_PATH, account):
                 ui.label(f"Unknown dataset {dataset!r}. Datasets:"
                          f" {', '.join(dataset_contexts)}.").classes("error")
             return
@@ -349,8 +363,13 @@ def register_models_pages(archive: ModelArchive,
                 ui.html(make_models_table_html(groups, dataset_contexts[name].split_names),
                         sanitize=False).classes("w-full overflow-x-auto")
 
-        with create_page_frame(MODELS_PATH):
-            _create_upload_form(archive, dataset_contexts, worker)
+        with create_page_frame(MODELS_PATH, account):
+            if can_write(account):
+                _create_upload_form(archive, dataset_contexts, worker,
+                                    sessions.require_writer_name)
+            # Visitors see no upload panel, which would push the models down.
+            elif account is not None:
+                create_write_permission_panel(account, _UPLOAD_FORM_TITLE, "upload predictions")
             with ui.element("section").classes("panel"):
                 ui.label("Models").classes("section-title")
                 with ui.element("div").classes("form-row"):

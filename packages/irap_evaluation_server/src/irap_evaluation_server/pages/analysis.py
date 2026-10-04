@@ -15,6 +15,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
+from ..components.account_sessions import AccountSessions
 from ..components.analysis_html import (
     make_class_table_html,
     make_confusion_matrix_html,
@@ -118,7 +119,7 @@ def _load_model(predictions_cache: AlignedPredictionsCache, store: ScoreStore,
 
 def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
                            worker: ScoringWorker, predictions_cache: AlignedPredictionsCache,
-                           map_error: str | None) -> None:
+                           map_error: str | None, sessions: AccountSessions) -> None:
     """
     Args:
         map_error: Why the map libraries are missing (`map_libraries.ensure_map_libraries`), or
@@ -134,7 +135,7 @@ def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
 
     @ui.page(ANALYSIS_PATH, title="Analysis · iRAP evaluation")
     async def analysis_page(request: Request) -> None:
-        with create_page_frame(ANALYSIS_PATH, fills_window=True):
+        with create_page_frame(ANALYSIS_PATH, sessions.get_account(), fills_window=True):
             try:
                 view = AnalysisView.from_query(request.query_params, dataset_contexts)
             except ValueError as e:

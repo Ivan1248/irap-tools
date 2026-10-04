@@ -12,6 +12,7 @@ import irap_evaluation as ie
 from fastapi import Request
 from nicegui import ui
 
+from ..components.account_sessions import AccountSessions
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
 from ..components.formatting import EVALUATION_SET_LABELS, make_model_link_html
 from ..components.native_controls import (
@@ -127,10 +128,10 @@ def _parse_view(query: T.Mapping[str, str],
 
 
 def register_scores_page(dataset_contexts: T.Mapping[str, DatasetContext],
-                         worker: ScoringWorker) -> None:
+                         worker: ScoringWorker, sessions: AccountSessions) -> None:
     @ui.page(SCORES_PATH, title="Scores · iRAP evaluation")
     def scores_page(request: Request) -> None:
-        with create_page_frame(SCORES_PATH):
+        with create_page_frame(SCORES_PATH, sessions.get_account()):
             try:
                 view = _parse_view(request.query_params, dataset_contexts)
             except ValueError as e:

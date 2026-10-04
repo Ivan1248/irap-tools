@@ -7,8 +7,8 @@ one active one per split. A submission of a split that the model already has rep
 one, which is deleted. Deleted submissions are kept, e.g. for download, but cannot be restored,
 only uploaded again. Deleted models are kept and can be restored. Deleting the last active
 submission of a model deletes the model, and an upload restores it, so a model that is not deleted
-has an active submission. There are no logins, so each action records a free-text name of who did
-it.
+has an active submission. Each action records who did it, the name of an account that can write
+(`accounts`).
 
 The data directory holds:
 
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import irap_evaluation as ie
 
-from .database import begin_write, connect, get_utc_now
+from .database import begin_write, connect, get_utc_now, initialize_schema
 
 #: The actions that add submissions: an upload, or an ensemble of stored models (see
 #: `ensembles`).
@@ -45,7 +45,7 @@ ActionKind = AddingActionKind | T.Literal[
 
 #: The version of the database schema (`PRAGMA user_version`). A database of another version is
 #: refused, since there is no migration.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 1
 
 #: SQLite stores integers as signed 64-bit values.
 _SQLITE_INTEGER_RANGE = range(-2**63, 2**63)
@@ -135,7 +135,7 @@ class Submission:
 
     Attributes:
         training_splits, early_stopping_splits: See `irap_evaluation.ModelInfo`.
-        submitter: The free-text name of who uploaded it.
+        submitter: The account name of the writer who uploaded it.
         uploaded_at: The time of the upload, in UTC.
         deleted_at: The time of the deletion or replacement, in UTC, or None if it is the active
             file of its split.
@@ -187,7 +187,7 @@ class ActionLogEntry:
 
     Attributes:
         time: In UTC.
-        actor: The free-text name of who did it.
+        actor: The account name of the writer who did it.
         model_id: The model that it is on.
         submission_id: The submission that it is on, None for an action on the model.
         details: JSON-compatible details, e.g. the name of an uploaded file.
@@ -401,14 +401,14 @@ def _to_action_log_entry(row: sqlite3.Row) -> ActionLogEntry:
                           submission_id=row["submission_id"], details=json.loads(row["details"]))
 
 
-def check_actor(actor: str) -> str:
-    """Strips the free-text name of who does an action.
+def _check_actor(actor: str) -> str:
+    """Strips the account name of who does an action.
 
     Raises:
         ValueError: If it is empty.
     """
     if not actor.strip():
-        raise ValueError("Enter your name, so that the action log shows who did this.")
+        raise ValueError("The actor of an action must not be empty.")
     return actor.strip()
 
 
@@ -588,20 +588,7 @@ class ModelArchive:
         self.data_dir = Path(data_dir)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "submissions").mkdir(exist_ok=True)
-        with connect(self.database_path) as connection:
-            self._initialize_schema(connection)
-
-    def _initialize_schema(self, connection: sqlite3.Connection) -> None:
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version == SCHEMA_VERSION:
-            return
-        num_tables = connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
-        if version != 0 or num_tables:
-            raise ValueError(f"The database {self.database_path} is of another version of the"
-                             f" archive ({version}, not {SCHEMA_VERSION}). Use a new data"
-                             f" directory.")
-        connection.executescript(f"BEGIN; {_SCHEMA} PRAGMA user_version = {SCHEMA_VERSION};"
-                                 f" COMMIT;")
+        initialize_schema(self.database_path, _SCHEMA, SCHEMA_VERSION, "archive")
 
     @property
     def database_path(self) -> Path:
@@ -782,7 +769,7 @@ class ModelArchive:
                 submissions of the model would differ (see `_check_model_invariant`), or the
                 models of the method could not be averaged (see `_check_method_invariant`).
         """
-        return self._apply(update, check_actor(submitter), is_dry_run=False)
+        return self._apply(update, _check_actor(submitter), is_dry_run=False)
 
     def _apply(self, update: ModelUpdate, actor: str, is_dry_run: bool) -> list[Submission]:
         """Applies an update (`apply_model_update`), or, for a dry run, does its checks and
@@ -905,7 +892,7 @@ class ModelArchive:
             ValueError: If `actor` is empty, or the submission is already deleted, e.g. after
                 another user replaced it.
         """
-        actor = check_actor(actor)
+        actor = _check_actor(actor)
         with begin_write(self.database_path) as connection:
             submission = _get_submission(connection, submission_id)
             if submission.is_deleted:
@@ -927,7 +914,7 @@ class ModelArchive:
                 restored but has no active submission, or the models of its method could not be
                 averaged after it is restored (see `_check_method_invariant`).
         """
-        actor = check_actor(actor)
+        actor = _check_actor(actor)
         with begin_write(self.database_path) as connection:
             model = _get_model(connection, model_id)
             if model.is_deleted == is_deleted:
@@ -948,7 +935,7 @@ class ModelArchive:
             LookupError: If there is no such model.
             ValueError: If `actor` is empty, or the description is unchanged.
         """
-        actor = check_actor(actor)
+        actor = _check_actor(actor)
         description = description.strip()
         with begin_write(self.database_path) as connection:
             model = _get_model(connection, model_id)

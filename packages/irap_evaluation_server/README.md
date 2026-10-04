@@ -10,8 +10,9 @@ An web app that keeps an archive of model predictions, scores them, and compares
 | Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
 | Ensemble | `/ensemble` | Creates an ensemble of stored models. |
 | Action log | `/actions` | All changes, with the name of the user. |
+| Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins. |
 
-There are no logins: anyone who can open the app can upload, replace and delete files, and delete and restore models. Each user enters a name in the top bar for the action log.
+Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete and restore models, edit descriptions and create ensembles. The action log shows the account name.
 
 ## Installation and start
 
@@ -54,9 +55,28 @@ The data directory holds:
 - `submissions/<id>/predictions.parquet`: the stored files,
 - `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
 - `vendor/`: the map libraries,
-- `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the user name, and its key.
+- `accounts.sqlite3`: the [accounts](#accounts),
+- `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie.
 
-The database has a schema version and no migrations: the server refuses a data directory of another version, so start with a new `data_dir`.
+The databases have a schema version and no migrations: the server refuses a data directory of another version, so start with a new `data_dir`.
+
+## Accounts
+
+Users register and sign in with the links in the top bar. An account has one of the permissions:
+
+| Permission | Can |
+|---|---|
+| view | View, like visitors without an account. |
+| write | Also upload, replace and delete files, delete and restore models, edit descriptions and create ensembles. |
+| admin | Also change the permissions of the accounts and remove them, on the Accounts page. |
+
+The first account to register is an admin. Later accounts can view until an admin gives them more. The app keeps at least one admin: it refuses to remove the last admin or to take away its admin permission.
+
+`accounts.sqlite3` has scrypt hashes of the passwords. Account names are unique regardless of the case of ASCII letters. A permission change applies at once, also to accounts that are signed in. A session lasts 14 days, or until the account is removed. Every change is checked on the server when it is made, also if a page was opened before a sign-out or a permission change.
+
+There is no password change. An admin can remove an account with a lost password, so that the user can register the name again. If no admin can sign in any more, stop the server and delete `accounts.sqlite3`, which removes all accounts, so that the next to register becomes the admin. The action log keeps the names.
+
+The app does not limit registrations or sign-in attempts. Use long passwords.
 
 ## Models and files
 
@@ -138,8 +158,9 @@ The Model page downloads the active files of the chosen splits as one iRAP codin
 irap_evaluation_server/
 ├─ config.py                ServerConfig, DatasetConfig, load_server_config
 ├─ datasets.py              DatasetContext: the metadata of a dataset and its evaluation sets
-├─ database.py              Connections to the SQLite database
+├─ database.py              Connections to the SQLite databases
 ├─ archive.py               ModelArchive: models, their files, the SQLite index and action log
+├─ accounts.py              AccountStore: the accounts, their permissions and password hashes
 ├─ uploads.py               The checks of uploaded files and .zip archives, and their planned updates
 ├─ model_listing.py         The models of the Models page, grouped by method
 ├─ scoring.py               Scoring settings, the score cache, means over models and intervals

@@ -1,5 +1,5 @@
-"""Connections to the SQLite database of the data directory, shared by the archive and the score
-cache. Times are stored in UTC as ISO 8601 (`get_utc_now`)."""
+"""Connections to the SQLite databases of the data directory: that of the archive, which the score
+cache shares, and that of the accounts. Times are stored in UTC as ISO 8601 (`get_utc_now`)."""
 
 import contextlib
 import sqlite3
@@ -26,6 +26,30 @@ def connect(database_path: Path) -> T.Iterator[sqlite3.Connection]:
         yield connection
     finally:
         connection.close()
+
+
+def initialize_schema(database_path: Path, schema: str, schema_version: int,
+                      database_name: str) -> None:
+    """Creates the tables of a new database, with `schema_version` as its `PRAGMA user_version`.
+
+    Args:
+        schema: The SQL statements that create the tables.
+        database_name: What the database holds, for the error message, e.g. 'archive'.
+
+    Raises:
+        ValueError: If the database has another schema version, since there is no migration.
+    """
+    with connect(database_path) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version == schema_version:
+            return
+        num_tables = connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        if version != 0 or num_tables:
+            raise ValueError(f"The database {database_path} is of another version of the"
+                             f" {database_name} ({version}, not {schema_version}). Use a new"
+                             f" data directory.")
+        connection.executescript(f"BEGIN; {schema} PRAGMA user_version = {schema_version};"
+                                 f" COMMIT;")
 
 
 @contextlib.contextmanager
