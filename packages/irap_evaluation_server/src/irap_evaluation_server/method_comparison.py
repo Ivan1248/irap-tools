@@ -1,6 +1,6 @@
 """The comparison of two methods on the reference set of a dataset split
-(`irap_evaluation.compare_methods`): the differences of their means over runs, with bootstrap
-intervals over the same resampled road sequences, which include the variation between runs (see
+(`irap_evaluation.compare_methods`): the differences of their means over models, with bootstrap
+intervals over the same resampled road sequences, which include the variation between models (see
 `irap_evaluation/docs/evaluation.md`, "Comparing methods").
 
 Like intervals, comparisons need the per-sequence statistics, so the scoring worker computes them
@@ -13,13 +13,13 @@ import typing as T
 
 import irap_evaluation as ie
 
-from .archive import SubmissionArchive
+from .archive import ModelArchive
 from .datasets import DatasetContext
 from .method_ranking import PER_ATTRIBUTE_METRIC_NAMES, RANKING_METRIC_NAMES
 from .scoring import (
     IntervalRequest,
     MethodScores,
-    ScoredRun,
+    ScoredModel,
     ScoringSettings,
     check_attributes,
     compute_json_sha256,
@@ -57,18 +57,18 @@ class ComparisonRequest:
     def submission_ids(self) -> tuple[int, ...]:
         return (*self.intervals_a.submission_ids, *self.intervals_b.submission_ids)
 
-    def compute(self, archive: SubmissionArchive,
+    def compute(self, archive: ModelArchive,
                 dataset_contexts: T.Mapping[str, DatasetContext],
                 settings: ScoringSettings) -> ie.MetricValues[ie.MetricDifference]:
-        """See `scoring.WorkRequest.compute`. The runs are scored again
-        (`scoring.IntervalRequest.evaluate_runs`), and the metrics of `COMPARED_METRIC_NAMES`
+        """See `scoring.WorkRequest.compute`. The models are scored again
+        (`scoring.IntervalRequest.evaluate_models`), and the metrics of `COMPARED_METRIC_NAMES`
         that both methods have are compared.
 
         Raises:
-            ValueError: See `scoring.IntervalRequest.evaluate_runs`, and if
-                `irap_evaluation.compare_methods` refuses the runs.
+            ValueError: See `scoring.IntervalRequest.evaluate_models`, and if
+                `irap_evaluation.compare_methods` refuses the models.
         """
-        results_a, results_b = (r.evaluate_runs(archive, dataset_contexts, settings)
+        results_a, results_b = (r.evaluate_models(archive, dataset_contexts, settings)
                                 for r in (self.intervals_a, self.intervals_b))
         common_names = set(results_a[0].metrics.names) & set(results_b[0].metrics.names)
         return ie.compare_methods(
@@ -85,15 +85,16 @@ class ComparisonRequest:
 
 
 def list_comparable_methods(rows: T.Iterable[MethodScores]) -> list[MethodScores]:
-    """The methods whose runs can be combined (without `MethodScores.error`), in their order."""
+    """Lists the methods that can be compared, those without `MethodScores.error`, in their
+    order."""
     return [r for r in rows if r.error is None]
 
 
 def get_better_method(interval: ie.BootstrapInterval | None,
                       metric_name: str) -> T.Literal["A", "B"] | None:
-    """Which method is clearly better by the interval of a difference A − B: the one that it
-    favours if it excludes 0, otherwise None (also for an undefined interval). There are no
-    p-values (`irap_evaluation/docs/evaluation.md`, "Comparing methods")."""
+    """Determines which method is clearly better by the interval of a difference A − B: the one
+    that it favours if it excludes 0, otherwise None (also for an undefined interval). There are
+    no p-values (`irap_evaluation/docs/evaluation.md`, "Comparing methods")."""
     if interval is None or not interval.low <= interval.high:  # Also NaN bounds.
         return None
     if interval.low <= 0 <= interval.high:
@@ -102,27 +103,27 @@ def get_better_method(interval: ie.BootstrapInterval | None,
     return "A" if is_a_higher != ie.is_lower_better(metric_name) else "B"
 
 
-def make_comparison_request(runs_a: T.Sequence[ScoredRun], runs_b: T.Sequence[ScoredRun],
+def make_comparison_request(models_a: T.Sequence[ScoredModel], models_b: T.Sequence[ScoredModel],
                             attributes: T.Collection[str],
                             settings: ScoringSettings) -> ComparisonRequest:
     """
     Args:
-        runs_a: The runs of method A, scored on the reference set.
-        runs_b: The runs of method B, the same.
+        models_a: The models of method A, scored on the reference set.
+        models_b: The models of method B, the same.
 
     Raises:
-        ValueError: If `attributes` is empty, the runs of a method cannot be combined
-            (`scoring.make_interval_request`), a run is not scored on the reference set, or A
+        ValueError: If `attributes` is empty, the models of a method cannot be combined
+            (`scoring.make_interval_request`), a model is not scored on the reference set, or A
             and B are scored on different sets.
     """
     check_attributes(attributes)
     interval_requests = []
-    for name, runs in (("A", runs_a), ("B", runs_b)):
+    for name, models in (("A", models_a), ("B", models_b)):
         try:
-            interval_requests.append(make_interval_request(runs, attributes, settings))
+            interval_requests.append(make_interval_request(models, attributes, settings))
         except ValueError as e:
             raise ValueError(f"Method {name}: {e}") from None
-    if any(r.scores.evaluation_set != ie.REFERENCE_SET_NAME for r in (*runs_a, *runs_b)):
+    if any(m.scores.evaluation_set != ie.REFERENCE_SET_NAME for m in (*models_a, *models_b)):
         raise ValueError("Methods are compared on the reference set.")
     intervals_a, intervals_b = interval_requests
     if intervals_a.evaluation_set_fingerprint != intervals_b.evaluation_set_fingerprint:

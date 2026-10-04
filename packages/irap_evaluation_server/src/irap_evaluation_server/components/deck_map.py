@@ -1,4 +1,4 @@
-"""The map of the analysis page: segments as points on a basemap, coloured by their outcome
+"""The map of the Analysis page: segments as points on a basemap, coloured by their outcome
 (`prediction_analysis.AttributeOutcomes`), drawn by deck.gl in `deck_map.js`.
 
 The libraries are served from `routes.VENDOR_PATH` (see `map_libraries`). The basemap tiles come
@@ -21,8 +21,8 @@ from .routes import VENDOR_PATH
 
 BASEMAP_STYLE_URL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 
-#: Outcome name (`prediction_analysis.RUN_OUTCOME_NAMES` and `COMPARISON_OUTCOME_NAMES`) ->
-#: (R, G, B), shared by the points and the legend.
+#: Outcome name (`prediction_analysis.MODEL_OUTCOME_NAMES` and `COMPARISON_OUTCOME_NAMES`) ->
+#: (R, G, B), shared by the points, the legend and the confusion matrix.
 OUTCOME_COLORS = {
     "correct": (42, 120, 214), "wrong": (235, 104, 52), "invalid": (142, 68, 173),
     "both correct": (42, 120, 214), "only A correct": (46, 160, 67),
@@ -38,13 +38,13 @@ def _get_library_url(file: LibraryFile) -> str:
 
 
 def _get_outcome_style(name: str) -> tuple[list[int], float]:
-    """([R, G, B, alpha], radius in pixels) of the points of an outcome."""
+    """Returns ([R, G, B, alpha], radius in pixels) of the points of an outcome."""
     is_background = name in _BACKGROUND_OUTCOMES
     return [*OUTCOME_COLORS[name], 110 if is_background else 220], 1.5 if is_background else 2.5
 
 
 class DeckMap(ui.element, component="deck_map.js"):
-    """The map points, see `deck_map.js`."""
+    """The map with its points (`deck_map.js`)."""
 
     def __init__(self, segment_ids: T.Sequence[str], coordinates: np.ndarray,
                  on_pick: T.Callable[[int], None]):
@@ -79,8 +79,8 @@ class DeckMap(ui.element, component="deck_map.js"):
     def set_highlighted(self, points: np.ndarray | None) -> None:
         """
         Args:
-            points: The indices of the points to highlight, e.g. those of a matrix cell, or None
-                to highlight none.
+            points: The indices of the points to highlight, e.g. those of a matrix cell, or None.
+                Unless it is None, the other points are faded.
         """
         self.run_method("set_highlighted", None if points is None else points.tolist())
 
@@ -94,7 +94,8 @@ class DeckMap(ui.element, component="deck_map.js"):
 
 def make_map_legend_html(outcome_names: T.Sequence[str], counts: T.Sequence[int],
                          note: str = "") -> str:
-    """The colour and the number of points of each outcome, and a note below them."""
+    """Makes a legend of the colour and the number of points of each outcome, and a note below
+    them."""
     rows = "".join(
         f'<div><span class="swatch" style="background: rgb{OUTCOME_COLORS[name]}"></span>'
         f'{html.escape(name)} <span class="muted">{count}</span></div>'

@@ -2,7 +2,7 @@
 
 Example::
 
-    data_dir = "/srv/irap_eval"   # the archive, relative to the configuration file if not absolute
+    data_dir = "/srv/irap_eval"   # the archive
     host = "0.0.0.0"              # optional, default 127.0.0.1
     port = 8600                   # optional
 
@@ -30,9 +30,8 @@ class DatasetConfig:
     Attributes:
         metadata_dir: The metadata directory of the release (see `irap_data.load_irap_metadata`).
         images_dir: The dataset directory with the segment images, or None without images.
-        analysis_splits: The splits with confusion matrices, the map and the error browser. All
-            splits get scores and the Scores page, so that e.g. the test labels can be kept out of
-            error browsing.
+        analysis_splits: The splits of the Analysis page, e.g. without test to keep its labels
+            unseen. All splits are scored.
     """
 
     metadata_dir: Path
@@ -45,7 +44,7 @@ class ServerConfig:
     """The configuration of a server instance.
 
     Attributes:
-        data_dir: The directory of the archive (see `archive.SubmissionArchive`).
+        data_dir: The directory of the archive (see `archive.ModelArchive`).
         datasets: Dataset name, a key of `irap_data.DATASET_PRESETS` and the `dataset` of the
             prediction headers -> its configuration.
     """
@@ -93,8 +92,9 @@ def load_server_config(path: str | Path) -> ServerConfig:
     metadata when it is loaded (`datasets.load_dataset_contexts`).
 
     Raises:
-        ValueError: If a key is missing or unknown, a value has the wrong type, or a dataset is
-            not a key of `irap_data.DATASET_PRESETS`.
+        ValueError: If the file is not valid TOML, a key is missing or unknown, a value has the
+            wrong type, there are no datasets, or a dataset is not a key of
+            `irap_data.DATASET_PRESETS`.
     """
     path = Path(path)
     with path.open("rb") as file:

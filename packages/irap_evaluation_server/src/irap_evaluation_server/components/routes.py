@@ -8,15 +8,18 @@ SCORES_PATH = "/scores"
 ANALYSIS_PATH = "/analysis"
 #: With the query parameter `dataset`.
 ENSEMBLE_PATH = "/ensemble"
-SUBMISSIONS_PATH = "/submissions"
-SUBMISSION_PATH = "/submissions/{submission_id}"
+#: With the query parameters `dataset` and `deleted` ('1' to show deleted models).
+MODELS_PATH = "/models"
+#: With the query parameters `split` (of the scores) and an attribute subset
+#: (`ATTRIBUTE_PARAMETER`).
+MODEL_PATH = "/models/{model_id}"
 ACTION_LOG_PATH = "/actions"
 UPLOAD_PATH = "/api/uploads"
 PREDICTIONS_DOWNLOAD_PATH = "/api/submissions/{submission_id}/predictions.parquet"
 SCORES_DOWNLOAD_PATH = "/api/submissions/{submission_id}/scores/{evaluation_set}.json"
-#: With the query parameters `coder` (default: the method name) and `date` (`YYYY-MM-DD`,
-#: default: today).
-CODING_TABLE_DOWNLOAD_PATH = "/api/submissions/{submission_id}/coding_table.{file_format}"
+#: With the query parameters `split` (repeated, the splits of the table), `coder` (default:
+#: the method name) and `date` (`YYYY-MM-DD`, default: today).
+CODING_TABLE_DOWNLOAD_PATH = "/api/models/{model_id}/coding_table.{file_format}"
 SEGMENT_IMAGE_PATH = "/api/datasets/{dataset}/images/{segment_id}"
 #: The static files of the map libraries (`map_libraries`).
 VENDOR_PATH = "/vendor"
@@ -26,15 +29,17 @@ ATTRIBUTE_PARAMETER = "attribute"
 
 
 def make_query_path(path: str, query: T.Mapping[str, str | T.Sequence[str]]) -> str:
-    """`path` with the query parameters that are not empty, a sequence as repeated parameters."""
+    """Adds the query parameters that are not empty to `path`, a sequence as repeated
+    parameters."""
     query = {k: v for k, v in query.items() if v}
     return f"{path}?{urllib.parse.urlencode(query, doseq=True)}" if query else path
 
 
-def get_submission_path(submission_id: int, attributes: T.Sequence[str] = ()) -> str:
-    """The submission page, with an attribute subset (`AttributeSubset.to_query`)."""
-    return make_query_path(SUBMISSION_PATH.format(submission_id=submission_id),
-                           {ATTRIBUTE_PARAMETER: attributes})
+def get_model_path(model_id: int, split: str = "", attributes: T.Sequence[str] = ()) -> str:
+    """Makes the path of the Model page, with the split of its scores and an attribute subset
+    (`AttributeSubset.to_query`)."""
+    return make_query_path(MODEL_PATH.format(model_id=model_id),
+                           {"split": split, ATTRIBUTE_PARAMETER: attributes})
 
 
 def get_segment_image_path(dataset: str, segment_id: str) -> str:
@@ -46,13 +51,12 @@ def get_download_path(submission_id: int) -> str:
     return PREDICTIONS_DOWNLOAD_PATH.format(submission_id=submission_id)
 
 
-def get_coding_table_download_path(submission_id: int, file_format: str) -> str:
+def get_coding_table_download_path(model_id: int, file_format: str) -> str:
     """
     Args:
         file_format: See `coding_table_export.CODING_TABLE_FORMATS`.
     """
-    return CODING_TABLE_DOWNLOAD_PATH.format(submission_id=submission_id,
-                                             file_format=file_format)
+    return CODING_TABLE_DOWNLOAD_PATH.format(model_id=model_id, file_format=file_format)
 
 
 def get_scores_download_path(submission_id: int, evaluation_set: str) -> str:

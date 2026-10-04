@@ -1,4 +1,4 @@
-"""Synthetic runs, their uploads and scoring, for the tests."""
+"""Synthetic models, their uploads and scoring, for the tests."""
 
 import dataclasses as dc
 import math
@@ -9,8 +9,9 @@ import pytest
 from irap_evaluation.reports.evaluation_report import to_labeled_metric_values
 from synthetic_vietnam import SPLIT, make_predictions
 
-from irap_evaluation_server.archive import SubmissionArchive, add_uploaded_submission
-from irap_evaluation_server.scoring import evaluate_run, select_scored_runs
+from irap_evaluation_server.archive import ModelArchive
+from irap_evaluation_server.scoring import score_predictions, select_scored_models
+from irap_evaluation_server.uploads import apply_upload, plan_upload
 
 #: The second split of the `two_split_contexts` fixture.
 OTHER_SPLIT = "test"
@@ -20,8 +21,15 @@ def with_split(predictions: ie.Predictions, split: str) -> ie.Predictions:
     return dc.replace(predictions, header=dc.replace(predictions.header, split=split))
 
 
+def with_model(predictions: ie.Predictions, **changes) -> ie.Predictions:
+    """Returns the predictions with changed fields of their `irap_evaluation.ModelInfo`."""
+    header = predictions.header
+    return dc.replace(predictions,
+                      header=dc.replace(header, model=dc.replace(header.model, **changes)))
+
+
 def assert_close(a, b, label=""):
-    """Equality of metric values, intervals or floats, with NaN equal to NaN."""
+    """Asserts that metric values, intervals or floats are equal, with NaN equal to NaN."""
     if isinstance(a, ie.MetricValues):
         a, b = to_labeled_metric_values(a), to_labeled_metric_values(b)
         assert a.keys() == b.keys()
@@ -36,25 +44,29 @@ def assert_close(a, b, label=""):
         assert a == pytest.approx(b, rel=1e-12, abs=0), label
 
 
-def score_and_get_runs(worker, submission_ids, evaluation_set="reference"):
-    """Scores the submissions with the worker. Returns the scored runs of all submissions."""
-    worker.update_submissions(submission_ids)
+def score_and_get_models(worker, submission_ids, evaluation_set="reference"):
+    """Scores the submissions with the worker. Returns the scored models of all active
+    submissions."""
+    worker.update_submissions([worker.archive.get_submission(i) for i in submission_ids])
     worker.run_pending()
-    return select_scored_runs(worker.archive.list_submissions(), worker.get_current_scorings(),
-                              evaluation_set)
+    active = worker.archive.list_submissions()
+    return select_scored_models(active, worker.get_current_scorings(active), evaluation_set)
 
 
-def evaluate_submission(worker, submission, evaluation_set):
-    return evaluate_run(ie.read_predictions(worker.archive.get_predictions_path(submission.id)),
-                        evaluation_set, worker.settings)
+def score_submission_again(worker, submission, evaluation_set):
+    return score_predictions(
+        ie.read_predictions(worker.archive.get_predictions_path(submission.id)), evaluation_set,
+        worker.settings)
 
 
-def make_run(dataset_contexts, name="m", method_seed=None, random_seed=0,
-             drop_attribute=None, is_hard=False) -> ie.Predictions:
-    """Predictions of a run on `SPLIT`, without `drop_attribute`, and hard if `is_hard`."""
+def make_model(dataset_contexts, name="m", model_seed=None, random_seed=0,
+               drop_attribute=None, is_hard=False, training_splits=()) -> ie.Predictions:
+    """Makes predictions of a model on `SPLIT`, without `drop_attribute`, and hard if
+    `is_hard`."""
     metadata = dataset_contexts["vietnam"].metadata
     predictions = make_predictions(metadata.vocabulary, list(metadata.splits[SPLIT]), name=name,
-                                   seed=random_seed, method_seed=method_seed)
+                                   seed=random_seed, model_seed=model_seed,
+                                   training_splits=training_splits)
     if drop_attribute is not None:
         predictions = dc.replace(
             predictions,
@@ -68,13 +80,16 @@ def make_run(dataset_contexts, name="m", method_seed=None, random_seed=0,
     return predictions
 
 
-def write_upload(archive: SubmissionArchive, predictions: ie.Predictions) -> Path:
-    path = archive.make_upload_path("run.predictions.parquet")
+def write_upload(archive: ModelArchive, predictions: ie.Predictions) -> Path:
+    path = archive.make_upload_path("model.predictions.parquet")
     ie.write_predictions(path, predictions)
     return path
 
 
-def add_run(archive, dataset_contexts, predictions):
-    """Uploads and stores a run. Returns its submission."""
-    return add_uploaded_submission(archive, dataset_contexts, write_upload(archive, predictions),
-                                   file_name="run.parquet", submitter="Ana", description="")[0]
+def add_model(archive, dataset_contexts, predictions, description=None):
+    """Uploads and stores predictions, replacing the active submission of their split, if any.
+    Returns the new submission."""
+    planned = plan_upload(archive, dataset_contexts, write_upload(archive, predictions),
+                          file_name="model.parquet", description=description)
+    [submission] = apply_upload(archive, planned, submitter="Ana")
+    return submission

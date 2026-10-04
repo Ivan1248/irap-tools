@@ -13,22 +13,22 @@ import logging
 import threading
 import typing as T
 
-from .archive import Submission, SubmissionArchive
+from .archive import ModelArchive, Submission
 from .database import get_utc_now
 from .datasets import EVALUATION_SET_NAMES, DatasetContext
 from .scoring import (
     SCORING_SETTINGS,
     CachedResult,
-    RunScoring,
     ScoreStore,
     ScoringSettings,
+    SubmissionScoring,
     WorkRequest,
     get_combination_error,
-    is_run_scoring_current,
+    is_scoring_current,
     make_interval_request,
-    make_unscored_run_scoring,
+    make_unscored_scoring,
     score_submission,
-    select_scored_runs,
+    select_scored_models,
 )
 
 _logger = logging.getLogger(__name__)
@@ -55,11 +55,12 @@ class ScoringWorker:
     """Scores submissions and computes the results of requests in a background thread (`start`),
     or in the calling thread (`run_pending`, e.g. in tests).
 
-    Pages read the results from the store and ask for missing ones with `update_submissions` and
-    `set_requests`.
+    Pages read the scorings from the store and the results of requests with `get_result`, ask for
+    missing results with `set_requests`, and report changed submissions with
+    `update_model_submissions`.
     """
 
-    def __init__(self, archive: SubmissionArchive, store: ScoreStore,
+    def __init__(self, archive: ModelArchive, store: ScoreStore,
                  dataset_contexts: T.Mapping[str, DatasetContext],
                  settings: ScoringSettings = SCORING_SETTINGS):
         self.archive = archive
@@ -88,8 +89,8 @@ class ScoringWorker:
             self._condition.notify_all()
 
     def _pop_task(self, block: bool) -> tuple[TaskKey, T.Callable[[], None]] | None:
-        """The next task, marked as running, or None if there is none (`block` False) or the
-        worker is stopping (`block` True)."""
+        """Pops the next task and marks it as running. Returns None if there is none (`block`
+        False) or the worker is stopping (`block` True)."""
         with self._condition:
             while not (block and self._is_stopping):
                 for tasks in self._priority_to_tasks.values():
@@ -154,48 +155,46 @@ class ScoringWorker:
     # Scoring ######################################################################################
 
     def _get_context(self, submission: Submission) -> DatasetContext | None:
-        """None for a dataset that is no longer configured, whose submissions are not shown."""
+        """Returns the dataset of a submission, None if the dataset is no longer configured (its
+        submissions are not scored or shown)."""
         return self.dataset_contexts.get(submission.dataset)
 
-    def is_scoring_current(self, submission: Submission, scoring: RunScoring | None) -> bool:
-        """Whether `scoring`, the stored one of `submission`, is current (see
-        `scoring.is_run_scoring_current`)."""
+    def is_scoring_current(self, submission: Submission,
+                           scoring: SubmissionScoring | None) -> bool:
+        """Checks whether `scoring`, the stored one of `submission`, is current (see
+        `scoring.is_scoring_current`)."""
         context = self._get_context(submission)
         return (scoring is not None and context is not None
-                and is_run_scoring_current(scoring, submission, context, self.settings))
+                and is_scoring_current(scoring, submission, context, self.settings))
 
     def select_current_scorings(
             self, submissions: T.Iterable[Submission],
-            submission_id_to_scoring: T.Mapping[int, RunScoring]) -> dict[int, RunScoring]:
-        """Submission id -> its scoring, for those of `submissions` whose scoring is current (see
-        `is_scoring_current`).
+            submission_id_to_scoring: T.Mapping[int, SubmissionScoring]
+    ) -> dict[int, SubmissionScoring]:
+        """Selects submission id -> its scoring, for those of `submissions` whose scoring is
+        current (see `is_scoring_current`).
 
         Args:
-            submission_id_to_scoring: The stored scorings (`ScoreStore.get_run_scorings`).
+            submission_id_to_scoring: The stored scorings (`ScoreStore.get_scorings`).
         """
         return {s.id: submission_id_to_scoring[s.id] for s in submissions
                 if self.is_scoring_current(s, submission_id_to_scoring.get(s.id))}
 
-    def get_current_scorings(self, submissions: T.Collection[Submission] | None = None
-                             ) -> dict[int, RunScoring]:
-        """`select_current_scorings` of `submissions` with their stored scorings.
-
-        Args:
-            submissions: By default all submissions, also the deleted ones.
-        """
-        if submissions is None:
-            submissions = self.archive.list_submissions(include_deleted=True)
+    def get_current_scorings(self, submissions: T.Collection[Submission]
+                             ) -> dict[int, SubmissionScoring]:
+        """Loads the stored scorings of `submissions` and selects the current ones
+        (`select_current_scorings`)."""
         return self.select_current_scorings(
-            submissions, self.store.get_run_scorings(s.id for s in submissions))
+            submissions, self.store.get_scorings(s.id for s in submissions))
 
     def load_split_scorings(self, dataset: str, split: str) -> tuple[
-            list[Submission], dict[int, RunScoring], dict[int, RunScoring]]:
-        """The submissions of a dataset split that are not deleted, submission id -> its stored
-        scoring (`ScoreStore.get_run_scorings`), and submission id -> its current scoring
+            list[Submission], dict[int, SubmissionScoring], dict[int, SubmissionScoring]]:
+        """Loads the active submissions of a dataset split, submission id -> its stored scoring
+        (`ScoreStore.get_scorings`), and submission id -> its current scoring
         (`select_current_scorings`)."""
         submissions = [s for s in self.archive.list_submissions()
                        if (s.dataset, s.split) == (dataset, split)]
-        submission_id_to_scoring = self.store.get_run_scorings(s.id for s in submissions)
+        submission_id_to_scoring = self.store.get_scorings(s.id for s in submissions)
         return (submissions, submission_id_to_scoring,
                 self.select_current_scorings(submissions, submission_id_to_scoring))
 
@@ -205,44 +204,55 @@ class ScoringWorker:
     def _score(self, submission_id: int) -> None:
         submission = self.archive.get_submission(submission_id)
         context = self._get_context(submission)
-        if submission.is_deleted or context is None:
+        # Current if it was queued again while it was being scored.
+        if (not submission.is_in_use or context is None
+                or self.is_scoring_current(submission, self.store.get_scoring(submission_id))):
             return
         try:
             scoring, reports = score_submission(self.archive, context, submission, self.settings)
         except Exception as e:
             _logger.exception("Scoring submission #%d failed.", submission_id)
-            scoring, reports = make_unscored_run_scoring(
+            scoring, reports = make_unscored_scoring(
                 submission_id, "error", _format_unexpected_error(e), self.settings), {}
-        self.store.set_run_scoring(scoring, reports)
+        self.store.set_scoring(scoring, reports)
         self._enqueue_default_intervals(submission.dataset, submission.split,
-                                        submission.method.name)
+                                        submission.model.method_name)
 
-    def update_submissions(self, submission_ids: T.Iterable[int]) -> None:
-        """Queues what changes when submissions are added, deleted or restored: the scoring of
-        those that are not current and not deleted, and the default intervals of their methods."""
-        id_to_submission = {s.id: s for s in self.archive.list_submissions(include_deleted=True)}
-        submissions = [id_to_submission[i] for i in submission_ids]
-        current = self.get_current_scorings(submissions)
+    def update_submissions(self, submissions: T.Collection[Submission]) -> None:
+        """Queues the work that follows when submissions come into or go out of use
+        (`Submission.is_in_use`), e.g. when they are added, replaced or deleted, or their model
+        is deleted or restored: the scoring of those in use whose scoring is not current, and the
+        default intervals of their methods.
+
+        Args:
+            submissions: As they are in the archive after the change.
+        """
+        current = self.get_current_scorings([s for s in submissions if s.is_in_use])
         for submission in submissions:
             if self._get_context(submission) is None:
                 continue
-            if not submission.is_deleted and submission.id not in current:
+            if submission.is_in_use and submission.id not in current:
                 self._enqueue(("score", submission.id), TaskPriority.SCORING,
                               lambda i=submission.id: self._score(i))
             else:  # Scoring queues them otherwise.
                 self._enqueue_default_intervals(submission.dataset, submission.split,
-                                                submission.method.name)
+                                                submission.model.method_name)
+
+    def update_model_submissions(self, model_id: int) -> None:
+        """Calls `update_submissions` with all submissions of a model, e.g. after an upload
+        replaced some of them, or the model was deleted or restored."""
+        self.update_submissions(self.archive.list_model_submissions(model_id))
 
     def update_all_submissions(self) -> None:
-        """`update_submissions` of every submission, e.g. at the start of the server, after the
-        metadata or the settings have changed."""
-        self.update_submissions(s.id for s in self.archive.list_submissions())
+        """Calls `update_submissions` with every active submission, e.g. at the start of the
+        server, since the metadata or the settings may have changed."""
+        self.update_submissions(self.archive.list_submissions())
 
     # Requests #####################################################################################
 
     def get_result(self, request: WorkRequest[V]) -> CachedResult[V] | None:
-        """The cached result of a request, or an unexpected error of computing it, or None if
-        it is not computed."""
+        """Returns the cached result of a request, or an unexpected error of computing it, or
+        None if it is not computed."""
         return self._request_key_to_error.get(request.key) or self.store.get_result(request)
 
     def is_pending(self, request: WorkRequest) -> bool:
@@ -266,7 +276,8 @@ class ScoringWorker:
 
     def request(self, request: WorkRequest[V],
                 priority: TaskPriority = TaskPriority.REQUESTED) -> CachedResult[V] | None:
-        """The cached result (see `get_result`), or None after queuing its computation."""
+        """Returns the cached result (see `get_result`), or queues its computation and returns
+        None."""
         if (cached := self.get_result(request)) is not None:
             return cached
         self._enqueue(_get_request_task_key(request), priority, lambda: self._compute(request))
@@ -298,20 +309,22 @@ class ScoringWorker:
                       lambda: self._request_default_intervals(dataset, split, method_name))
 
     def _request_default_intervals(self, dataset: str, split: str, method_name: str) -> None:
-        """Queues the intervals over all scored attributes of the method and of each of its runs
-        that are not deleted, on each evaluation set."""
+        """Queues the intervals over all scored attributes of the method and of each of its
+        models, of their active submissions of the split, on each evaluation set."""
         submissions = [s for s in self.archive.list_submissions()
-                       if (s.dataset, s.split, s.method.name) == (dataset, split, method_name)]
+                       if (s.dataset, s.split, s.model.method_name)
+                       == (dataset, split, method_name)]
         current = self.get_current_scorings(submissions)
         for evaluation_set in EVALUATION_SET_NAMES:
-            runs = sorted(select_scored_runs(submissions, current, evaluation_set),
-                          key=lambda r: r.submission.id)
-            if not runs:
+            models = sorted(select_scored_models(submissions, current, evaluation_set),
+                            key=lambda m: m.submission.id)
+            if not models:
                 continue
-            attributes = runs[0].scores.attributes
-            run_groups = [[run] for run in runs]
-            if len(runs) > 1 and get_combination_error(runs) is None:
-                run_groups.append(runs)
-            for run_group in run_groups:
-                self.request(make_interval_request(run_group, attributes, self.settings),
+            model_groups = [[model] for model in models]
+            # Models that can be combined have the same attributes.
+            if len(models) > 1 and get_combination_error(models) is None:
+                model_groups.append(models)
+            for model_group in model_groups:
+                self.request(make_interval_request(model_group, model_group[0].scores.attributes,
+                                                   self.settings),
                              TaskPriority.DEFAULT_INTERVALS)

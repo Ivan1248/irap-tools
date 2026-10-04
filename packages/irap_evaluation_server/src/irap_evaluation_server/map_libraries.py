@@ -1,4 +1,4 @@
-"""The JavaScript libraries of the map of the analysis page, downloaded into the data directory.
+"""The JavaScript libraries of the map of the Analysis page, downloaded into the data directory.
 
 The server serves them itself, since MapLibre starts its worker from the URL of its module, which
 fails for a module of another origin, e.g. a CDN. The pinned versions are checked by SHA-256.

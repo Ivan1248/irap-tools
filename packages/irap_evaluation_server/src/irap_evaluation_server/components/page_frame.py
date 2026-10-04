@@ -11,13 +11,13 @@ from .routes import (
     ACTION_LOG_PATH,
     ANALYSIS_PATH,
     ENSEMBLE_PATH,
+    MODELS_PATH,
     SCORES_PATH,
-    SUBMISSIONS_PATH,
 )
 
 #: (Title, path) of the pages in the navigation.
 NAVIGATION_PAGES = (("Scores", SCORES_PATH), ("Analysis", ANALYSIS_PATH),
-                    ("Submissions", SUBMISSIONS_PATH), ("Ensemble", ENSEMBLE_PATH),
+                    ("Models", MODELS_PATH), ("Ensemble", ENSEMBLE_PATH),
                     ("Action log", ACTION_LOG_PATH))
 
 _STYLES = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
@@ -25,7 +25,7 @@ _SUBMITTER_NAME_KEY = "submitter_name"
 
 
 def get_submitter_name() -> str:
-    """The name that the user entered in the top bar, remembered per browser."""
+    """Returns the name that the user entered in the top bar, remembered per browser."""
     return app.storage.user.get(_SUBMITTER_NAME_KEY, "")
 
 
@@ -35,7 +35,7 @@ def _set_submitter_name(name: str) -> None:
 
 @contextlib.contextmanager
 def create_page_frame(current_path: str, fills_window: bool = False) -> T.Iterator[ui.element]:
-    """The top bar and the content container, in which the page creates its content.
+    """Creates the top bar and the content container, in which the page creates its content.
 
     Args:
         current_path: The path of the navigation entry to mark as current.

@@ -1,5 +1,4 @@
-"""A web app for archiving, scoring, comparing and analyzing saved iRAP model predictions.
+"""A web app that archives, scores, compares, analyses and ensembles iRAP model predictions.
 
-The logic modules, all but the pages (`pages`, `components`) and the command (`server`), do not
-import NiceGUI.
+The logic modules, all but `components`, `pages` and `server`, do not import NiceGUI.
 """

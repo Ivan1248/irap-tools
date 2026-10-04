@@ -1,4 +1,4 @@
-"""HTML of the analysis page: the confusion matrix, the class table, the segments of a matrix
+"""HTML of the Analysis page: the confusion matrix, the class table, the segments of a matrix
 cell, and the details of a segment (see `prediction_analysis`).
 
 The matrix and the segment list are single HTML elements with `data-cell` and `data-segment`
@@ -15,7 +15,8 @@ from .deck_map import OUTCOME_COLORS
 from .formatting import make_table_html
 from .score_tables import format_optional_metric_value
 
-#: The most classes whose matrix cells show their counts. Larger matrices show them as tooltips.
+#: The most classes whose matrix cells show their counts. Larger matrices show them only as
+#: tooltips.
 _MAX_CLASSES_WITH_COUNTS = 8
 
 
@@ -32,7 +33,7 @@ def _get_cell_color(label_index: int, predicted_index: int, num_classes: int) ->
 def make_confusion_matrix_html(confusion_matrix: np.ndarray, class_names: T.Sequence[str],
                                irap_codes: T.Sequence[int],
                                selected_cell: tuple[int, int] | None) -> str:
-    """The matrix as a grid of cells, shaded by their share of the row.
+    """Makes the matrix as a grid of cells, shaded by their share of the row.
 
     Args:
         confusion_matrix: (K, K + 1) counts with the invalid predictions in the last column (see
@@ -68,7 +69,8 @@ def make_confusion_matrix_html(confusion_matrix: np.ndarray, class_names: T.Sequ
 
 def make_class_table_html(class_report: T.Mapping[str, T.Any],
                           confusion_matrix: np.ndarray) -> str:
-    """The support, precision, recall and F1 of each class, and its invalid predictions.
+    """Makes a table of the support, precision, recall and F1 of each class, and its invalid
+    predictions.
 
     Args:
         class_report: The attribute's entry of `classes` in an
@@ -89,11 +91,11 @@ def make_class_table_html(class_report: T.Mapping[str, T.Any],
 
 def make_segment_list_html(segment_indices: T.Sequence[int], segment_ids: T.Sequence[str],
                            selected_index: int | None) -> str:
-    """Buttons with the ids of segments of the set.
+    """Makes a button with the id of each of the given segments of the set.
 
     Args:
         segment_indices: Into the segments of the set, in the `data-segment` attribute.
-        segment_ids: The segments of the set.
+        segment_ids: The ids of all segments of the set.
     """
     return "".join(
         f'<button type="button" data-segment="{i}"'
@@ -103,11 +105,11 @@ def make_segment_list_html(segment_indices: T.Sequence[int], segment_ids: T.Sequ
 
 
 def _make_probability_table_html(detail: SegmentDetail) -> str:
-    header = "".join(f"<th>{html.escape(p.run_label)}</th>" for p in detail.run_predictions)
+    header = "".join(f"<th>{html.escape(p.label)}</th>" for p in detail.model_predictions)
     rows = []
     for k, (code, name) in enumerate(zip(detail.irap_codes, detail.class_names, strict=True)):
         cells = []
-        for prediction in detail.run_predictions:
+        for prediction in detail.model_predictions:
             if prediction.probs is None:
                 cells.append(f'<td class="muted">{"invalid" if k == 0 else ""}</td>')
                 continue
@@ -125,7 +127,8 @@ def _make_probability_table_html(detail: SegmentDetail) -> str:
 
 def make_segment_detail_html(detail: SegmentDetail,
                              get_image_url: T.Callable[[str], str] | None) -> str:
-    """The context images of a segment, its label and the predicted distributions.
+    """Makes the details of a segment: its context images, road position, location, label and
+    predicted distributions.
 
     Args:
         get_image_url: Segment id -> the URL of its image, or None without images.

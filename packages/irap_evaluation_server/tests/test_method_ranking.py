@@ -6,47 +6,53 @@ import irap_evaluation as ie
 import pytest
 from irap_evaluation.metrics import IRAP_ATTRIBUTE_METRIC_NAMES
 
-from irap_evaluation_server.archive import Submission
+from irap_evaluation_server.archive import Model, Submission
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
 from irap_evaluation_server.components.score_tables import (
-    ReferenceComparisons,
     make_method_table_html,
     make_per_attribute_table_html,
-    make_run_scores_html,
 )
 from irap_evaluation_server.components.view_queries import compile_name_pattern
-from irap_evaluation_server.method_comparison import list_comparable_methods
 from irap_evaluation_server.method_ranking import (
     CellHighlight,
     compute_highlights,
     get_unscored_reason,
     rank_methods,
-    select_run_metrics,
+    select_model_metrics,
     select_shown_methods,
     sort_method_scores,
-    sort_scored_runs,
+    sort_scored_models,
 )
+from irap_evaluation_server.model_listing import summarize_models_by_method
 from irap_evaluation_server.scoring import (
     CachedResult,
     EvaluationSetScores,
     MethodScores,
     ResultState,
-    RunScoring,
-    ScoredRun,
+    ScoredModel,
+    SubmissionScoring,
 )
 
 _TIME = datetime(2026, 10, 3, tzinfo=timezone.utc)
 
 
-def make_submission(submission_id, method_name="m", seed=None, deleted_at=None):
-    return Submission(id=submission_id, file_sha256="0" * 64, dataset="vietnam", split="val",
-                      method=ie.MethodInfo(method_name, seed), context_offsets=(0,),
-                      output_kind="probs", num_segments=10, num_attributes=2, submitter="Bo",
-                      description="", uploaded_at=_TIME, deleted_at=deleted_at)
+def make_model_row(model_id, method_name="m", seed=None, deleted_at=None):
+    return Model(id=model_id, dataset="vietnam", method_name=method_name, seed=seed,
+                 description="", created_at=_TIME, deleted_at=deleted_at)
 
 
-def make_run(submission_id, attribute_to_value, method_name="m", missing_attributes=()):
-    """A run whose iRAP metrics of each attribute equal the given value."""
+def make_submission(submission_id, method_name="m", seed=None, deleted_at=None,
+                    training_splits=(), model=None, split="val", num_attributes=2):
+    return Submission(
+        id=submission_id, model=model or make_model_row(submission_id, method_name, seed),
+        split=split, file_sha256="0" * 64, output_kind="probs", context_offsets=(0,),
+        training_splits=training_splits, early_stopping_splits=(), num_segments=10,
+        num_attributes=num_attributes, submitter="Bo", uploaded_at=_TIME, deleted_at=deleted_at)
+
+
+def make_scored_model(submission_id, attribute_to_value, method_name="m",
+                      missing_attributes=(), training_splits=()):
+    """Makes a scored model whose iRAP metrics of each attribute equal the given value."""
     metrics = ie.MetricValues(
         averages={f"a{n}": math.nan for n in IRAP_ATTRIBUTE_METRIC_NAMES},
         per_attribute={n: dict(attribute_to_value) for n in IRAP_ATTRIBUTE_METRIC_NAMES})
@@ -55,12 +61,14 @@ def make_run(submission_id, attribute_to_value, method_name="m", missing_attribu
         attributes=tuple(attribute_to_value),
         metrics=ie.select_metric_attributes(metrics, list(attribute_to_value)),
         num_invalid={a: 3 for a in attribute_to_value}, missing_attributes=missing_attributes)
-    return ScoredRun(make_submission(submission_id, method_name, seed=submission_id), scores)
+    return ScoredModel(make_submission(submission_id, method_name, seed=submission_id,
+                                       training_splits=training_splits), scores)
 
 
-def make_method_scores(method_name, averages, error=None):
+def make_method_scores(method_name, averages, error=None, training_splits=()):
     return MethodScores(
-        method_name=method_name, runs=(),
+        method_name=method_name,
+        models=(make_scored_model(1, {"x": 0.5}, method_name, training_splits=training_splits),),
         metrics=None if error else ie.MetricValues(averages=averages, per_attribute={}),
         error=error, missing_attributes=())
 
@@ -76,89 +84,91 @@ def test_sort_method_scores():
     assert [r.method_name for r in sort_method_scores(rows, "aNLL")] == ["a", "b", "c", "d", "e"]
 
 
-def test_rank_methods_means_over_runs():
-    runs = [make_run(1, {"x": 0.2, "y": 0.4}), make_run(2, {"x": 0.4, "y": 0.6}),
-            make_run(3, {"x": 0.5, "y": 0.1}, method_name="n")]
-    rows = rank_methods(runs, ["x"], "amF1")
-    assert [(r.method_name, r.num_runs) for r in rows] == [("n", 1), ("m", 2)]
+def test_rank_methods_means_over_models():
+    models = [make_scored_model(1, {"x": 0.2, "y": 0.4}),
+              make_scored_model(2, {"x": 0.4, "y": 0.6}),
+              make_scored_model(3, {"x": 0.5, "y": 0.1}, method_name="n")]
+    rows = rank_methods(models, ["x"], "amF1")
+    assert [(r.method_name, r.num_models) for r in rows] == [("n", 1), ("m", 2)]
     assert rows[1].metrics.averages["amF1"] == pytest.approx(0.3)
-    [row] = rank_methods(runs[:1], ["x", "z"], "amF1")
+    [row] = rank_methods(models[:1], ["x", "z"], "amF1")
     assert "not scored on z" in row.error
 
 
-def test_sort_scored_runs_by_the_average_over_a_subset():
-    runs = [make_run(1, {"x": 0.2, "y": 0.9}), make_run(2, {"x": 0.4, "y": 0.1}),
-            make_run(3, {"x": 0.3})]
-    assert select_run_metrics(runs[0], ["x", "y"]).averages["amF1"] == pytest.approx(0.55)
-    assert select_run_metrics(runs[2], ["x", "y"]) is None  # It is not scored on y.
-    assert select_run_metrics(runs[0], []) is None
-    assert [r.submission.id for r in sort_scored_runs(runs, "amF1", ["x"])] == [2, 3, 1]
-    assert [r.submission.id for r in sort_scored_runs(runs, "amF1", ["x", "y"])] == [1, 2, 3]
-
-
-def test_method_table_differences_from_a_reference():
-    a = make_method_scores("a", {"amF1": 0.6, "aNLL": 1.0, "amP": 0.5})
-    b = make_method_scores("b", {"amF1": 0.5, "aNLL": 0.8, "amP": 0.5})
-    c = make_method_scores("c", {"amF1": 0.4, "aNLL": 0.9, "amP": 0.4})
-
-    def difference(value, low, high, num_undefined=0):
-        return ie.MetricDifference(value, ie.BootstrapInterval(low, high, num_undefined))
-
-    differences = ie.MetricValues(averages={
-        "amF1": difference(0.1, 0.05, 0.15), "aNLL": difference(0.2, 0.1, 0.3),
-        "amP": difference(0.0, -0.1, 0.1, num_undefined=3)}, per_attribute={})
-    state = ResultState(cached=CachedResult(value=differences, message="", computed_at=_TIME))
-    comparisons = ReferenceComparisons(b, {"a": state, "c": ResultState(is_pending=True)})
-    table = make_method_table_html([a, b, c], {}, "amF1", [], is_model_compatible_view=False,
-                                   comparisons=comparisons)
-    row_a, row_b, row_c = table.split("<tr>")[2:]
-    cells = row_a.split("<td")
-    amf1, amp, anll = (next(c for c in cells if f">{v}" in c) for v in (".6000", ".5000",
-                                                                         "1.0000"))
-    assert "Δ +.1000 (+.050–+.150) <b>better</b>" in amf1  # Higher amF1 is better.
-    assert "Δ .0000 (-.100–+.100*)</div>" in amp  # The interval includes 0.
-    assert "Δ +.2000 (+.100–+.300) <b>worse</b>" in anll  # Higher aNLL is worse.
-    assert "b (reference)" in row_b and "Δ" not in row_b
-    assert "Δ -.1000 (computing…)</div>" in row_c
-
-
-def test_list_comparable_methods():
-    rows = [make_method_scores("a", {"amF1": 0.6}), make_method_scores("x", {}, error="differ"),
-            make_method_scores("b", {"amF1": 0.5})]
-    assert [r.method_name for r in list_comparable_methods(rows)] == ["a", "b"]
+def test_sort_scored_models_by_the_average_over_a_subset():
+    models = [make_scored_model(1, {"x": 0.2, "y": 0.9}),
+              make_scored_model(2, {"x": 0.4, "y": 0.1}), make_scored_model(3, {"x": 0.3})]
+    assert select_model_metrics(models[0], ["x", "y"]).averages["amF1"] == pytest.approx(0.55)
+    assert select_model_metrics(models[2], ["x", "y"]) is None  # It is not scored on y.
+    assert select_model_metrics(models[0], []) is None
+    assert [m.submission.id for m in sort_scored_models(models, "amF1", ["x"])] == [2, 3, 1]
+    assert [m.submission.id for m in sort_scored_models(models, "amF1", ["x", "y"])] == [
+        1, 2, 3]
 
 
 def test_select_shown_methods():
     rows = [make_method_scores("a-1", {"amF1": 0.6}),
-            make_method_scores("x", {}, error="differ"), make_method_scores("B-2", {"amF1": 0.5})]
+            make_method_scores("x", {}, error="differ"), make_method_scores("B-2", {"amF1": 0.5}),
+            make_method_scores("t", {"amF1": 0.9}, training_splits=("val",))]
 
-    def select(text, reference_method=""):
-        shown = select_shown_methods(rows, compile_name_pattern(text), reference_method)
-        return [r.method_name for r in shown]
+    def select(text, reference_method="", hidden_training_split=None):
+        shown, num_hidden = select_shown_methods(rows, compile_name_pattern(text),
+                                                 reference_method, hidden_training_split)
+        return [r.method_name for r in shown], num_hidden
 
-    assert select("") == ["a-1", "x", "B-2"]
-    assert select("b") == ["B-2"]  # A part of the name, case-insensitive.
-    assert select(r"^(a|b)-\d$") == ["a-1", "B-2"]
-    assert select("^x$", reference_method="B-2") == ["x", "B-2"]  # The reference, unmatched.
-    assert select("nothing") == []
+    assert select("") == (["a-1", "x", "B-2", "t"], 0)
+    assert select("b") == (["B-2"], 0)  # A part of the name, case-insensitive.
+    assert select(r"^(a|b)-\d$") == (["a-1", "B-2"], 0)
+    # The reference, unmatched.
+    assert select("^x$", reference_method="B-2") == (["x", "B-2"], 0)
+    assert select("nothing") == ([], 0)
+    # The methods trained on the split are hidden, except the reference.
+    assert select("", hidden_training_split="val") == (["a-1", "x", "B-2"], 1)
+    assert select("", hidden_training_split="test") == (["a-1", "x", "B-2", "t"], 0)
+    assert select("", "t", hidden_training_split="val") == (["a-1", "x", "B-2", "t"], 0)
+    assert select("^a", hidden_training_split="val") == (["a-1"], 0)  # Only matching rows.
     with pytest.raises(ValueError, match="Invalid regular expression"):
         compile_name_pattern("a(")
 
 
+def test_summarize_models_by_method():
+    models = [make_model_row(1, "a", seed=1), make_model_row(2, "a", seed=0),
+              make_model_row(3, "b"), make_model_row(4, "c")]
+    submissions = [make_submission(10, model=models[0], split="val", num_attributes=3),
+                   make_submission(11, model=models[0], split="test", num_attributes=5),
+                   make_submission(12, model=models[0], split="val", deleted_at=_TIME),
+                   make_submission(13, model=models[1]),
+                   make_submission(14, model=models[2], training_splits=None)]
+    later = dc.replace(submissions[4], uploaded_at=_TIME.replace(year=2027))
+    groups = summarize_models_by_method(models, [*submissions[:4], later])
+    assert [g.method_name for g in groups] == ["b", "a", "c"]  # The latest updated first.
+    a = groups[1]
+    assert [m.model.seed for m in a.models] == [0, 1]
+    summary = a.models[1]
+    assert {s: x.id for s, x in summary.split_to_submission.items()} == {"val": 10, "test": 11}
+    assert (summary.num_segments, summary.attribute_range, summary.output_kind) == (
+        20, (3, 5), "probs")
+    assert groups[0].model_info.training_splits is None
+    c = groups[2].models[0]
+    assert (c.split_to_submission, c.output_kind, c.attribute_range, c.model_info) == (
+        {}, None, None, None)
+
+
 def test_get_unscored_reason():
     submission = make_submission(1)
-    scoring = RunScoring(submission_id=1, status="scored", message="", notes=(),
-                         settings_fingerprint="s", evaluation_sets_fingerprint="e",
-                         scored_at=_TIME)
+    scoring = SubmissionScoring(submission_id=1, status="scored", message="", notes=(),
+                                settings_fingerprint="s", evaluation_sets_fingerprint="e",
+                                scored_at=_TIME)
     assert get_unscored_reason(submission, scoring, is_current=True, is_pending=False) is None
     assert get_unscored_reason(submission, scoring, True, is_pending=True) == "Scoring…"
     assert "current settings" in get_unscored_reason(submission, None, False, False)
     deleted = make_submission(1, deleted_at=_TIME)
-    assert get_unscored_reason(deleted, None, False, False).startswith("Deleted")
+    assert get_unscored_reason(deleted, None, False, False).startswith("Deleted files")
     failed = dc.replace(scoring, status="failed", message="No predictions for 3 segments.")
     assert get_unscored_reason(submission, failed, True, False) == failed.message
     error = dc.replace(scoring, status="error", message="Unexpected error.")
     assert "scored again" in get_unscored_reason(submission, error, False, False)
+    assert get_unscored_reason(deleted, error, False, False).startswith("Deleted files")
 
 
 def test_attribute_subset():
@@ -207,28 +217,19 @@ def test_compute_highlights_ties():
     assert ties == [False, True, False, False, False]
 
 
-def test_method_table_html():
-    runs = [make_run(1, {"x": 0.2, "y": 0.4}, method_name="<m>", missing_attributes=("y",))]
-    rows = [*rank_methods(runs, ["x", "y"], "amF1"),
-            make_method_scores("<n>", {}, error="Runs <differ>.")]
+def test_method_tables_escape_names():
+    models = [make_scored_model(1, {"x": 0.2, "y": 0.4}, method_name="<m>",
+                                missing_attributes=("y",))]
+    rows = [*rank_methods(models, ["x", "y"], "amF1"),
+            make_method_scores("<n>", {}, error="Models <differ>.")]
     interval = ie.BootstrapInterval(low=0.1, high=0.3, num_undefined=2)
     cached = CachedResult(
         value=ie.MetricValues(averages={"amF1": interval}, per_attribute={}),
         message="", computed_at=_TIME)
-    table = make_method_table_html(rows, {"<m>": ResultState(cached=cached)}, "amF1",
+    table = make_method_table_html(rows, {"<m>": ResultState(cached=cached)}, "amF1", "val",
                                    ["x"], is_model_compatible_view=False)
     assert "&lt;m&gt;" in table and "<m>" not in table
-    assert '<td colspan="12" class="error">Runs &lt;differ&gt;.</td>' in table
-    assert '<th class="sortable sorted" data-sort="amF1"' in table
-    assert '<a href="/submissions/1?attribute=x">#1</a>' in table
-    assert "1 not predicted" in table and "single run*" in table
+    assert "Models &lt;differ&gt;." in table
 
-    per_attribute = make_per_attribute_table_html(rows, {}, "mF1", ["x", "y"])
-    assert "not predicted" in per_attribute and "&lt;n&gt;" not in per_attribute
-
-
-def test_run_scores_html():
-    run = make_run(1, {"x": 0.2, "y": math.nan}, missing_attributes=("y",))
-    [scores] = rank_methods([run], ["x", "y"], "amF1")
-    html = make_run_scores_html(scores, ResultState(is_pending=True))
-    assert "computing…" in html and "NaN" in html and "3 (not predicted)" in html
+    per_attribute = make_per_attribute_table_html(rows, {}, "mF1", ["x", "y"], "val")
+    assert "<m>" not in per_attribute and "<n>" not in per_attribute

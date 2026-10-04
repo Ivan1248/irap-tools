@@ -110,7 +110,8 @@ export default {
       this.outcomeStyles = outcomeStyles;
       this.updateOutcomeLayers();
     },
-    // highlightedPoints: the indices of the highlighted points, or null to highlight none.
+    // highlightedPoints: the indices of the highlighted points, or null. Unless it is null, the
+    // other points are faded.
     set_highlighted(highlightedPoints) {
       this.highlightedPoints = highlightedPoints;
       this.updateOutcomeLayers();
@@ -158,7 +159,7 @@ export default {
         data: this.highlightedPoints ?? [],
         getPosition: (point) => this.getPointPosition(point),
         getFillColor: (point) => [...this.outcomeStyles[this.outcomes[point]][0].slice(0, 3), 255],
-        // The data can stay the same while the outcomes change, e.g. with another run B.
+        // The data can stay the same while the outcomes change, e.g. with another model B.
         updateTriggers: { getFillColor: this.outcomes },
         getRadius: 4.5,
         radiusUnits: "pixels",
@@ -170,7 +171,8 @@ export default {
       });
       this.setLayers();
     },
-    // The ring around the selected point. The map moves to the point if it is out of view.
+    // The ring around the selected point. The map moves to a newly selected point if it is out of
+    // view or the map is zoomed out.
     updateSelectedLayer() {
       if (!this.overlay) return;
       const selectedPoint = this.selectedPoint;

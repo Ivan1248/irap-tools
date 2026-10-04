@@ -1,9 +1,9 @@
-"""The analysis of the predictions of runs on an evaluation set, as on the analysis page: the
+"""The analysis of the predictions of models on an evaluation set, as on the Analysis page: the
 outcome of each segment for an attribute, the confusion matrix, the segments of a matrix cell,
 and the details of a segment.
 
-A run is analysed as `irap_evaluation.evaluate_predictions` scores it, with the scoring settings
-(`align_run`), so that the counts agree with its scores.
+The predictions of a submission are analysed as `irap_evaluation.evaluate_predictions` scores them,
+with the scoring settings (`align_predictions`), so that the counts agree with its scores.
 """
 
 import collections
@@ -16,14 +16,14 @@ import irap_evaluation as ie
 import numpy as np
 from irap_data.metadata import IGNORE_LABEL_INDEX, IRAPMetadata
 
-from .archive import Submission, SubmissionArchive
+from .archive import ModelArchive, Submission
 from .scoring import ScoringSettings, select_scored_attributes
 
-#: The outcomes of the segments for one run, by outcome code (the `RUN_*` constants).
-RUN_OUTCOME_NAMES = ("correct", "wrong", "invalid", "unlabeled")
-RUN_CORRECT, RUN_WRONG, RUN_INVALID, RUN_UNLABELED = range(len(RUN_OUTCOME_NAMES))
-#: The outcomes of the segments for two runs, A and B, by outcome code (the `COMPARISON_*`
-#: constants). A run is correct on a segment if its prediction is valid and equals the label.
+#: The outcomes of the segments for one model, by outcome code (the `MODEL_*` constants).
+MODEL_OUTCOME_NAMES = ("correct", "wrong", "invalid", "unlabeled")
+MODEL_CORRECT, MODEL_WRONG, MODEL_INVALID, MODEL_UNLABELED = range(len(MODEL_OUTCOME_NAMES))
+#: The outcomes of the segments for two models, A and B, by outcome code (the `COMPARISON_*`
+#: constants). A model is correct on a segment if its prediction is valid and equals the label.
 COMPARISON_OUTCOME_NAMES = ("both correct", "only A correct", "only B correct", "neither correct",
                             "unlabeled")
 (COMPARISON_BOTH_CORRECT, COMPARISON_ONLY_A_CORRECT, COMPARISON_ONLY_B_CORRECT,
@@ -31,8 +31,8 @@ COMPARISON_OUTCOME_NAMES = ("both correct", "only A correct", "only B correct", 
 
 
 @dc.dataclass(frozen=True)
-class AlignedRun:
-    """The predictions of a run on an evaluation set (see `align_run`).
+class AlignedPredictions:
+    """The predictions of a submission on an evaluation set (see `align_predictions`).
 
     Attributes:
         predictions: Of the scored attributes and the segments of the set, with the classes and
@@ -47,8 +47,9 @@ class AlignedRun:
     predicted_indices: T.Mapping[str, np.ndarray]
 
 
-def align_run(submission: Submission, predictions: ie.Predictions,
-              evaluation_set: ie.EvaluationSet, settings: ScoringSettings) -> AlignedRun:
+def align_predictions(submission: Submission, predictions: ie.Predictions,
+                      evaluation_set: ie.EvaluationSet,
+                      settings: ScoringSettings) -> AlignedPredictions:
     """
     Args:
         predictions: The contents of the file of `submission`.
@@ -59,42 +60,46 @@ def align_run(submission: Submission, predictions: ie.Predictions,
     aligned = ie.align_to_evaluation_set(
         predictions, evaluation_set, select_scored_attributes(evaluation_set, settings),
         missing_attribute_policy=settings.missing_attribute_policy)
-    return AlignedRun(submission, evaluation_set, aligned,
-                      {a: v.astype(np.int16) for a, v in ie.to_class_indices(aligned).items()})
+    return AlignedPredictions(
+        submission, evaluation_set, aligned,
+        {a: v.astype(np.int16) for a, v in ie.to_class_indices(aligned).items()})
 
 
-class AlignedRunCache:
-    """The aligned runs that pages show, read from the prediction files on first use.
+class AlignedPredictionsCache:
+    """The aligned predictions that pages show, read from the prediction files on first use.
 
     It keeps the `max_size` most recently used ones, since a file of Vietnam train takes about
-    0.5 s to read and 10 MB of memory. Open pages also keep the runs that they show. The cache is
-    shared by the threads of the pages, and two threads that miss the same run both read it.
+    0.3 s to read and align, and 10 MB of memory. Open pages also keep the predictions that they
+    show. The cache is shared by the threads of the pages, and two threads that miss the same
+    predictions both read them.
     """
 
-    def __init__(self, archive: SubmissionArchive, settings: ScoringSettings, max_size: int = 8):
+    def __init__(self, archive: ModelArchive, settings: ScoringSettings, max_size: int = 8):
         self.archive = archive
         self.settings = settings
         self.max_size = max_size
-        self._key_to_run: collections.OrderedDict[tuple, AlignedRun] = collections.OrderedDict()
+        self._key_to_aligned: collections.OrderedDict[tuple, AlignedPredictions] = (
+            collections.OrderedDict())
         self._lock = threading.Lock()
 
-    def get(self, submission: Submission, evaluation_set: ie.EvaluationSet) -> AlignedRun:
+    def get(self, submission: Submission,
+            evaluation_set: ie.EvaluationSet) -> AlignedPredictions:
         """
         Raises:
-            irap_evaluation.PredictionFormatError: See `align_run`.
+            irap_evaluation.PredictionFormatError: See `align_predictions`.
         """
         key = (submission.id, submission.file_sha256, evaluation_set.fingerprint)
         with self._lock:
-            if (run := self._key_to_run.get(key)) is not None:
-                self._key_to_run.move_to_end(key)
-                return run
+            if (aligned := self._key_to_aligned.get(key)) is not None:
+                self._key_to_aligned.move_to_end(key)
+                return aligned
         predictions = ie.read_predictions(self.archive.get_predictions_path(submission.id))
-        run = align_run(submission, predictions, evaluation_set, self.settings)
+        aligned = align_predictions(submission, predictions, evaluation_set, self.settings)
         with self._lock:
-            self._key_to_run[key] = run
-            while len(self._key_to_run) > self.max_size:
-                self._key_to_run.popitem(last=False)
-        return run
+            self._key_to_aligned[key] = aligned
+            while len(self._key_to_aligned) > self.max_size:
+                self._key_to_aligned.popitem(last=False)
+        return aligned
 
 
 # Outcomes #########################################################################################
@@ -104,9 +109,9 @@ class AttributeOutcomes:
     """The outcomes of the segments of an evaluation set for one attribute.
 
     Attributes:
-        outcome_names: `RUN_OUTCOME_NAMES`, or `COMPARISON_OUTCOME_NAMES` for two runs.
+        outcome_names: `MODEL_OUTCOME_NAMES`, or `COMPARISON_OUTCOME_NAMES` for two models.
         segment_outcomes: (N,) int8 index into `outcome_names` of each segment of the set.
-        confusion_matrix: (K, K + 1) int64 counts of the labeled segments for the first run:
+        confusion_matrix: (K, K + 1) int64 counts of the labeled segments for the first model:
             rows are labels, columns are predicted classes, and the last column counts invalid
             predictions. Added to the first column, the last one gives the matrix of
             `null_policy='first_class'`, which scores an invalid cell as class 0.
@@ -118,44 +123,47 @@ class AttributeOutcomes:
 
 
 def _get_num_classes(evaluation_set: ie.EvaluationSet, attribute: str) -> int:
-    """K, the number of classes of an attribute, also of the aligned predictions."""
+    """Returns K, the number of classes of an attribute, also of the aligned predictions."""
     return len(evaluation_set.vocabulary.get_irap_codes(attribute))
 
 
-def _get_predicted_columns(run: AlignedRun, attribute: str) -> np.ndarray:
-    """(N,) the confusion-matrix column of each segment: the predicted class index, or K for an
-    invalid prediction."""
-    num_classes = _get_num_classes(run.evaluation_set, attribute)
-    predicted = run.predicted_indices[attribute]
+def _get_predicted_columns(aligned: AlignedPredictions, attribute: str) -> np.ndarray:
+    """Returns (N,) the confusion-matrix column of each segment: the predicted class index, or K
+    for an invalid prediction."""
+    num_classes = _get_num_classes(aligned.evaluation_set, attribute)
+    predicted = aligned.predicted_indices[attribute]
     return np.where(predicted == IGNORE_LABEL_INDEX, num_classes, predicted)
 
 
-def compute_attribute_outcomes(run_a: AlignedRun, attribute: str,
-                               run_b: AlignedRun | None = None) -> AttributeOutcomes:
+def compute_attribute_outcomes(aligned_a: AlignedPredictions, attribute: str,
+                               aligned_b: AlignedPredictions | None = None) -> AttributeOutcomes:
     """
     Raises:
-        ValueError: If `run_b` is of another evaluation set.
+        ValueError: If `aligned_b` is of another evaluation set.
     """
-    evaluation_set = run_a.evaluation_set
+    evaluation_set = aligned_a.evaluation_set
     labels = evaluation_set.class_indices[attribute]
     is_labeled = labels != IGNORE_LABEL_INDEX
-    predicted_a = run_a.predicted_indices[attribute]
-    is_correct_a = predicted_a == labels  # Invalid predictions are IGNORE_LABEL_INDEX.
-    if run_b is None:
-        outcome_names = RUN_OUTCOME_NAMES
+    predicted_a = aligned_a.predicted_indices[attribute]
+    # Invalid predictions are IGNORE_LABEL_INDEX, so they are correct only on unlabeled segments,
+    # whose outcome is 'unlabeled'.
+    is_correct_a = predicted_a == labels
+    if aligned_b is None:
+        outcome_names = MODEL_OUTCOME_NAMES
         outcomes = np.select([~is_labeled, predicted_a == IGNORE_LABEL_INDEX, is_correct_a],
-                             [RUN_UNLABELED, RUN_INVALID, RUN_CORRECT], RUN_WRONG)
+                             [MODEL_UNLABELED, MODEL_INVALID, MODEL_CORRECT], MODEL_WRONG)
     else:
-        if run_b.evaluation_set.fingerprint != evaluation_set.fingerprint:
-            raise ValueError("The runs are of different evaluation sets.")
-        is_correct_b = run_b.predicted_indices[attribute] == labels
+        if aligned_b.evaluation_set.fingerprint != evaluation_set.fingerprint:
+            raise ValueError("The predictions are of different evaluation sets.")
+        is_correct_b = aligned_b.predicted_indices[attribute] == labels
         outcome_names = COMPARISON_OUTCOME_NAMES
         outcomes = np.select(
             [~is_labeled, is_correct_a & is_correct_b, is_correct_a, is_correct_b],
             [COMPARISON_UNLABELED, COMPARISON_BOTH_CORRECT, COMPARISON_ONLY_A_CORRECT,
              COMPARISON_ONLY_B_CORRECT], COMPARISON_NEITHER_CORRECT)
     num_columns = _get_num_classes(evaluation_set, attribute) + 1
-    cells = labels[is_labeled] * num_columns + _get_predicted_columns(run_a, attribute)[is_labeled]
+    cells = (labels[is_labeled] * num_columns
+             + _get_predicted_columns(aligned_a, attribute)[is_labeled])
     confusion_matrix = np.bincount(cells, minlength=(num_columns - 1) * num_columns).reshape(
         num_columns - 1, num_columns)
     return AttributeOutcomes(outcome_names=outcome_names,
@@ -163,21 +171,24 @@ def compute_attribute_outcomes(run_a: AlignedRun, attribute: str,
                              confusion_matrix=confusion_matrix)
 
 
-def select_cell_segments(run: AlignedRun, attribute: str, label_index: int,
+def select_cell_segments(aligned: AlignedPredictions, attribute: str, label_index: int,
                          predicted_index: int) -> np.ndarray:
-    """(M,) int64 indices of the segments of the set in a cell of the confusion matrix
+    """Selects the segments of the set in a cell of the confusion matrix
     (`AttributeOutcomes.confusion_matrix`), whose `predicted_index` K is the invalid column.
 
     For probabilistic predictions, the most confident ones come first, so that a cell of
     errors lists the confident errors first. Otherwise, and for invalid ones, the segments are in
     the order of the set.
+
+    Returns:
+        (M,) int64 indices into the segments of the set.
     """
-    labels = run.evaluation_set.class_indices[attribute]
+    labels = aligned.evaluation_set.class_indices[attribute]
     indices = np.flatnonzero((labels == label_index)
-                             & (_get_predicted_columns(run, attribute) == predicted_index))
-    if (run.predictions.output_kind == "probs"
-            and predicted_index < _get_num_classes(run.evaluation_set, attribute)):
-        confidences = run.predictions.probs[attribute][indices, predicted_index]
+                             & (_get_predicted_columns(aligned, attribute) == predicted_index))
+    if (aligned.predictions.output_kind == "probs"
+            and predicted_index < _get_num_classes(aligned.evaluation_set, attribute)):
+        confidences = aligned.predictions.probs[attribute][indices, predicted_index]
         indices = indices[np.argsort(-confidences, kind="stable")]
     return indices
 
@@ -222,8 +233,8 @@ def compute_map_points(metadata: IRAPMetadata, evaluation_set: ie.EvaluationSet)
 
 def get_context_segment_ids(metadata: IRAPMetadata, segment_id: str,
                             context_offsets: T.Sequence[int]) -> list[str | None]:
-    """The segments at the context offsets in the road sequence of a segment, None outside the
-    sequence."""
+    """Returns the ids of the segments at the context offsets in the road sequence of a segment,
+    None outside the sequence."""
     if segment_id not in metadata.sequence_index:
         return [segment_id if offset == 0 else None for offset in context_offsets]
     road_id, position = metadata.sequence_index[segment_id]
@@ -233,14 +244,15 @@ def get_context_segment_ids(metadata: IRAPMetadata, segment_id: str,
 
 
 @dc.dataclass(frozen=True)
-class RunPrediction:
+class ModelPrediction:
     """
     Attributes:
+        label: The label of the model (`archive.Model.label`).
         probs: (K,) float32 distribution in the class order of the evaluation set, None if the
             prediction is invalid.
     """
 
-    run_label: str
+    label: str
     probs: np.ndarray | None
 
     @property
@@ -250,7 +262,7 @@ class RunPrediction:
 
 @dc.dataclass(frozen=True)
 class SegmentDetail:
-    """A segment of an evaluation set with its label and the predictions of runs for one
+    """A segment of an evaluation set with its label and the predictions of models for one
     attribute.
 
     Attributes:
@@ -259,7 +271,7 @@ class SegmentDetail:
         coordinates: Latitude and longitude in degrees, None if the segment has no location.
         label_index: None if the segment has no label.
         context_segment_ids: (offset, segment id or None outside the road sequence), by offset,
-            for the context offsets of the first run, or (0,) if they are unknown.
+            for the context offsets of the first model, or (0,) if they are unknown.
     """
 
     segment_id: str
@@ -269,32 +281,32 @@ class SegmentDetail:
     class_names: tuple[str, ...]
     irap_codes: tuple[int, ...]
     label_index: int | None
-    run_predictions: tuple[RunPrediction, ...]
+    model_predictions: tuple[ModelPrediction, ...]
     context_segment_ids: tuple[tuple[int, str | None], ...]
 
 
-def get_segment_detail(metadata: IRAPMetadata, runs: T.Sequence[AlignedRun], segment_index: int,
-                       attribute: str) -> SegmentDetail:
+def get_segment_detail(metadata: IRAPMetadata, aligned_seq: T.Sequence[AlignedPredictions],
+                       segment_index: int, attribute: str) -> SegmentDetail:
     """
     Args:
-        runs: Of the same evaluation set, at least one.
+        aligned_seq: The predictions of models on the same evaluation set, at least one.
         segment_index: Into the segments of the set.
     """
-    evaluation_set = runs[0].evaluation_set
+    evaluation_set = aligned_seq[0].evaluation_set
     segment_id = evaluation_set.segment_ids[segment_index]
     road_id, position = metadata.sequence_index.get(segment_id, (None, None))
     label_index = int(evaluation_set.class_indices[attribute][segment_index])
-    offsets = sorted(runs[0].submission.context_offsets or (0,))
+    offsets = sorted(aligned_seq[0].submission.context_offsets or (0,))
     return SegmentDetail(
         segment_id=segment_id, road_id=road_id, position=position,
         coordinates=metadata.segment_coordinates.get(segment_id),
         class_names=evaluation_set.vocabulary.get_values(attribute),
         irap_codes=evaluation_set.vocabulary.get_irap_codes(attribute),
         label_index=None if label_index == IGNORE_LABEL_INDEX else label_index,
-        run_predictions=tuple(
-            RunPrediction(run.submission.run_label,
-                          run.predictions.probs[attribute][segment_index]
-                          if run.predictions.is_valid[attribute][segment_index] else None)
-            for run in runs),
+        model_predictions=tuple(
+            ModelPrediction(aligned.submission.label,
+                            aligned.predictions.probs[attribute][segment_index]
+                            if aligned.predictions.is_valid[attribute][segment_index] else None)
+            for aligned in aligned_seq),
         context_segment_ids=tuple(zip(offsets, get_context_segment_ids(metadata, segment_id,
                                                                        offsets))))

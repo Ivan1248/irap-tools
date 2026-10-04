@@ -9,6 +9,8 @@ body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; font-size:
 *, *::before, *::after { transition: none !important; animation: none !important; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* File names and identifiers in text. Monospace looks larger at the same size. */
+code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
 
 /* The browser's own controls instead of Tailwind's reset. */
 .native-control { all: revert; font: inherit; color: var(--text); }
@@ -24,9 +26,11 @@ a:hover { text-decoration: underline; }
 .top-bar .field { flex-direction: row; align-items: center; gap: 6px; }
 
 .page-content { padding: 12px; display: flex; flex-direction: column; gap: 12px;
-                width: 100%; max-width: 1400px; }
+                width: 100%; max-width: 1400px; margin: 0 auto; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
          padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+/* A control directly in a panel keeps its own width instead of the panel's. */
+.panel > .native-control { align-self: flex-start; }
 .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
                  color: var(--muted); font-weight: bold; }
 .muted { color: var(--muted); }
@@ -39,6 +43,7 @@ a:hover { text-decoration: underline; }
                  border-bottom: 1px solid var(--border); padding: 3px 8px; white-space: nowrap; }
 .data-table td { border-bottom: 1px solid #eceef1; padding: 3px 8px; vertical-align: top; }
 .data-table td.number { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table .mark { text-align: center; }
 .data-table tr.deleted td { color: var(--deleted); }
 .data-table tr.deleted a { color: var(--deleted); }
 

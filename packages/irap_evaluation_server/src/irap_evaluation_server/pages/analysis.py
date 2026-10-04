@@ -1,4 +1,4 @@
-"""The analysis page: the outcomes of a run, or of two compared runs, for one attribute on an
+"""The Analysis page: the outcomes of a model, or of two compared models, for one attribute on an
 evaluation set of an analysis split (`config.DatasetConfig.analysis_splits`), with the confusion
 matrix, the map and the details of a segment (see `prediction_analysis`), and the endpoint of the
 segment images."""
@@ -24,15 +24,15 @@ from ..components.analysis_html import (
 from ..components.analysis_view import (
     AnalysisView,
     list_analysis_datasets,
-    list_compared_runs,
+    list_compared_models,
     parse_cell,
     resolve_view,
     select_attribute_options,
 )
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
 from ..components.deck_map import DeckMap, make_map_legend_html
-from ..components.formatting import EVALUATION_SET_LABELS, make_submission_link_html
-from ..components.native_controls import create_native_select
+from ..components.formatting import EVALUATION_SET_LABELS, make_model_link_html
+from ..components.native_controls import create_native_grouped_select, create_native_select
 from ..components.page_frame import create_page_frame, show_view_error
 from ..components.routes import (
     ANALYSIS_PATH,
@@ -45,12 +45,13 @@ from ..datasets import DatasetContext
 from ..method_ranking import (
     DEFAULT_SORT_METRIC,
     collect_scored_attributes,
-    select_run_metrics,
-    sort_scored_runs,
+    describe_split_use,
+    select_model_metrics,
+    sort_scored_models,
 )
 from ..prediction_analysis import (
-    AlignedRun,
-    AlignedRunCache,
+    AlignedPredictions,
+    AlignedPredictionsCache,
     AttributeOutcomes,
     MapPoints,
     compute_attribute_outcomes,
@@ -59,14 +60,14 @@ from ..prediction_analysis import (
     select_cell_segments,
 )
 from ..scoring import (
-    ScoredRun,
+    ScoredModel,
     ScoreStore,
-    get_run_evaluation_set,
-    select_scored_runs,
+    get_model_evaluation_set,
+    select_scored_models,
 )
 from ..scoring_worker import ScoringWorker
 
-#: The metric that orders the runs, and that the summary shows.
+#: The metric that orders the models, and that the summary shows.
 _RANKING_METRIC = DEFAULT_SORT_METRIC
 _MAX_LISTED_SEGMENTS = 500
 #: Null policy -> how the class table counts invalid predictions.
@@ -74,40 +75,49 @@ _CLASS_TABLE_NOTES = {
     "first_class": "Precision, recall and F1 as scored: an invalid prediction counts as the first"
                    " class.",
     "exclude": "Precision, recall and F1 as scored: invalid predictions are left out."}
+#: The initial width of the side panel next to the map.
+_SIDE_PANEL_WIDTH_PX = 440
+
+
+def _create_side_panel_without_map() -> ui.element:
+    """Creates the side panel of a page without the map, e.g. of an error, as wide as next to
+    the map."""
+    return ui.element("div").classes("analysis-side").style(f"width: {_SIDE_PANEL_WIDTH_PX}px")
 
 
 @dc.dataclass(frozen=True)
-class _LoadedRun:
-    """A run of the page with its predictions.
+class _LoadedModel:
+    """A model of the page with its predictions.
 
     Attributes:
         class_reports: Attribute -> its class scores, the `classes` of the stored
             `evaluation_report.to_json_dict` document.
     """
 
-    scored: ScoredRun
-    aligned: AlignedRun
+    scored: ScoredModel
+    aligned: AlignedPredictions
     class_reports: T.Mapping[str, T.Mapping[str, T.Any]]
 
     @property
-    def submission_id(self) -> int:
-        return self.scored.submission.id
+    def model_id(self) -> int:
+        return self.scored.submission.model.id
 
 
-def _load_run(run_cache: AlignedRunCache, store: ScoreStore, scored_run: ScoredRun,
-              evaluation_set: ie.EvaluationSet) -> _LoadedRun:
-    """Reads a run, e.g. off the event loop.
+def _load_model(predictions_cache: AlignedPredictionsCache, store: ScoreStore,
+                scored_model: ScoredModel, evaluation_set: ie.EvaluationSet) -> _LoadedModel:
+    """Reads the predictions of a model, e.g. off the event loop.
 
     Raises:
-        OSError, ValueError: If the file cannot be read (see `AlignedRunCache.get`).
+        OSError, ValueError: If the file cannot be read (see `AlignedPredictionsCache.get`).
     """
-    report = store.get_score_report(scored_run.submission.id, scored_run.scores.evaluation_set)
-    return _LoadedRun(scored_run, run_cache.get(scored_run.submission, evaluation_set),
-                      {} if report is None else report["classes"])
+    submission = scored_model.submission
+    report = store.get_score_report(submission.id, scored_model.scores.evaluation_set)
+    return _LoadedModel(scored_model, predictions_cache.get(submission, evaluation_set),
+                        {} if report is None else report["classes"])
 
 
 def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
-                           worker: ScoringWorker, run_cache: AlignedRunCache,
+                           worker: ScoringWorker, predictions_cache: AlignedPredictionsCache,
                            map_error: str | None) -> None:
     """
     Args:
@@ -128,16 +138,16 @@ def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
             try:
                 view = AnalysisView.from_query(request.query_params, dataset_contexts)
             except ValueError as e:
-                with ui.element("div").classes("analysis-side"):
+                with _create_side_panel_without_map():
                     show_view_error(str(e), ANALYSIS_PATH)
                 return
-            await _create_analysis(dataset_contexts, worker, run_cache, map_error, view,
+            await _create_analysis(dataset_contexts, worker, predictions_cache, map_error, view,
                                    request.query_params.getlist(ATTRIBUTE_PARAMETER))
 
 
 def _open_changed_view(context: DatasetContext, view: AnalysisView,
                        attribute_query: T.Sequence[str], **changes: str) -> None:
-    """Opens the page of another dataset, split or evaluation set, with the default runs, cell
+    """Opens the page of another dataset, split or evaluation set, with the default models, cell
     and segment.
 
     Args:
@@ -145,13 +155,14 @@ def _open_changed_view(context: DatasetContext, view: AnalysisView,
         attribute_query: The attribute subset of the page, which is kept for the same dataset.
         changes: Of the dataset, the split or the evaluation set.
     """
-    changed = dc.replace(view, run_id=None, compare_id=None, cell=None, segment_id="", **changes)
+    changed = dc.replace(view, model_id=None, compare_id=None, cell=None, segment_id="",
+                         **changes)
     if changed.dataset != view.dataset:
         ui.navigate.to(AnalysisView(dataset=changed.dataset, split="",
                                     evaluation_set=changed.evaluation_set).to_path())
         return
     # The attribute is kept if the reference set of the split has labels of it. A model-compatible
-    # set depends on the run, which is not known before the page is loaded.
+    # set depends on the model, which is not known before the page is loaded.
     if (changed.evaluation_set != ie.REFERENCE_SET_NAME
             or context.get_reference_set(changed.split).attr_to_num_labeled.get(
                 view.attribute_name, 0) == 0):
@@ -161,7 +172,7 @@ def _open_changed_view(context: DatasetContext, view: AnalysisView,
 
 def _create_view_controls(context: DatasetContext, analysis_datasets: T.Sequence[str],
                           view: AnalysisView, open_view: T.Callable[..., None]) -> None:
-    """The selects of the dataset, the split and the evaluation set.
+    """Creates the selects of the dataset, the split and the evaluation set.
 
     Args:
         analysis_datasets: The options of the Dataset select.
@@ -177,32 +188,51 @@ def _create_view_controls(context: DatasetContext, analysis_datasets: T.Sequence
                              lambda v: open_view(evaluation_set=v))
 
 
-def _get_ranking_average(scored_run: ScoredRun, attributes: T.Sequence[str]) -> float | None:
-    """The average of `_RANKING_METRIC` over `attributes`, None if the run lacks it."""
-    metrics = select_run_metrics(scored_run, attributes)
+def _get_ranking_average(scored_model: ScoredModel,
+                         attributes: T.Sequence[str]) -> float | None:
+    """Returns the average of `_RANKING_METRIC` over `attributes`, None if the model lacks it."""
+    metrics = select_model_metrics(scored_model, attributes)
     return None if metrics is None else metrics.averages.get(_RANKING_METRIC)
 
 
-def _make_run_label(scored_run: ScoredRun, attributes: T.Sequence[str]) -> str:
-    average = _get_ranking_average(scored_run, attributes)
+def _make_model_label(scored_model: ScoredModel, attributes: T.Sequence[str]) -> str:
+    """Makes the option text of a model: its label, its score and a mark if it used the split
+    (`method_ranking.describe_split_use`)."""
+    submission = scored_model.submission
+    average = _get_ranking_average(scored_model, attributes)
     score = ("" if average is None
              else f" · {_RANKING_METRIC} {format_optional_metric_value(average, 3)}")
-    return f"{scored_run.submission.run_label} (#{scored_run.submission.id}){score}"
+    mark = describe_split_use(submission.model_info.get_split_use(submission.split),
+                              submission.split)
+    return f"{submission.label}{score}{f' · {mark}' if mark else ''}"
 
 
-def _describe_attribute_scores(scored_run: ScoredRun, attribute: str) -> str:
-    """E.g. 'mF1 .512 · 3 invalid', with '(not predicted)' for a missing attribute."""
-    scores = scored_run.scores
+def _group_model_options(models: T.Sequence[ScoredModel],
+                         attributes: T.Sequence[str]) -> dict[str, dict[str, str]]:
+    """Groups the options of a grouped select by method: method name -> model id -> option text.
+    The groups are in the order of their first model, so for models sorted best first, the
+    method of the best model is first."""
+    groups: dict[str, dict[str, str]] = {}
+    for model in models:
+        groups.setdefault(model.submission.model.method_name, {})[
+            str(model.submission.model.id)] = _make_model_label(model, attributes)
+    return groups
+
+
+def _describe_attribute_scores(scored_model: ScoredModel, attribute: str) -> str:
+    """Describes the scores of a model for one attribute, e.g. 'mF1 .512 · 3 invalid', with
+    '(not predicted)' for a missing attribute."""
+    scores = scored_model.scores
     f1 = format_optional_metric_value(scores.metrics.per_attribute["mF1"].get(attribute), 3)
     missing = " (not predicted)" if attribute in scores.missing_attributes else ""
     return f"mF1 {f1} · {scores.num_invalid[attribute]} invalid{missing}"
 
 
 async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
-                           worker: ScoringWorker, run_cache: AlignedRunCache,
+                           worker: ScoringWorker, predictions_cache: AlignedPredictionsCache,
                            map_error: str | None, view: AnalysisView,
                            attribute_query: T.Sequence[str]) -> None:
-    """Loads the runs of the view, resolves the view (`resolve_view`), and creates the page."""
+    """Loads the models of the view, resolves the view (`resolve_view`), and creates the page."""
     context = dataset_contexts[view.dataset]
     client = ui.context.client
     loading_label = ui.label("Loading predictions…").classes("muted p-3")
@@ -212,12 +242,12 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
 
         Args:
             offers_default_view: Whether to link the default view of the split if the URL has
-                other runs, attributes, cell or segment, which the error can depend on.
+                other models, attributes, cell or segment, which the error can depend on.
         """
         loading_label.delete()
         default_path = AnalysisView(dataset=view.dataset, split=view.split,
                                     evaluation_set=view.evaluation_set).to_path()
-        with ui.element("div").classes("analysis-side"):
+        with _create_side_panel_without_map():
             _create_view_controls(
                 context, list_analysis_datasets(dataset_contexts), view,
                 functools.partial(_open_changed_view, context, view, attribute_query))
@@ -225,31 +255,31 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
             if offers_default_view and view.to_path(attribute_query) != default_path:
                 ui.link(f"Open the default view of {view.dataset}/{view.split}", default_path)
 
-    # The page is sent first, since reading a file of Vietnam train takes about 0.5 s.
+    # The page is sent first, since reading the files takes tenths of a second (see the README).
     await client.connected()
     submissions, _, current = worker.load_split_scorings(view.dataset, view.split)
-    runs = select_scored_runs(submissions, current, view.evaluation_set)
-    if not runs:
-        show_error(f"No runs of {view.dataset}/{view.split} are scored on the"
+    models = select_scored_models(submissions, current, view.evaluation_set)
+    if not models:
+        show_error(f"No models of {view.dataset}/{view.split} are scored on the"
                    f" {EVALUATION_SET_LABELS[view.evaluation_set].lower()}.",
                    offers_default_view=False)
         return
-    subset = AttributeSubset.from_query(attribute_query, collect_scored_attributes(runs))
-    runs = sort_scored_runs(runs, _RANKING_METRIC, subset.selected)
+    subset = AttributeSubset.from_query(attribute_query, collect_scored_attributes(models))
+    models = sort_scored_models(models, _RANKING_METRIC, subset.selected)
     try:
-        resolved = resolve_view(view, runs, subset,
-                                functools.partial(get_run_evaluation_set, context))
+        resolved = resolve_view(view, models, subset,
+                                functools.partial(get_model_evaluation_set, context))
     except ValueError as e:
         show_error(str(e))
         return
-    load = functools.partial(_load_run, run_cache, worker.store,
+    load = functools.partial(_load_model, predictions_cache, worker.store,
                              evaluation_set=resolved.evaluation_set)
     try:
         # The first map of a dataset also locates its segments (`segment_coordinates`).
-        points, run_a, run_b = await asyncio.gather(
+        points, model_a, model_b = await asyncio.gather(
             run.io_bound(compute_map_points, context.metadata, resolved.evaluation_set),
-            run.io_bound(load, resolved.run_a),
-            run.io_bound(load, resolved.run_b) if resolved.run_b is not None
+            run.io_bound(load, resolved.model_a),
+            run.io_bound(load, resolved.model_b) if resolved.model_b is not None
             else asyncio.sleep(0, result=None))
     except (OSError, ValueError) as e:  # Also irap_evaluation.PredictionFormatError.
         if not client.is_deleted:
@@ -258,38 +288,40 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
     if client.is_deleted:  # The user has left the page while the files were read.
         return
     loading_label.delete()
-    _AnalysisPage(context, worker, run_cache, resolved.view, runs, points, run_a, run_b).create(
-        list_analysis_datasets(dataset_contexts), map_error, attribute_query)
+    _AnalysisPage(context, worker, predictions_cache, resolved.view, models, points, model_a,
+                  model_b).create(list_analysis_datasets(dataset_contexts), map_error,
+                                  attribute_query)
 
 
 class _AnalysisPage:
     """The controls, matrix, map and details of the page, and their updates."""
 
     def __init__(self, context: DatasetContext, worker: ScoringWorker,
-                 run_cache: AlignedRunCache, view: AnalysisView, runs: T.Sequence[ScoredRun],
-                 points: MapPoints, run_a: _LoadedRun, run_b: _LoadedRun | None):
+                 predictions_cache: AlignedPredictionsCache, view: AnalysisView,
+                 models: T.Sequence[ScoredModel], points: MapPoints, model_a: _LoadedModel,
+                 model_b: _LoadedModel | None):
         """
         Args:
             view: A resolved view (`resolve_view`).
-            runs: The scored runs of the split on the evaluation set.
+            models: The scored models of the split on the evaluation set.
             points: The map points of the evaluation set (`compute_map_points`).
-            run_a: The run of the confusion matrix.
-            run_b: The run that A is compared with, or None.
+            model_a: The model of the confusion matrix.
+            model_b: The model that A is compared with, or None.
         """
         self.context = context
         self.worker = worker
-        self.run_cache = run_cache
+        self.predictions_cache = predictions_cache
         self.client = ui.context.client
-        #: Without the runs, which are `run_a` and `run_b` (`_update_url` adds them).
-        self.view = dc.replace(view, run_id=None, compare_id=None)
-        self.runs = runs
-        self.run_a, self.run_b = run_a, run_b
-        self.evaluation_set = run_a.aligned.evaluation_set
+        #: Without the models, which are `model_a` and `model_b` (`_update_url` adds them).
+        self.view = dc.replace(view, model_id=None, compare_id=None)
+        self.models = models
+        self.model_a, self.model_b = model_a, model_b
+        self.evaluation_set = model_a.aligned.evaluation_set
         self.segment_id_to_index = {s: i for i, s in enumerate(self.evaluation_set.segment_ids)}
         self.points = points
-        #: Counts the changes of each run, so that a slow file read is discarded when another
-        #: change of the same run started after it.
-        self.num_run_changes = {"A": 0, "B": 0}
+        #: Counts the changes of each model, so that a slow file read is discarded when another
+        #: change of the same model started after it.
+        self.num_model_changes = {"A": 0, "B": 0}
         self.outcomes: AttributeOutcomes | None = None
         #: The segments of the selected cell (`select_cell_segments`), None without a cell.
         self.cell_segments: np.ndarray | None = None
@@ -303,7 +335,7 @@ class _AnalysisPage:
             map_error: See `register_analysis_page`.
             attribute_query: The attribute subset of the URL.
         """
-        with ui.splitter(value=440, limits=(320, 900)).props("unit=px").classes(
+        with ui.splitter(value=_SIDE_PANEL_WIDTH_PX, limits=(320, 900)).props("unit=px").classes(
                 "w-full h-full") as outer:
             with outer.before, ui.element("div").classes("analysis-side"):
                 self._create_side_panel(analysis_datasets, attribute_query)
@@ -314,23 +346,22 @@ class _AnalysisPage:
 
     def _create_side_panel(self, analysis_datasets: T.Sequence[str],
                            attribute_query: T.Sequence[str]) -> None:
-        """The controls, the confusion matrix and the segments of a cell."""
+        """Creates the controls, the confusion matrix and the segments of a cell."""
         _create_view_controls(
             self.context, analysis_datasets, self.view,
             lambda **changes: _open_changed_view(self.context, self.view,
                                                  self.attribute_filter.subset.to_query(),
                                                  **changes))
         self.attribute_filter = AttributeFilter(attribute_query, self._on_subset_changed)
-        self.attribute_filter.set_options(collect_scored_attributes(self.runs))
+        self.attribute_filter.set_options(collect_scored_attributes(self.models))
         with ui.element("div").classes("analysis-controls"):
-            self.show_run_selects = ui.refreshable(self._show_run_selects)
-            self.show_run_selects()
+            self.show_model_selects = ui.refreshable(self._show_model_selects)
+            self.show_model_selects()
         self.show_attribute_picker = ui.refreshable(self._show_attribute_picker)
         self.show_attribute_picker()
         self.summary_html = ui.html("", sanitize=False)
         ui.label("Confusion matrix").classes("section-title")
-        ui.label("Rows: labels. Columns: the predictions of A, and its invalid ones. Click a"
-                 " cell to list its segments.").classes("muted")
+        ui.label("Rows: labels. Columns: predictions of A, then invalid ones.").classes("muted")
         self.matrix_html = ui.html("", sanitize=False).on(
             "click", lambda e: self._on_cell_clicked(e.args),
             js_handler="(e) => { const cell = e.target.closest('[data-cell]');"
@@ -345,7 +376,7 @@ class _AnalysisPage:
                        " if (button) emit(button.dataset.segment); }")
 
     def _create_map_panel(self, map_error: str | None) -> None:
-        """The map and its legend, and the details of the selected segment below them."""
+        """Creates the map and its legend, and the details of the selected segment below them."""
         with ui.splitter(horizontal=True, reverse=True, value=280, limits=(120, 700)).props(
                 "unit=px").classes("w-full h-full") as splitter:
             with splitter.before, ui.element("div").classes("map-container"):
@@ -362,93 +393,96 @@ class _AnalysisPage:
 
     # Controls #####################################################################################
 
-    def _show_run_selects(self) -> None:
+    def _show_model_selects(self) -> None:
         subset = self.attribute_filter.subset
         attributes = subset.selected
-        runs = sort_scored_runs(self.runs, _RANKING_METRIC, attributes)
+        models = sort_scored_models(self.models, _RANKING_METRIC, attributes)
         with ui.element("div").classes("wide"):
-            create_native_select(
-                "Run A", {str(r.submission.id): _make_run_label(r, attributes) for r in runs},
-                str(self.run_a.submission_id), self._on_run_changed)
+            create_native_grouped_select(
+                "Model A", _group_model_options(models, attributes), str(self.model_a.model_id),
+                self._on_model_changed)
         with ui.element("div").classes("wide"):
-            create_native_select(
+            create_native_grouped_select(
                 "Compare with (B)",
-                {"": "–", **{str(r.submission.id): _make_run_label(r, attributes)
-                             for r in list_compared_runs(runs, self.run_a.scored)}},
-                "" if self.run_b is None else str(self.run_b.submission_id),
-                self._on_compared_run_changed)
-        links = f"A: {make_submission_link_html(self.run_a.submission_id)}"
-        if self.run_b is not None:
-            links += f", B: {make_submission_link_html(self.run_b.submission_id)}"
-        ui.html(f'<span class="muted">Submissions: {links}. Ordered by {_RANKING_METRIC} over'
-                f" {html.escape(subset.label)}.</span>", sanitize=False).classes("wide")
+                _group_model_options(list_compared_models(models, self.model_a.scored),
+                                     attributes),
+                "" if self.model_b is None else str(self.model_b.model_id),
+                self._on_compared_model_changed, ungrouped={"": "–"})
+        links = ", ".join(
+            f"{role}: {make_model_link_html(m.model_id, s.label, s.split)}"
+            for role, m in (("A", self.model_a), ("B", self.model_b)) if m is not None
+            for s in [m.scored.submission])
+        ui.html(f'<span class="muted">{links}. Grouped by method, best {_RANKING_METRIC} over'
+                f" {html.escape(subset.label)} first.</span>", sanitize=False).classes("wide")
 
     def _show_attribute_picker(self) -> None:
-        attributes = select_attribute_options(self.attribute_filter.subset, self.run_a.scored)
+        attributes = select_attribute_options(self.attribute_filter.subset, self.model_a.scored)
         if not attributes:
-            ui.label("Select at least one attribute that run A is scored on.").classes("error")
+            ui.label("Select at least one attribute that model A is scored on.").classes("error")
             return
         create_native_select(
             "Attribute",
-            {a: f"{a} · {_describe_attribute_scores(self.run_a.scored, a)}" for a in attributes},
+            {a: f"{a} · {_describe_attribute_scores(self.model_a.scored, a)}"
+             for a in attributes},
             self.view.attribute_name, self._on_attribute_changed)
         unlabeled = [a for a, n in self.evaluation_set.attr_to_num_labeled.items() if n == 0]
         if unlabeled:
             names = html.escape(", ".join(unlabeled))
-            ui.html(f'<span class="muted" title="{names}">{len(unlabeled)} attributes of the'
-                    f" dataset are not scored, since the set has no labels of them (hover to"
-                    f" list them).</span>", sanitize=False)
+            ui.html(f'<span class="muted" title="{names}">Number of attributes without labels'
+                    f" in the set (not scored): {len(unlabeled)} (hover to list).</span>",
+                    sanitize=False)
 
     # Updates ######################################################################################
 
     def _update_url(self) -> None:
-        view = dc.replace(self.view, run_id=self.run_a.submission_id,
-                          compare_id=None if self.run_b is None else self.run_b.submission_id)
+        view = dc.replace(self.view, model_id=self.model_a.model_id,
+                          compare_id=None if self.model_b is None else self.model_b.model_id)
         ui.navigate.history.replace(view.to_path(self.attribute_filter.subset.to_query()))
 
-    def _update_outcomes(self, is_run_a_changed: bool = True) -> None:
-        """Shows the outcomes of the runs for the attribute: everything but the controls and
+    def _update_outcomes(self, is_model_a_changed: bool = True) -> None:
+        """Shows the outcomes of the models for the attribute: everything but the controls and
         the selected segment on the map.
 
         Args:
-            is_run_a_changed: Whether the attribute or run A has changed, and not only run B,
-                which the matrix, the class table and the cell do not depend on.
+            is_model_a_changed: Whether the attribute or model A has changed, and not only model
+                B, which the matrix, the class table and the cell do not depend on.
         """
         attribute = self.view.attribute_name
         self.outcomes = compute_attribute_outcomes(
-            self.run_a.aligned, attribute, None if self.run_b is None else self.run_b.aligned)
+            self.model_a.aligned, attribute,
+            None if self.model_b is None else self.model_b.aligned)
         self._update_summary()
         point_outcomes = self.outcomes.segment_outcomes[self.points.segment_indices]
         counts = np.bincount(point_outcomes, minlength=len(self.outcomes.outcome_names))
         num_unlocated = self.points.num_unlocated
         self.legend_html.set_content(make_map_legend_html(
             self.outcomes.outcome_names, counts.tolist(),
-            note=f"{num_unlocated} segments without a location are not shown."
+            note=f"Number of segments without a location (not shown): {num_unlocated}."
             if num_unlocated else ""))
         if self.deck_map is not None:
             self.deck_map.set_outcomes(point_outcomes, self.outcomes.outcome_names)
-        if is_run_a_changed:
-            class_report = self.run_a.class_reports.get(attribute)
+        if is_model_a_changed:
+            class_report = self.model_a.class_reports.get(attribute)
             self.class_table_html.set_content(
-                '<div class="error">The scores of the classes are not stored.</div>'
+                '<div class="error">The class scores are not stored.</div>'
                 if class_report is None
                 else make_class_table_html(class_report, self.outcomes.confusion_matrix))
             self._update_cell()
         self._update_detail()
 
     def _update_summary(self) -> None:
-        """The averages of the runs over the subset, and their scores of the attribute."""
+        """Shows the averages of the models over the subset, and their scores of the attribute."""
         subset = self.attribute_filter.subset
         attribute = html.escape(self.view.attribute_name)
         parts = []
-        for name, loaded_run in (("A", self.run_a), ("B", self.run_b)):
-            if loaded_run is None:
+        for name, loaded_model in (("A", self.model_a), ("B", self.model_b)):
+            if loaded_model is None:
                 continue
-            average = _get_ranking_average(loaded_run.scored, subset.selected)
+            average = _get_ranking_average(loaded_model.scored, subset.selected)
             parts.append(
                 f"{name}: {_RANKING_METRIC} {format_optional_metric_value(average, 3)} over"
-                f" {html.escape(subset.label)}, {attribute}:"
-                f" {_describe_attribute_scores(loaded_run.scored, self.view.attribute_name)}")
+                f" {html.escape(subset.label)} – {attribute}:"
+                f" {_describe_attribute_scores(loaded_model.scored, self.view.attribute_name)}")
         self.summary_html.set_content(f'<div class="muted">{"<br>".join(parts)}</div>')
 
     def _get_selected_segment(self) -> int | None:
@@ -467,16 +501,19 @@ class _AnalysisPage:
             self.segment_status.set_text("Click a cell of the confusion matrix to list its"
                                          " segments.")
         else:
-            self.cell_segments = select_cell_segments(self.run_a.aligned, attribute,
+            self.cell_segments = select_cell_segments(self.model_a.aligned, attribute,
                                                       *self.view.cell)
             num_unlocated = int((segment_to_point[self.cell_segments] < 0).sum())
-            text = f"{len(self.cell_segments)} segments"
+            text = f"Number of segments: {len(self.cell_segments)}"
             if num_unlocated:
-                text += f", {num_unlocated} of them not on the map"
+                text += f" ({num_unlocated} not on the map)"
+            order = []
             if len(self.cell_segments) > _MAX_LISTED_SEGMENTS:
-                text += f", the first {_MAX_LISTED_SEGMENTS} listed"
-            if self.run_a.aligned.predictions.output_kind == "probs":
-                text += ", the most confident predictions first"
+                order.append(f"the first {_MAX_LISTED_SEGMENTS} listed")
+            if self.model_a.aligned.predictions.output_kind == "probs":
+                order.append("most confident first")
+            if order:
+                text += f" – {', '.join(order)}"
             self.segment_status.set_text(text + ".")
         self._update_segment_list()
         if self.deck_map is not None:
@@ -510,8 +547,8 @@ class _AnalysisPage:
             self.detail_html.set_content(
                 '<div class="muted p-2">Select a segment on the map or in the list.</div>')
             return
-        runs = [r.aligned for r in (self.run_a, self.run_b) if r is not None]
-        detail = get_segment_detail(self.context.metadata, runs, selected,
+        aligned_seq = [m.aligned for m in (self.model_a, self.model_b) if m is not None]
+        detail = get_segment_detail(self.context.metadata, aligned_seq, selected,
                                     self.view.attribute_name)
         dataset = self.context.name
         self.detail_html.set_content(make_segment_detail_html(
@@ -538,9 +575,9 @@ class _AnalysisPage:
         self._update_outcomes()
 
     def _on_subset_changed(self, subset: AttributeSubset) -> None:
-        self.show_run_selects.refresh()
+        self.show_model_selects.refresh()
         self.show_attribute_picker.refresh()
-        attributes = select_attribute_options(subset, self.run_a.scored)
+        attributes = select_attribute_options(subset, self.model_a.scored)
         if attributes and self.view.attribute_name not in attributes:
             self.view = dc.replace(self.view, attribute_name=attributes[0], cell=None)
             self._update_outcomes()
@@ -548,57 +585,62 @@ class _AnalysisPage:
             self._update_summary()
             self._update_url()
 
-    async def _load_latest_run(self, role: T.Literal["A", "B"],
-                               scored_run: ScoredRun) -> _LoadedRun | None:
-        """Reads a run off the event loop. None if it cannot be read (which is notified), the
-        user has left the page, or another change of the same role started meanwhile."""
-        self.num_run_changes[role] += 1
-        change_number = self.num_run_changes[role]
+    def _find_model(self, model_id_text: str) -> ScoredModel:
+        return next(m for m in self.models if str(m.submission.model.id) == model_id_text)
+
+    async def _load_latest_model(self, role: T.Literal["A", "B"],
+                                 scored_model: ScoredModel) -> _LoadedModel | None:
+        """Reads the predictions of a model off the event loop. Returns None if they cannot be
+        read (the user is notified), the user has left the page, or another change of the same
+        role started meanwhile."""
+        self.num_model_changes[role] += 1
+        change_number = self.num_model_changes[role]
         try:
-            loaded_run = await run.io_bound(_load_run, self.run_cache, self.worker.store,
-                                            scored_run, self.evaluation_set)
+            loaded_model = await run.io_bound(_load_model, self.predictions_cache,
+                                              self.worker.store, scored_model,
+                                              self.evaluation_set)
         except (OSError, ValueError) as e:  # Also irap_evaluation.PredictionFormatError.
             if not self.client.is_deleted:
-                ui.notify(f"The predictions of {scored_run.submission.run_label} cannot be"
+                ui.notify(f"The predictions of {scored_model.submission.label} cannot be"
                           f" read: {e}", type="negative")
             return None
-        if self.client.is_deleted or change_number != self.num_run_changes[role]:
+        if self.client.is_deleted or change_number != self.num_model_changes[role]:
             return None
-        return loaded_run
+        return loaded_model
 
-    async def _on_run_changed(self, value: str) -> None:
-        scored_run = next(r for r in self.runs if str(r.submission.id) == value)
-        if (scored_run.scores.evaluation_set_fingerprint
-                != self.run_a.scored.scores.evaluation_set_fingerprint):
+    async def _on_model_changed(self, value: str) -> None:
+        scored_model = self._find_model(value)
+        if (scored_model.scores.evaluation_set_fingerprint
+                != self.model_a.scored.scores.evaluation_set_fingerprint):
             # Another model-compatible set has other segments, so the page is created again.
-            view = dc.replace(self.view, run_id=scored_run.submission.id, cell=None,
+            view = dc.replace(self.view, model_id=scored_model.submission.model.id, cell=None,
                               segment_id="")
             ui.navigate.to(view.to_path(self.attribute_filter.subset.to_query()))
             return
-        if (run_a := await self._load_latest_run("A", scored_run)) is None:
+        if (model_a := await self._load_latest_model("A", scored_model)) is None:
             return
-        self.run_a = run_a
-        if self.run_b is not None and self.run_b.submission_id == run_a.submission_id:
-            self.run_b = None
+        self.model_a = model_a
+        if self.model_b is not None and self.model_b.model_id == model_a.model_id:
+            self.model_b = None
         self.view = dc.replace(self.view, cell=None)
-        self.show_run_selects.refresh()
+        self.show_model_selects.refresh()
         self.show_attribute_picker.refresh()
         self._update_outcomes()
 
-    async def _on_compared_run_changed(self, value: str) -> None:
-        run_b = None
+    async def _on_compared_model_changed(self, value: str) -> None:
+        model_b = None
         if value:
-            scored_run = next(r for r in self.runs if str(r.submission.id) == value)
-            if (run_b := await self._load_latest_run("B", scored_run)) is None:
+            scored_model = self._find_model(value)
+            if (model_b := await self._load_latest_model("B", scored_model)) is None:
                 return
-            if run_b.submission_id not in {r.submission.id for r in list_compared_runs(
-                    self.runs, self.run_a.scored)}:
-                # Run A has changed to B while B was read.
-                self.show_run_selects.refresh()
+            if model_b.model_id not in {m.submission.model.id for m in list_compared_models(
+                    self.models, self.model_a.scored)}:
+                # Model A has changed to B while B was read.
+                self.show_model_selects.refresh()
                 return
         else:
-            self.num_run_changes["B"] += 1  # Discards a pending read of B.
-        self.run_b = run_b
-        self.show_run_selects.refresh()
-        self._update_outcomes(is_run_a_changed=False)
+            self.num_model_changes["B"] += 1  # Discards a pending read of B.
+        self.model_b = model_b
+        self.show_model_selects.refresh()
+        self._update_outcomes(is_model_a_changed=False)
         self._update_url()

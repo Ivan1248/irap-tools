@@ -30,9 +30,10 @@ class WorkRequester:
         ui.context.client.on_delete(self._withdraw_requests)
 
     def update(self, key_to_request: T.Mapping[K, WorkRequest]) -> dict[K, ResultState]:
-        """The state of the result of each request, and requests those that are not computed.
+        """Returns the state of the result of each request, and requests those that are not
+        computed.
 
-        Called on each render, with all the requests of the page.
+        The page calls it on each render, with all its requests.
         """
         key_to_state = {}
         self._missing_requests = []
@@ -63,8 +64,8 @@ class WorkRequester:
         self._worker.set_requests(self._owner, [])
 
     def get_pending_checks(self) -> list[T.Callable[[], bool]]:
-        """For `RefreshTimer.watch`: one per result of the latest `update` that is not computed,
-        true until it is computed. The queue of the worker is checked first, so that the store is
-        read only after the computation."""
+        """Makes the checks for `RefreshTimer.watch`: one per result of the latest `update` that
+        is not computed, true until it is computed. The queue of the worker is checked first, so
+        that the store is read only after the computation."""
         return [lambda r=r: self._worker.is_pending(r) or self._worker.get_result(r) is None
                 for r in self._missing_requests]

@@ -9,13 +9,13 @@ from pathlib import Path
 
 
 def get_utc_now() -> datetime:
-    """The current time in UTC, to whole seconds."""
+    """Returns the current time in UTC, to whole seconds."""
     return datetime.now(UTC).replace(microsecond=0)
 
 
 @contextlib.contextmanager
 def connect(database_path: Path) -> T.Iterator[sqlite3.Connection]:
-    """A connection in autocommit mode, so that transactions are explicit (`begin_write`).
+    """Opens a connection in autocommit mode, so that transactions are explicit (`begin_write`).
 
     Each operation opens its own connection, so that the database can be used from several
     threads.
@@ -30,8 +30,9 @@ def connect(database_path: Path) -> T.Iterator[sqlite3.Connection]:
 
 @contextlib.contextmanager
 def begin_write(database_path: Path) -> T.Iterator[sqlite3.Connection]:
-    """A write transaction. It holds the database lock from the start, so that a check and the
-    write that depends on it are not interleaved with another write."""
+    """Opens a write transaction, which is committed at the end of the block, or rolled back on
+    an exception. It holds the database lock from the start, so that a check and the write that
+    depends on it are not interleaved with another write."""
     with connect(database_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:

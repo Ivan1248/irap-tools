@@ -1,22 +1,33 @@
 # iRAP evaluation server
 
-An internal web app for saved iRAP model predictions, built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/):
+An internal web app that keeps an archive of iRAP models and their prediction files, scores them, and compares, analyses and ensembles them. It is built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/).
 
-- an archive of submissions (prediction files) with an action log,
-- scores and the method table, with the differences from a reference method and their intervals,
-- the analysis of the predictions of a run: confusion matrices, a map, and the details of segments,
-- ensembles of stored runs, and the export of a submission as an iRAP coding table.
+| Page | Path | Content |
+|---|---|---|
+| Scores | `/scores` (start page) | The methods of a dataset split ranked by an attribute average, or one per-attribute metric, with intervals and differences from a reference method. |
+| Models | `/models` | The models of each dataset by method, with the active file of each split, and the upload form. |
+| Model | `/models/<id>` | A model's files, also the deleted ones, its scores, the coding-table export and its actions. |
+| Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
+| Ensemble | `/ensemble` | Creates an ensemble of stored models. |
+| Action log | `/actions` | All changes, with the name of the user. |
 
-There are no logins. Anyone who can open the app can upload, delete and restore submissions. Each user enters a name in the top bar, which the action log records. Deleted submissions are kept and can be restored.
+There are no logins: anyone who can open the app can upload, replace and delete files, and delete and restore models. Each user enters a name in the top bar for the action log.
 
 ## Installation and start
 
-From the irap-tools checkout:
+From the irap-tools checkout, install the packages and start the server with a [configuration file](#configuration):
 
 ```bash
 uv pip install -e packages/irap_data -e packages/irap_evaluation -e packages/irap_evaluation_server
 irap-eval-server server.toml
 ```
+
+The map of the Analysis page needs internet access:
+
+- On its first start, the server downloads MapLibre and deck.gl (pinned versions checked by SHA-256) into `data_dir/vendor/`, since MapLibre must be served by the server itself. Without internet access, it starts without the map.
+- The browser loads the basemap tiles from Carto.
+
+## Configuration
 
 `server.toml` (relative paths are relative to its directory):
 
@@ -27,93 +38,115 @@ port = 8600             # optional
 
 [datasets.vietnam]      # a key of irap_data.DATASET_PRESETS
 metadata_dir = "/data/IRAP_Vietnam"
-images_dir = "/data/IRAP_Vietnam_images"   # optional, the segment images of the analysis page
-analysis_splits = ["train", "val"]          # the splits of the analysis page
+images_dir = "/data/IRAP_Vietnam_images"   # optional, the segment images of the Analysis page
+analysis_splits = ["train", "val"]          # the splits of the Analysis page, e.g. without test to keep its labels unseen
 ```
 
-On its first start, the server downloads the JavaScript libraries of the map (MapLibre and deck.gl, pinned versions checked by SHA-256) into `data_dir/vendor/`, since MapLibre must be served from the server itself. Without internet access, it starts without the map. The basemap tiles come from Carto, so the map also needs internet access in the browser.
+The data directory holds:
 
-## Submissions
+- `archive.sqlite3`: the index of models and files, the action log and the score cache,
+- `submissions/<id>/predictions.parquet`: the stored files,
+- `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
+- `vendor/`: the map libraries,
+- `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the user name, and its key.
 
-A submission is one prediction file (see the [format](../irap_evaluation/docs/prediction_format.md)), that is one run of a method on one split. Its header gives the dataset, split, method name, seed and context offsets. A file is refused if:
+The database has a schema version and no migrations: the server refuses a data directory of another version, so start with a new `data_dir`.
 
-- the file is not a valid prediction file,
-- its dataset is not configured, or its attributes or iRAP codes differ from the dataset's,
-- it lacks segments of its evaluation sets ([evaluation sets](../irap_evaluation/docs/evaluation.md#evaluation-sets)),
-- it is not distinct from the runs of its method on that split that are not deleted (`irap_evaluation.check_runs_distinct`). The Seed field of the upload form replaces the seed in the header, and the action log records the original one.
+## Models and files
+
+A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). It has at most one active file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
+
+### Uploads
+
+A file is refused if:
+
+- it is not a valid prediction file,
+- its dataset is not configured, or its splits, attributes or iRAP codes are not those of the dataset,
+- it lacks segments of its [evaluation sets](../irap_evaluation/docs/evaluation.md#evaluation-sets),
+- its output kind, context offsets, or training or early stopping splits differ from those of the model's other active files,
+- the method's models would not have distinct seeds or would differ in training or early stopping splits (`irap_evaluation.check_method_models`), since a method is one training recipe and its models are averaged.
 
 Files of unlabeled splits are accepted but not scored.
 
-A `.zip` archive uploads the files of one run on several splits at once. Each file in it is checked as above, and in addition:
+- The Seed field replaces the seed in the header, e.g. to add another model of a method. The action log records the original seed.
+- A file of a split that the model already has replaces the active file, which is [deleted](#deletion).
+- A blank description keeps the model's description.
+- The user confirms replaced files, a restored deleted model, and a replaced description before anything is stored. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
 
-- every member that is not a directory must be a `.parquet` prediction file (other files are refused, not skipped),
-- all files must have the same dataset, method name, seed and context offsets, and distinct splits,
-- the Seed field replaces the seed in all of them.
+A `.zip` archive uploads the files of one model on several splits at once. Every member must be a `.parquet` prediction file (others are refused, not skipped), of the same model, output kind, context offsets, and training and early stopping splits (`archive.MODEL_FILE_FIELDS`), and of distinct splits. Their header `details` may differ. Either all files are stored, each as its own submission, or none. An archive that replaces all active files of a model may change their output kind, context offsets, and training and early stopping splits.
 
-Either all files of an archive are stored, each as its own submission, or none. The action log records the archive name and the name of each file in it.
+### Deletion
 
-The data directory holds `archive.sqlite3` (the index, the action log and the score cache), `submissions/<id>/predictions.parquet` and NiceGUI's per-browser storage.
+The Model page deletes one active file, after a confirmation. If another user has replaced or deleted that file in the meantime, the deletion is refused. A deleted file is kept and can be downloaded, but it cannot be restored, only uploaded again.
+
+Deleting a model's last active file deletes the model. A model without active files is restored only by an upload, so every model that is not deleted has an active file.
+
+A deleted model is left out of the Scores, Analysis and Ensemble pages, and the Models page shows it only with "Show deleted". Its files are kept unchanged, so it can be restored.
 
 ## Scoring
 
-A background thread scores each submission after its upload, on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all runs are scored on the same attributes. Then it computes the intervals of each run and of the mean over the runs of each method.
+A background thread scores each new active file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all models are scored on the same attributes. It then computes the intervals of each model and of the mean over the models of each method.
 
-The scores are cached in the database, with the attribute averages and the per-attribute values. The means over runs, also over a subset of the attributes, are computed from them. Intervals need the per-sequence statistics, which are too large to cache, so the thread computes intervals over a subset from the files when a page asks for them, and caches them.
+The database caches the attribute averages and per-attribute values, from which the means over models are computed, also over any subset of attributes. Intervals and comparisons need per-sequence statistics, which are too large to cache, so the thread recomputes them from the files when a page asks for them, and caches the results.
 
-Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the runs of a method change. At its start, the server scores again the submissions whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason.
+Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the files of a method's models change. At start, the server rescores the active files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason. Deleted files and the files of deleted models are not scored.
 
-## Scores page
+## Scores
 
-The Scores page (`/scores`, also the start page) ranks the methods of a dataset split by an attribute average, with the means over the runs of each method and their bootstrap intervals. A click on a metric header sorts by it, best first. The View select shows one per-attribute metric instead, with attribute rows and method columns. The cells are shaded by their value relative to the other methods in the column (in the row for a per-attribute metric), darkest for the best. The best value is bold, and so are the values whose interval overlaps its interval, a rough sign that they are not clearly worse. Submissions that are being scored, or whose scoring failed, are listed below the table with the reason. Deleted submissions are left out.
+The Scores page shows the means over each method's models with their bootstrap intervals.
 
-The Methods field filters the methods by a regular expression, case-insensitive and matching any part of the name: `foo` shows the methods whose name contains "foo", and `^(foo|bar)$` exactly these two. The shading and the bold values compare the shown methods.
+- Methods trained on the shown split are hidden by default, since their scores are not of held-out data. Methods that used the split for early stopping, or whose training splits are unknown, are marked.
+- The Method filter is a case-insensitive regular expression that matches any part of the name, e.g. `foo`, or `^(foo|bar)$` for exactly these two.
+- On the reference set, "Compare with" adds each method's difference from a reference method, with its interval (`irap_evaluation.compare_methods`, as in `irap-eval compare`). See [comparing methods](../irap_evaluation/docs/evaluation.md#comparing-methods) for how to read them.
+- The attribute filter, here and on the Model page, chooses the attributes that the averages cover. Intervals over a subset are computed a second after the last change and take about 0.4 s per model on Vietnam val and 1–2 s on train.
 
-On the reference set, "Compare with" chooses a reference method, which is shown even if the filter does not match it. The cells of the other shown methods then have a third line: the difference from the reference (Δ), its bootstrap interval, and "better" or "worse" if the interval excludes 0. The differences come from `irap_evaluation.compare_methods`, as `irap-eval compare` computes them. The interval resamples the road sequences once for both methods, so it is usually narrower than the separate intervals suggest, and it includes the variation between the runs of each method. With many methods or attributes, some intervals exclude 0 by chance, so the differences of single attributes are exploratory. Like intervals, a comparison needs the per-sequence statistics, so the background thread computes it from the files (one scoring per run of both methods), row by row, and caches it.
+The URL keeps the view, so it can be shared as a link. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`).
 
-The page of a submission shows its scores on each evaluation set: the attribute averages, and the iRAP metrics and the invalid cells of each attribute, with the metrics shaded relative to the other attributes. A link downloads the `irap-eval evaluate` JSON document over all attributes, without intervals (`/api/submissions/<id>/scores/<set>.json`).
+## Analysis
 
-The attribute filter of both pages chooses the attributes that the averages cover. The URL keeps the subset in repeated `attribute` parameters, so a filtered view can be shared as a link. Values change at once. Intervals over a subset are computed from the files a second after the last change of the filter, which takes about 0.4 s per run on Vietnam val and 1–2 s on train, and are cached.
+The Analysis page shows the predictions of a model (A) for one attribute on an evaluation set of an analysis split:
 
-## Analysis page
+- **Confusion matrix:** labels (rows) × predictions of A (columns), with a column of invalid predictions. Scores count an invalid prediction as the first class (`null_policy="first_class"`), i.e. they add the invalid column to the first.
+- **Segments of a cell:** a click on a cell lists its segments, most confident first, so that confident errors come first.
+- **Map:** segments coloured by outcome, or, with a second model (B), by which of A and B is correct. The segments of the selected cell are highlighted.
+- **Segment details:** a click on a segment shows its context images (at A's context offsets, from `images_dir`), its label, and the distributions predicted by A and B.
 
-The Analysis page (`/analysis`) shows the predictions of one run (A) for one attribute on an evaluation set of an analysis split. The test split can be left out of `analysis_splits`, so that its labels are not browsed.
-
-- **Confusion matrix:** the labeled segments by label (rows) and prediction of A (columns), with a column of invalid predictions. Scores count an invalid prediction as the first class (`null_policy="first_class"`), so the matrix of the scores is this one with the invalid column added to the first. The class table shows the precision, recall and F1 of each class as scored.
-- **Segments of a cell:** a click on a cell lists its segments, the most confident predictions first, so that a cell of errors starts with the confident errors.
-- **Map:** the segments that have a location, coloured by outcome (correct, wrong, invalid, unlabeled). With a second run (B), the colours compare them (both correct, only A correct, only B correct, neither correct). The segments of the selected cell are highlighted.
-- **Segment details:** a click on a segment in the list or on the map shows its context images (at the context offsets of A, from `images_dir`), its label, and the distributions predicted by A and B.
-
-The runs are ordered by amF1 over the attribute subset of the filter, which also restricts the attribute choices. The URL keeps the whole view. The page reads the prediction files of A and B, about 0.1 s on Vietnam val and 0.3 s on train, and keeps the 8 most recently used runs in memory. Deleted submissions are not offered. The submission page links to the analysis of a run.
+The page keeps the 8 most recently used files in memory. Reading and aligning a file takes about 0.06 s on Vietnam val and 0.3 s on train.
 
 ## Ensembles
 
-The Ensemble page (`/ensemble`) creates the ensemble of stored runs with `irap_evaluation.ensemble_predictions`, as `irap-eval ensemble` does: the weighted mean of their distributions, where a hard prediction counts as a one-hot distribution. The members are runs (a method name and seed) of a dataset, each with a weight. A regular expression filters the listed runs by run label, as the Methods field of the Scores page does, and "Select shown" selects the listed ones. Selected runs stay listed, so that every member is visible. One ensemble is stored for each split where every member has a submission, all or none, as a new run with the given method name and seed. Each is checked like an upload, and the action log records its members and weights (action `ensemble`). The ensembles are scored like uploads.
+The Ensemble page creates the weighted mean of the distributions of stored models of a dataset, as `irap-eval ensemble` does (`irap_evaluation.ensemble_predictions`). A hard prediction counts as a one-hot distribution.
 
-Members with different context offsets predict different segments. The option "Only the segments that every member predicts" keeps their common segments.
+- The ensemble is a model with the given method name and seed. It gets a file for each split where every member has an active file, and these replace all files of an existing model of that name, so that all its files are of the same members.
+- Its training splits are the union of its members', and its early stopping splits are its members' that are not training splits (`irap_evaluation.make_ensemble_model`).
+- Members with different context offsets predict different segments. "Only the segments that every member predicts" keeps their common segments.
+- Its files are checked, confirmed and scored like uploads, and the action log records the members and weights. If a member's file changes before the ensemble is stored, the ensemble is refused and can be created again.
 
 ## Coding tables
 
-The submission page downloads the submission as an iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with the packaged template, a coder name (default: the method name) and a coding date. A `.xlsx` file of probabilistic predictions has the probability of each exported code on a second sheet.
+The Model page downloads the active files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
 
-## Layout
+## Development
 
 ```
 irap_evaluation_server/
-├─ config.py        ServerConfig, DatasetConfig, load_server_config
-├─ datasets.py      DatasetContext: the metadata of a dataset and its evaluation sets
-├─ database.py      Connections to the SQLite database
-├─ archive.py       SubmissionArchive: files, SQLite index and action log, upload checks
-├─ scoring.py       Scoring settings, the score cache, means over runs and intervals
-├─ scoring_worker.py  The background thread that scores and computes requested results
-├─ method_ranking.py  The rows of the method table and their order
-├─ method_comparison.py  Comparisons with a reference method (cached requests of the background thread)
-├─ prediction_analysis.py  Outcomes of segments, confusion matrices, segment details
-├─ map_libraries.py   The download of the map libraries
-├─ ensembles.py     Ensembles of stored runs
-├─ coding_table_export.py  The coding table of a submission
-├─ components/      Page frame, native form controls, attribute filter, tables, map, page views, CSS
-├─ pages/           One module per page
-└─ server.py        The irap-eval-server command
+├─ config.py                ServerConfig, DatasetConfig, load_server_config
+├─ datasets.py              DatasetContext: the metadata of a dataset and its evaluation sets
+├─ database.py              Connections to the SQLite database
+├─ archive.py               ModelArchive: models, their files, the SQLite index and action log
+├─ uploads.py               The checks of uploaded files and .zip archives, and their planned updates
+├─ model_listing.py         The models of the Models page, grouped by method
+├─ scoring.py               Scoring settings, the score cache, means over models and intervals
+├─ scoring_worker.py        The background thread that scores and computes requested results
+├─ method_ranking.py        The rows of the method table, their order, and the marks of used splits
+├─ method_comparison.py     Comparisons with a reference method
+├─ prediction_analysis.py   Outcomes of segments, confusion matrices, segment details
+├─ map_libraries.py         The download of the map libraries
+├─ ensembles.py             Ensembles of stored models
+├─ coding_table_export.py   The coding table of the files of a model
+├─ components/              Parts of the pages, e.g. the page frame, form controls, tables and the map
+├─ pages/                   One module per page
+└─ server.py                The irap-eval-server command
 ```
 
 The logic modules (all but `components`, `pages` and `server`) do not import NiceGUI and are tested with pytest:

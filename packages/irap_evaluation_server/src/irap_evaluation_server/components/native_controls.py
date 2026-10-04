@@ -4,10 +4,13 @@ Each `create_*` function creates the control in the current NiceGUI container an
 element. The class `native-control` (`styles.css`) restores the browser's style, which
 Tailwind's reset removes.
 
-A change by the user is also stored in the element's props. NiceGUI renders native tags in the
-render function of the page's root, so any update of the page, e.g. a refreshed table, renders
-them again, and Vue sets the DOM `value` of an input or select from the props, which would
-restore the initial value.
+NiceGUI renders native tags in the render function of the page's root, so any update of the
+page, e.g. a refreshed table, renders them again. Vue then sets a DOM property only if its prop
+has changed since the last render, except `value`, which it sets on each render. A change by the
+user is therefore stored in the element's props: for a select, so that a render does not restore
+the initial `value`, and for a checkbox, so that `checked` matches the DOM and
+`set_native_checkbox_checked` can set it back to an earlier state. A text input has no `value`
+prop (see `create_native_input`), so that text that is being typed is not reset either.
 """
 
 import json
@@ -19,9 +22,9 @@ from nicegui.elements.mixins.text_element import TextElement
 
 def _on_user_change(element: ui.element, prop: str,
                     on_change: T.Callable[[T.Any], T.Any]) -> T.Callable[[T.Any], T.Any]:
-    """A handler of a change event that stores the new value in `element.props[prop]` (see the
-    module docstring) before it calls `on_change`. Its result is returned, so that NiceGUI awaits
-    that of an async `on_change`."""
+    """Makes a handler of a change event that stores the new value in `element.props[prop]` (see
+    the module docstring) before it calls `on_change`. The handler returns the result of
+    `on_change`, so that NiceGUI awaits that of an async `on_change`."""
     def handle(event: T.Any) -> T.Any:
         element.props[prop] = event.args
         element.update()
@@ -36,41 +39,77 @@ def _create_field(label: str) -> ui.element:
     return field
 
 
-def create_native_select(label: str, options: T.Mapping[str, str], value: str,
-                         on_change: T.Callable[[str], T.Any]) -> ui.element:
-    """A labeled `<select>`.
+def _create_options(options: T.Mapping[str, str]) -> None:
+    for option_value, text in options.items():
+        TextElement(tag="option", text=text).props["value"] = option_value
 
-    Args:
-        options: Value -> displayed text.
-        on_change: Gets the new value. It can be async.
-    """
+
+def _create_select(label: str, value: str, on_change: T.Callable[[str], T.Any],
+                   create_options: T.Callable[[], None]) -> ui.element:
     with _create_field(label):
         select = ui.element("select").classes("native-control")
         select.props["value"] = value
         with select:
-            for option_value, text in options.items():
-                TextElement(tag="option", text=text).props["value"] = option_value
+            create_options()
     select.on("change", _on_user_change(select, "value", on_change),
               js_handler="(e) => emit(e.target.value)")
     return select
 
 
+def create_native_select(label: str, options: T.Mapping[str, str], value: str,
+                         on_change: T.Callable[[str], T.Any]) -> ui.element:
+    """Creates a labeled `<select>`.
+
+    Args:
+        options: Value -> displayed text.
+        on_change: Gets the new value. It can be async.
+    """
+    return _create_select(label, value, on_change, lambda: _create_options(options))
+
+
+def create_native_grouped_select(label: str, groups: T.Mapping[str, T.Mapping[str, str]],
+                                 value: str, on_change: T.Callable[[str], T.Any],
+                                 ungrouped: T.Mapping[str, str] | None = None) -> ui.element:
+    """Creates a labeled `<select>` with groups of options (`<optgroup>`).
+
+    Args:
+        groups: Group label -> option value -> displayed text.
+        on_change: Gets the new value. It can be async.
+        ungrouped: Options before the groups, e.g. one for none.
+    """
+    def create_options() -> None:
+        _create_options(ungrouped or {})
+        for group_label, options in groups.items():
+            with ui.element("optgroup") as group:
+                _create_options(options)
+            group.props["label"] = group_label
+
+    return _create_select(label, value, on_change, create_options)
+
+
 def create_native_input(label: str, value: str, on_change: T.Callable[[str], None], *,
                         input_type: str = "text", placeholder: str = "",
                         size: int | None = None) -> ui.element:
-    """A labeled `<input>`. `on_change` gets the value when the input loses focus or Enter is
-    pressed, which is before a click elsewhere is handled.
+    """Creates a labeled `<input>`. `on_change` gets the value when the input loses focus or
+    Enter is pressed, which is before a click elsewhere is handled.
+
+    The initial value is the input's `defaultValue`, not its `value`, so that a render of the page
+    does not reset text that the user is typing (see the module docstring). The input cannot be set
+    from code.
 
     Args:
+        value: The initial value.
+        on_change: Gets the new value. It can be async.
         input_type: The `type` attribute, e.g. 'number'.
         size: The width in characters, or None for the browser default.
     """
     with _create_field(label):
         element = ui.element("input").classes("native-control")
-    element.props.update(type=input_type, value=value, placeholder=placeholder)
+    element.props.update(type=input_type, defaultValue=value, placeholder=placeholder)
     if size is not None:
         element.props["size"] = size
-    element.on("change", _on_user_change(element, "value", on_change),
+    # The result is returned, so that NiceGUI awaits that of an async `on_change`.
+    element.on("change", lambda event: on_change(event.args),
                js_handler="(e) => emit(e.target.value)")
     return element
 
@@ -109,7 +148,7 @@ def set_status(label: ui.label, text: str, is_error: bool = False) -> None:
 
 def create_file_upload_input(label: str, upload_url: str, accept: str,
                              on_status: T.Callable[[dict], None]) -> ui.element:
-    """A labeled file `<input>` that posts the chosen file to `upload_url` as the form field
+    """Creates a labeled file `<input>` that posts the chosen file to `upload_url` as the form field
     'file'.
 
     Args:
@@ -118,7 +157,7 @@ def create_file_upload_input(label: str, upload_url: str, accept: str,
         on_status: Gets `{'status': 'uploading', 'file_name': ...}` when the upload starts,
             then the JSON object of the endpoint, or `{'status': 'error', 'message': ...}`.
             Each also has an 'upload_id', which increases with each upload, so that the reply
-            to a replaced upload can be recognized.
+            to an earlier upload can be recognized.
     """
     with _create_field(label):
         element = ui.element("input").classes("native-control")

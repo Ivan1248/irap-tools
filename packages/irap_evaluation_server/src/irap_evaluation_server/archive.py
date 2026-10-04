@@ -1,14 +1,22 @@
-"""The submissions archive: prediction files on disk, an SQLite index of them and an action log.
+"""The archive of models: their prediction files on disk, an SQLite index of them and an action
+log.
+
+A model (`Model`) is one model of a method on a dataset, e.g. one trained network, identified by
+its dataset, method name and seed. Its submissions (`Submission`) are its prediction files, at most
+one active one per split. A submission of a split that the model already has replaces the active
+one, which is deleted. Deleted submissions are kept, e.g. for download, but cannot be restored,
+only uploaded again. Deleted models are kept and can be restored. Deleting the last active
+submission of a model deletes the model, and an upload restores it, so a model that is not deleted
+has an active submission. There are no logins, so each action records a free-text name of who did
+it.
 
 The data directory holds:
 
-- `archive.sqlite3`: the index of the submissions and the action log,
+- `archive.sqlite3`: the index of the models and submissions, and the action log (and the score
+  cache of `scoring.ScoreStore`),
 - `submissions/<id>/predictions.parquet`: the stored files, which are not modified,
-- `uploads/`: uploaded files and .zip archives that are not yet stored, and the files extracted
-  from archives while they are checked.
-
-Submissions are not removed: a deleted one is marked and can be restored. There are no logins, so
-each action records a free-text name of who did it.
+- `uploads/`: files that are not stored yet: uploaded files and .zip archives, the files
+  extracted from archives or rewritten with another seed, and ensembles.
 """
 
 import dataclasses as dc
@@ -17,88 +25,133 @@ import json
 import math
 import os
 import re
-import shutil
 import sqlite3
 import time
 import typing as T
 import uuid
-import zipfile
-import zlib
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import irap_evaluation as ie
 
 from .database import begin_write, connect, get_utc_now
-from .datasets import DatasetContext
 
-#: The actions that add a submission: an upload, or an ensemble of stored runs (see `ensembles`).
+#: The actions that add submissions: an upload, or an ensemble of stored models (see
+#: `ensembles`).
 AddingActionKind = T.Literal["upload", "ensemble"]
 ADDING_ACTION_KINDS: tuple[str, ...] = T.get_args(AddingActionKind)
-ActionKind = AddingActionKind | T.Literal["delete", "restore"]
+ActionKind = AddingActionKind | T.Literal[
+    "delete", "delete_model", "restore_model", "edit_description"]
+
+#: The version of the database schema (`PRAGMA user_version`). A database of another version is
+#: refused, since there is no migration.
+SCHEMA_VERSION = 3
 
 #: SQLite stores integers as signed 64-bit values.
 _SQLITE_INTEGER_RANGE = range(-2**63, 2**63)
 
-_PREDICTIONS_SUFFIX = ".predictions.parquet"
-_ARCHIVE_SUFFIX = ".zip"
-#: The names of `SubmissionArchive.make_upload_path`.
+PREDICTIONS_SUFFIX = ".predictions.parquet"
+ARCHIVE_SUFFIX = ".zip"
+#: The names of `ModelArchive.make_upload_path`.
 _UPLOAD_NAME_PATTERN = re.compile(
-    rf"[0-9a-f]{{32}}({re.escape(_PREDICTIONS_SUFFIX)}|{re.escape(_ARCHIVE_SUFFIX)})")
+    rf"[0-9a-f]{{32}}({re.escape(PREDICTIONS_SUFFIX)}|{re.escape(ARCHIVE_SUFFIX)})")
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS submissions (
+CREATE TABLE models (
     id INTEGER PRIMARY KEY,
-    file_sha256 TEXT NOT NULL,
     dataset TEXT NOT NULL,
-    split TEXT NOT NULL,
     method_name TEXT NOT NULL,
-    method_seed INTEGER,
-    context_offsets TEXT,
+    seed INTEGER,
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+);
+CREATE UNIQUE INDEX model_identity ON models (dataset, method_name, COALESCE(seed, 'none'));
+CREATE TABLE submissions (
+    id INTEGER PRIMARY KEY,
+    model_id INTEGER NOT NULL REFERENCES models (id),
+    split TEXT NOT NULL,
+    file_sha256 TEXT NOT NULL,
     output_kind TEXT NOT NULL,
+    context_offsets TEXT,
+    training_splits TEXT,
+    early_stopping_splits TEXT NOT NULL,
     num_segments INTEGER NOT NULL,
     num_attributes INTEGER NOT NULL,
     submitter TEXT NOT NULL,
-    description TEXT NOT NULL,
     uploaded_at TEXT NOT NULL,
     deleted_at TEXT
 );
-CREATE TABLE IF NOT EXISTS actions (
+CREATE UNIQUE INDEX active_submission ON submissions (model_id, split) WHERE deleted_at IS NULL;
+CREATE TABLE actions (
     id INTEGER PRIMARY KEY,
     time TEXT NOT NULL,
     actor TEXT NOT NULL,
     action TEXT NOT NULL,
+    model_id INTEGER NOT NULL REFERENCES models (id),
     submission_id INTEGER REFERENCES submissions (id),
     details TEXT NOT NULL
 );
 """
 
+_SUBMISSION_QUERY = ("SELECT s.*, m.dataset, m.method_name, m.seed, m.description, m.created_at,"
+                     " m.deleted_at AS model_deleted_at"
+                     " FROM submissions s JOIN models m ON m.id = s.model_id")
+
+
+@dc.dataclass(frozen=True)
+class Model:
+    """A stored model: one model of a method on a dataset (see the module docstring).
+
+    Attributes:
+        description: Free text about the model, e.g. how it was trained.
+        created_at: The time of its first submission, in UTC.
+        deleted_at: The time of the deletion, in UTC, or None if it is not deleted.
+    """
+
+    id: int
+    dataset: str
+    method_name: str
+    seed: int | None
+    description: str
+    created_at: datetime
+    deleted_at: datetime | None
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
+    @property
+    def label(self) -> str:
+        return ie.format_model_label(self.method_name, self.seed)
+
 
 @dc.dataclass(frozen=True)
 class Submission:
-    """A stored prediction file: one run of a method on one split of a dataset.
+    """A stored prediction file of a model on one split.
 
     The header fields are copies of the header of the file, so that listing does not read the
     files.
 
     Attributes:
-        method: The name and seed of the run. The details are only in the file.
+        training_splits, early_stopping_splits: See `irap_evaluation.ModelInfo`.
         submitter: The free-text name of who uploaded it.
         uploaded_at: The time of the upload, in UTC.
-        deleted_at: The time of the deletion, in UTC, or None if it is not deleted.
+        deleted_at: The time of the deletion or replacement, in UTC, or None if it is the active
+            file of its split.
     """
 
     id: int
-    file_sha256: str
-    dataset: str
+    model: Model
     split: str
-    method: ie.MethodInfo
-    context_offsets: tuple[int, ...] | None
+    file_sha256: str
     output_kind: ie.OutputKind
+    context_offsets: tuple[int, ...] | None
+    training_splits: tuple[str, ...] | None
+    early_stopping_splits: tuple[str, ...]
     num_segments: int
     num_attributes: int
     submitter: str
-    description: str
     uploaded_at: datetime
     deleted_at: datetime | None
 
@@ -107,8 +160,25 @@ class Submission:
         return self.deleted_at is not None
 
     @property
-    def run_label(self) -> str:
-        return self.method.run_label
+    def dataset(self) -> str:
+        return self.model.dataset
+
+    @property
+    def label(self) -> str:
+        return self.model.label
+
+    @property
+    def model_info(self) -> ie.ModelInfo:
+        """The model of the header of the file, without its details."""
+        return ie.ModelInfo(method_name=self.model.method_name,
+                            training_splits=self.training_splits,
+                            early_stopping_splits=self.early_stopping_splits, seed=self.model.seed)
+
+    @property
+    def is_in_use(self) -> bool:
+        """Whether it is the active file of its split and its model is not deleted, so that it
+        is scored and shown."""
+        return not self.is_deleted and not self.model.is_deleted
 
 
 @dc.dataclass(frozen=True)
@@ -118,6 +188,8 @@ class ActionLogEntry:
     Attributes:
         time: In UTC.
         actor: The free-text name of who did it.
+        model_id: The model that it is on.
+        submission_id: The submission that it is on, None for an action on the model.
         details: JSON-compatible details, e.g. the name of an uploaded file.
     """
 
@@ -125,23 +197,22 @@ class ActionLogEntry:
     time: datetime
     actor: str
     action: ActionKind
+    model_id: int
     submission_id: int | None
     details: T.Mapping[str, T.Any]
 
 
 @dc.dataclass(frozen=True)
 class NewSubmission:
-    """A checked prediction file to store with `SubmissionArchive.add_submissions`.
+    """A checked prediction file to store with `ModelArchive.apply_model_update`.
 
     It holds only what the index needs, so that the predictions of several files need not be in
     memory together.
 
     Attributes:
-        file_path: The file, in the same file system as the data directory, e.g. at
-            `SubmissionArchive.make_upload_path`.
-        action: The action that adds it, in the action log.
-        details: The details of the action in the action log, e.g. the name of the uploaded
-            file.
+        file_path: The file, in `ModelArchive.uploads_dir`.
+        details: The details of the action that adds it in the action log, e.g. the name of the
+            uploaded file.
         notes: The notes of `DatasetContext.check_new_predictions`, which the action log
             records with the details (as 'notes').
     """
@@ -151,48 +222,187 @@ class NewSubmission:
     num_segments: int
     num_attributes: int
     file_path: Path
-    action: AddingActionKind
     details: T.Mapping[str, T.Any]
     notes: tuple[str, ...]
 
     @classmethod
     def from_predictions(cls, predictions: ie.Predictions, file_path: Path, *,
-                         action: AddingActionKind, details: T.Mapping[str, T.Any],
-                         notes: T.Sequence[str]) -> T.Self:
+                         details: T.Mapping[str, T.Any], notes: T.Sequence[str]) -> T.Self:
         """Args:
             predictions: The contents of the file, e.g. from `irap_evaluation.read_predictions`.
         """
         return cls(header=predictions.header, output_kind=predictions.output_kind,
                    num_segments=predictions.num_segments,
                    num_attributes=len(predictions.attributes), file_path=file_path,
-                   action=action, details=details, notes=tuple(notes))
+                   details=details, notes=tuple(notes))
+
+    @property
+    def split(self) -> str:
+        return self.header.split
+
+    @property
+    def context_offsets(self) -> tuple[int, ...] | None:
+        return self.header.context_offsets
+
+    @property
+    def training_splits(self) -> tuple[str, ...] | None:
+        return self.header.model.training_splits
+
+    @property
+    def early_stopping_splits(self) -> tuple[str, ...]:
+        return self.header.model.early_stopping_splits
 
 
-def _compute_file_sha256(path: Path) -> str:
+#: The fields that the files of a model share: name -> the getter of a `Submission` or a
+#: `NewSubmission`.
+MODEL_FILE_FIELDS: T.Mapping[str, T.Callable[[Submission | NewSubmission], T.Any]] = {
+    "output kind": lambda s: s.output_kind,
+    "context offsets": lambda s: s.context_offsets,
+    "training splits": lambda s: s.training_splits,
+    "early stopping splits": lambda s: s.early_stopping_splits,
+}
+
+
+def get_differing_model_fields(files: T.Iterable[Submission | NewSubmission]) -> list[str]:
+    """Returns the names of the `MODEL_FILE_FIELDS` in which the files differ."""
+    files = list(files)
+    return [name for name, get in MODEL_FILE_FIELDS.items() if len({get(f) for f in files}) > 1]
+
+
+def describe_model_fields(file: Submission | NewSubmission, names: T.Iterable[str]) -> str:
+    """Formats the values of some `MODEL_FILE_FIELDS` of a file, e.g. those that differ."""
+    return ", ".join(f"{name} {MODEL_FILE_FIELDS[name](file)}" for name in names)
+
+
+@dc.dataclass(frozen=True)
+class ModelUpdate:
+    """New submissions of one model, e.g. of an upload or an ensemble, as planned on the state of
+    the archive (`ModelArchive.plan_model_update`).
+
+    `ModelArchive.apply_model_update` applies it if the archive has not changed since.
+
+    Attributes:
+        new_submissions: Of distinct splits and one model, the model of their headers.
+        action: The action of each new submission in the action log.
+        description: The new description of the model, or None to keep it.
+        model: The model as planned, or None if the update creates it.
+        replaced: Split -> the active submission that a new one replaces.
+        replaces_all_files: Whether the new submissions replace all files of the model, e.g.
+            those of an ensemble, whose files are made of the same members.
+        deleted: Split -> an active submission of another split, which the update deletes if it
+            replaces all files of the model.
+        source_submissions: The submissions that the new ones are made of, e.g. the members of
+            an ensemble, which must still be active when the update is applied.
+    """
+
+    new_submissions: tuple[NewSubmission, ...]
+    action: AddingActionKind
+    description: str | None
+    model: Model | None
+    replaced: T.Mapping[str, Submission]
+    replaces_all_files: bool
+    deleted: T.Mapping[str, Submission]
+    source_submissions: tuple[Submission, ...]
+
+    @property
+    def dataset(self) -> str:
+        return self.new_submissions[0].header.dataset
+
+    @property
+    def method_name(self) -> str:
+        return self.new_submissions[0].header.model.method_name
+
+    @property
+    def seed(self) -> int | None:
+        return self.new_submissions[0].header.model.seed
+
+    @property
+    def label(self) -> str:
+        return ie.format_model_label(self.method_name, self.seed)
+
+    @property
+    def confirmations(self) -> list[str]:
+        """The changes that the user confirms before the update is applied: replaced and deleted
+        files, a restored model, and a description that replaces another one."""
+        def describe(submission: Submission) -> str:
+            return (f"file #{submission.id} of {self.label}, uploaded"
+                    f" {submission.uploaded_at:%Y-%m-%d %H:%M} UTC by {submission.submitter}")
+
+        items = []
+        if self.model is not None and self.model.is_deleted:
+            items.append(f"Restores the deleted model {self.label}.")
+        for split, submission in self.replaced.items():
+            items.append(f"Replaces the {split} {describe(submission)}. It can still be"
+                         f" downloaded, but only an upload restores it.")
+        for split, submission in self.deleted.items():
+            items.append(f"Deletes the {split} {describe(submission)}, since the new files"
+                         f" replace all files of the model. It can still be downloaded, but only"
+                         f" an upload restores it.")
+        if (self.model is not None and self.description is not None and self.model.description
+                and self.description != self.model.description):
+            items.append(f"Changes the description of {self.label} from"
+                         f" {self.model.description!r} to {self.description!r}.")
+        return items
+
+
+def discard_model_update(update: ModelUpdate) -> None:
+    """Removes the files of the new submissions of an update that is not applied, or those that
+    remain after it is applied (the others are moved into the archive)."""
+    for new in update.new_submissions:
+        new.file_path.unlink(missing_ok=True)
+
+
+class _DryRunFinished(Exception):
+    """Ends the transaction of a dry run of `ModelArchive._apply`, which rolls it back."""
+
+
+def compute_file_sha256(path: Path) -> str:
     with path.open("rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
 
 
+def _to_optional_json(values: T.Sequence | None) -> str | None:
+    return None if values is None else json.dumps(list(values))
+
+
+def _from_optional_json(text: str | None) -> tuple | None:
+    return None if text is None else tuple(json.loads(text))
+
+
+def _from_optional_time(text: str | None) -> datetime | None:
+    return None if text is None else datetime.fromisoformat(text)
+
+
+def _to_model(row: sqlite3.Row, id_column: str = "id",
+              deleted_at_column: str = "deleted_at") -> Model:
+    return Model(id=row[id_column], dataset=row["dataset"], method_name=row["method_name"],
+                 seed=row["seed"], description=row["description"],
+                 created_at=datetime.fromisoformat(row["created_at"]),
+                 deleted_at=_from_optional_time(row[deleted_at_column]))
+
+
 def _to_submission(row: sqlite3.Row) -> Submission:
+    """Converts a row of `_SUBMISSION_QUERY`."""
+    model = _to_model(row, id_column="model_id", deleted_at_column="model_deleted_at")
     return Submission(
-        id=row["id"], file_sha256=row["file_sha256"], dataset=row["dataset"], split=row["split"],
-        method=ie.MethodInfo(name=row["method_name"], seed=row["method_seed"]),
-        context_offsets=(None if row["context_offsets"] is None
-                         else tuple(json.loads(row["context_offsets"]))),
-        output_kind=row["output_kind"], num_segments=row["num_segments"],
-        num_attributes=row["num_attributes"], submitter=row["submitter"],
-        description=row["description"], uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
-        deleted_at=None if row["deleted_at"] is None else datetime.fromisoformat(row["deleted_at"]))
+        id=row["id"], model=model, split=row["split"],
+        file_sha256=row["file_sha256"], output_kind=row["output_kind"],
+        context_offsets=_from_optional_json(row["context_offsets"]),
+        training_splits=_from_optional_json(row["training_splits"]),
+        early_stopping_splits=tuple(json.loads(row["early_stopping_splits"])),
+        num_segments=row["num_segments"], num_attributes=row["num_attributes"],
+        submitter=row["submitter"], uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
+        deleted_at=_from_optional_time(row["deleted_at"]))
 
 
 def _to_action_log_entry(row: sqlite3.Row) -> ActionLogEntry:
     return ActionLogEntry(id=row["id"], time=datetime.fromisoformat(row["time"]),
-                          actor=row["actor"], action=row["action"],
+                          actor=row["actor"], action=row["action"], model_id=row["model_id"],
                           submission_id=row["submission_id"], details=json.loads(row["details"]))
 
 
 def check_actor(actor: str) -> str:
-    """The free-text name of who does an action, stripped.
+    """Strips the free-text name of who does an action.
 
     Raises:
         ValueError: If it is empty.
@@ -202,70 +412,176 @@ def check_actor(actor: str) -> str:
     return actor.strip()
 
 
-def _get_submission(connection: sqlite3.Connection, submission_id: int) -> Submission:
-    row = connection.execute("SELECT * FROM submissions WHERE id = ?",
-                             (submission_id,)).fetchone()
-    if row is None:
-        raise LookupError(f"There is no submission #{submission_id}.")
-    return _to_submission(row)
-
-
-def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind,
-                submission_id: int | None, details: T.Mapping[str, T.Any]) -> None:
-    connection.execute(
-        "INSERT INTO actions (time, actor, action, submission_id, details)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (get_utc_now().isoformat(), actor, action, submission_id, json.dumps(details)))
-
-
-def _check_seed_storable(seed: int | None) -> None:
+def check_seed_storable(seed: int | None) -> None:
+    """
+    Raises:
+        ValueError: If `seed` does not fit SQLite's INTEGER.
+    """
     if seed is not None and seed not in _SQLITE_INTEGER_RANGE:
         raise ValueError(f"The seed {seed} does not fit a signed 64-bit integer.")
 
 
-def parse_seed(text: str) -> int | None:
-    """The seed that a user entered, None for a blank text.
+def _get_model(connection: sqlite3.Connection, model_id: int) -> Model:
+    row = connection.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"There is no model #{model_id}.")
+    return _to_model(row)
+
+
+def _find_model(connection: sqlite3.Connection, dataset: str, method_name: str,
+                seed: int | None) -> Model | None:
+    row = connection.execute(
+        "SELECT * FROM models WHERE dataset = ? AND method_name = ? AND seed IS ?",
+        (dataset, method_name, seed)).fetchone()
+    return None if row is None else _to_model(row)
+
+
+def _get_submission(connection: sqlite3.Connection, submission_id: int) -> Submission:
+    row = connection.execute(f"{_SUBMISSION_QUERY} WHERE s.id = ?", (submission_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"There is no file #{submission_id}.")
+    return _to_submission(row)
+
+
+def _list_submissions(connection: sqlite3.Connection, where: str,
+                      parameters: T.Sequence[T.Any] = ()) -> list[Submission]:
+    rows = connection.execute(f"{_SUBMISSION_QUERY} WHERE {where} ORDER BY s.id DESC",
+                              parameters)
+    return [_to_submission(row) for row in rows]
+
+
+def _list_active_submissions(connection: sqlite3.Connection, model_id: int) -> list[Submission]:
+    return _list_submissions(connection, "s.model_id = ? AND s.deleted_at IS NULL", (model_id,))
+
+
+def _get_active_submission(connection: sqlite3.Connection, model_id: int,
+                           split: str) -> Submission | None:
+    submissions = _list_submissions(connection,
+                                    "s.model_id = ? AND s.split = ? AND s.deleted_at IS NULL",
+                                    (model_id, split))
+    return submissions[0] if submissions else None  # At most one (index `active_submission`).
+
+
+def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind, model_id: int,
+                submission_id: int | None, details: T.Mapping[str, T.Any]) -> None:
+    connection.execute(
+        "INSERT INTO actions (time, actor, action, model_id, submission_id, details)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (get_utc_now().isoformat(), actor, action, model_id, submission_id,
+         json.dumps(details)))
+
+
+def _mark_submission_deleted(connection: sqlite3.Connection, submission_id: int) -> None:
+    connection.execute("UPDATE submissions SET deleted_at = ? WHERE id = ?",
+                       (get_utc_now().isoformat(), submission_id))
+
+
+def _set_model_deleted(connection: sqlite3.Connection, model_id: int, is_deleted: bool,
+                       actor: str, details: T.Mapping[str, T.Any]) -> None:
+    """Deletes or restores a model and logs it."""
+    connection.execute("UPDATE models SET deleted_at = ? WHERE id = ?",
+                       (get_utc_now().isoformat() if is_deleted else None, model_id))
+    _log_action(connection, actor, "delete_model" if is_deleted else "restore_model", model_id,
+                None, details)
+
+
+def _set_description(connection: sqlite3.Connection, model: Model, description: str,
+                     actor: str) -> None:
+    """Changes the description of a model, if it differs, and logs it."""
+    if description != model.description:
+        connection.execute("UPDATE models SET description = ? WHERE id = ?",
+                           (description, model.id))
+        _log_action(connection, actor, "edit_description", model.id, None,
+                    {"old_description": model.description, "description": description})
+
+
+def _replace_active_submission(connection: sqlite3.Connection, model: Model, split: str,
+                               expected_id: int | None) -> int | None:
+    """Deletes the active submission of a split, which a new one replaces.
+
+    Args:
+        expected_id: The id of the active submission that the user expects, None for none.
+
+    Returns:
+        The id of the replaced submission, None if the split has none.
 
     Raises:
-        ValueError: If it is not an integer.
+        ValueError: If the active submission is not the expected one, e.g. after a change by
+            another user.
     """
-    if not text.strip():
-        return None
-    try:
-        return int(text)
-    except ValueError:
-        raise ValueError(f"The seed must be an integer, not {text.strip()!r}.") from None
+    active = _get_active_submission(connection, model.id, split)
+    active_id = None if active is None else active.id
+    if active_id != expected_id:
+        raise ValueError(f"The {split} file of {model.label} has changed, e.g. by another user."
+                         f" Try again.")
+    if active_id is not None:
+        _mark_submission_deleted(connection, active_id)
+    return active_id
 
 
-def _check_run_distinct(connection: sqlite3.Connection, dataset: str, split: str,
-                        method: ie.MethodInfo, excluded_id: int | None = None) -> None:
-    """Checks that the run is distinct from the runs of its method that are not deleted (see
-    `irap_evaluation.check_runs_distinct`), apart from `excluded_id`, e.g. a submission being
-    restored.
+def _check_model_invariant(connection: sqlite3.Connection, model_id: int) -> None:
+    """Checks that the active submissions of a model have the same `MODEL_FILE_FIELDS`.
 
     Raises:
-        ValueError: If it is not.
+        ValueError: If they differ.
     """
-    rows = connection.execute(
-        "SELECT * FROM submissions WHERE deleted_at IS NULL AND dataset = ? AND split = ?"
-        " AND method_name = ? AND id IS NOT ?", (dataset, split, method.name, excluded_id))
-    runs = [_to_submission(row) for row in rows]
+    submissions = _list_active_submissions(connection, model_id)
+    if differing := get_differing_model_fields(submissions):
+        # Without the submission ids, which a dry run (`ModelArchive._apply`) rolls back.
+        values = "; ".join(f"{s.split}: {describe_model_fields(s, differing)}"
+                           for s in sorted(submissions, key=lambda s: s.split))
+        raise ValueError(f"The files of the splits of {submissions[0].label} would differ in"
+                         f" {', '.join(differing)}: {values}. The files of a model must have the"
+                         f" same output kind, context offsets, and training and early stopping"
+                         f" splits. To change them, replace all its files together, e.g. with a"
+                         f" .zip archive, or delete the other files first.")
+
+
+def _check_method_invariant(connection: sqlite3.Connection, dataset: str,
+                            method_name: str) -> None:
+    """Checks that the models of a method that are not deleted can be averaged
+    (`irap_evaluation.check_method_models`). Each of these models has an active submission,
+    which gives its splits.
+
+    Raises:
+        ValueError: If they cannot.
+    """
+    submissions = _list_submissions(
+        connection, "m.dataset = ? AND m.method_name = ? AND m.deleted_at IS NULL"
+                    " AND s.deleted_at IS NULL", (dataset, method_name))
+    model_id_to_info = {s.model.id: s.model_info for s in submissions}  # Equal per model.
     try:
-        ie.check_runs_distinct([*(s.method for s in runs), method])
+        ie.check_method_models(model_id_to_info.values())
     except ValueError as e:
-        existing = ", ".join(f"#{s.id} ({s.run_label})" for s in runs)
-        # Another seed of the new run does not help if an existing run has none.
-        remedy = ("Delete it first." if any(s.method.seed is None for s in runs)
-                  else "Delete one of them, or set another seed.")
-        raise ValueError(f"{e} Runs of {method.name!r} on {dataset}/{split}: {existing}."
-                         f" {remedy}") from e
+        # Without the model ids, which a dry run (`ModelArchive._apply`) rolls back.
+        labels = ", ".join(sorted({s.label for s in submissions}))
+        raise ValueError(f"{e} Models of {method_name!r} on {dataset}: {labels}.") from e
 
 
-class SubmissionArchive:
+def _check_sources_in_use(connection: sqlite3.Connection,
+                          sources: T.Iterable[Submission]) -> None:
+    """Checks that the submissions that new ones are made of are still in use
+    (`ModelUpdate.source_submissions`).
+
+    Raises:
+        ValueError: If one is not.
+    """
+    for source in sources:
+        if not _get_submission(connection, source.id).is_in_use:
+            raise ValueError(f"The {source.split} file #{source.id} of {source.label}, which the"
+                             f" new files are made of, or its model has been deleted, e.g. by"
+                             f" another user. Try again.")
+
+
+class ModelArchive:
     """The archive in a data directory (see the module docstring), created on first use.
 
     Each operation opens its own database connection, so the archive can be used from several
     threads.
+
+    Raises:
+        ValueError: If the database of the directory has another schema version
+            (`SCHEMA_VERSION`).
     """
 
     def __init__(self, data_dir: str | Path):
@@ -273,7 +589,19 @@ class SubmissionArchive:
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "submissions").mkdir(exist_ok=True)
         with connect(self.database_path) as connection:
-            connection.executescript(_SCHEMA)
+            self._initialize_schema(connection)
+
+    def _initialize_schema(self, connection: sqlite3.Connection) -> None:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version == SCHEMA_VERSION:
+            return
+        num_tables = connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        if version != 0 or num_tables:
+            raise ValueError(f"The database {self.database_path} is of another version of the"
+                             f" archive ({version}, not {SCHEMA_VERSION}). Use a new data"
+                             f" directory.")
+        connection.executescript(f"BEGIN; {_SCHEMA} PRAGMA user_version = {SCHEMA_VERSION};"
+                                 f" COMMIT;")
 
     @property
     def database_path(self) -> Path:
@@ -286,20 +614,22 @@ class SubmissionArchive:
     def get_predictions_path(self, submission_id: int) -> Path:
         return self.data_dir / "submissions" / str(submission_id) / "predictions.parquet"
 
+    # Uploads ######################################################################################
+
     def make_upload_path(self, file_name: str) -> Path:
-        """A new path in `uploads_dir` for an uploaded file, a .zip archive (see
-        `is_archive_upload`) if `file_name` has that suffix, otherwise a prediction file.
+        """Makes a new path in `uploads_dir` for an uploaded file: a .zip archive if `file_name`
+        has that suffix, otherwise a prediction file.
 
         Args:
             file_name: The name of the file on the uploader's computer.
         """
-        suffix = (_ARCHIVE_SUFFIX if file_name.lower().endswith(_ARCHIVE_SUFFIX)
-                  else _PREDICTIONS_SUFFIX)
+        suffix = (ARCHIVE_SUFFIX if file_name.lower().endswith(ARCHIVE_SUFFIX)
+                  else PREDICTIONS_SUFFIX)
         return self.uploads_dir / f"{uuid.uuid4().hex}{suffix}"
 
     def get_upload_path(self, upload_name: str) -> Path | None:
-        """The path of an upload by the name of its file, None if `make_upload_path` does not
-        make such names, e.g. if a browser sent a name that points outside `uploads_dir`."""
+        """Returns the path of an upload by the name of its file, None if `make_upload_path` does
+        not make such names, e.g. if a browser sent a name that points outside `uploads_dir`."""
         if _UPLOAD_NAME_PATTERN.fullmatch(upload_name) is None:
             return None
         return self.uploads_dir / upload_name
@@ -326,15 +656,43 @@ class SubmissionArchive:
                 pass
         return num_removed
 
-    def list_submissions(self, *, include_deleted: bool = False) -> list[Submission]:
-        """The submissions, newest first."""
+    # Reading ######################################################################################
+
+    def list_models(self, *, include_deleted: bool = False) -> list[Model]:
+        """Lists the models, newest first."""
         where = "" if include_deleted else "WHERE deleted_at IS NULL"
         with connect(self.database_path) as connection:
-            rows = connection.execute(f"SELECT * FROM submissions {where} ORDER BY id DESC")
-            return [_to_submission(row) for row in rows]
+            rows = connection.execute(f"SELECT * FROM models {where} ORDER BY id DESC")
+            return [_to_model(row) for row in rows]
+
+    def get_model(self, model_id: int) -> Model:
+        """Returns the model with this id, also if it is deleted.
+
+        Raises:
+            LookupError: If there is no such model.
+        """
+        with connect(self.database_path) as connection:
+            return _get_model(connection, model_id)
+
+    def list_submissions(self, *, include_deleted_models: bool = False) -> list[Submission]:
+        """Lists the active submission of each split of each model, newest first.
+
+        Args:
+            include_deleted_models: Whether to include those of deleted models, which are not
+                `Submission.is_in_use`.
+        """
+        where = ("s.deleted_at IS NULL" if include_deleted_models
+                 else "s.deleted_at IS NULL AND m.deleted_at IS NULL")
+        with connect(self.database_path) as connection:
+            return _list_submissions(connection, where)
+
+    def list_model_submissions(self, model_id: int) -> list[Submission]:
+        """Lists the submissions of a model, also the deleted ones, newest first."""
+        with connect(self.database_path) as connection:
+            return _list_submissions(connection, "s.model_id = ?", (model_id,))
 
     def get_submission(self, submission_id: int) -> Submission:
-        """The submission with this id, also if it is deleted.
+        """Returns the submission with this id, also if it is deleted.
 
         Raises:
             LookupError: If there is no such submission.
@@ -342,67 +700,114 @@ class SubmissionArchive:
         with connect(self.database_path) as connection:
             return _get_submission(connection, submission_id)
 
-    def list_actions(self, *, submission_id: int | None = None) -> list[ActionLogEntry]:
-        """The actions, newest first, optionally only those on one submission."""
+    def list_actions(self, *, model_id: int | None = None) -> list[ActionLogEntry]:
+        """Lists the actions, newest first, optionally only those on one model and its
+        submissions."""
         query, parameters = "SELECT * FROM actions", ()
-        if submission_id is not None:
-            query, parameters = query + " WHERE submission_id = ?", (submission_id,)
+        if model_id is not None:
+            query, parameters = query + " WHERE model_id = ?", (model_id,)
         with connect(self.database_path) as connection:
             rows = connection.execute(query + " ORDER BY id DESC", parameters)
             return [_to_action_log_entry(row) for row in rows]
 
-    def check_new_run(self, dataset: str, split: str, method: ie.MethodInfo) -> None:
-        """Checks that a run can be stored: its seed fits SQLite's INTEGER, and the run is
-        distinct from the runs of its method that are not deleted (see
-        `irap_evaluation.check_runs_distinct`).
+    # Model updates ################################################################################
 
-        `add_submissions` checks this again in its transaction. Calling it first only refuses a
-        run before an expensive check of its file.
+    def plan_model_update(self, new_submissions: T.Sequence[NewSubmission], *,
+                          action: AddingActionKind, description: str | None,
+                          replaces_all_files: bool = False,
+                          source_submissions: T.Sequence[Submission] = ()) -> ModelUpdate:
+        """Plans storing new submissions of one model, the model of their headers.
+
+        The update creates the model if it does not exist, restores it if it is deleted, and
+        replaces the active submissions of the same splits. It is tried and rolled back, so that
+        a refused update is refused before the user confirms it (`ModelUpdate.confirmations`).
+
+        Args:
+            description: The new description of the model, or None to keep it ('' for a new
+                model).
+            replaces_all_files: Whether the new submissions replace all files of the model, so
+                that the active submissions of other splits are deleted, e.g. for an ensemble,
+                whose files are made of the same members.
+            source_submissions: See `ModelUpdate.source_submissions`.
 
         Raises:
-            ValueError: If the run cannot be stored.
+            ValueError: If there are no new submissions, they are of several models or have a
+                split twice, a seed does not fit SQLite's INTEGER, or the update is refused
+                (see `apply_model_update`).
         """
-        _check_seed_storable(method.seed)
+        if not new_submissions:
+            raise ValueError("At least one new submission is required.")
+        headers = [new.header for new in new_submissions]
+        first = headers[0]
+        identities = {(h.dataset, h.model.method_name, h.model.seed) for h in headers}
+        if len(identities) > 1:
+            raise ValueError(f"The files are of several models: {sorted(map(str, identities))}.")
+        splits = [h.split for h in headers]
+        if len(set(splits)) < len(splits):
+            raise ValueError(f"The files have a split twice: {splits}.")
+        check_seed_storable(first.model.seed)
         with connect(self.database_path) as connection:
-            _check_run_distinct(connection, dataset, split, method)
+            model = _find_model(connection, first.dataset, first.model.method_name,
+                                first.model.seed)
+            active = {} if model is None else {
+                s.split: s for s in _list_active_submissions(connection, model.id)}
+        update = ModelUpdate(
+            new_submissions=tuple(new_submissions), action=action, description=description,
+            model=model, replaced={s: active[s] for s in splits if s in active},
+            replaces_all_files=replaces_all_files,
+            deleted=({s: a for s, a in active.items() if s not in splits} if replaces_all_files
+                     else {}),
+            source_submissions=tuple(source_submissions))
+        try:
+            self._apply(update, actor="dry run", is_dry_run=True)
+        except _DryRunFinished:
+            pass
+        return update
 
-    def add_submissions(self, new_submissions: T.Sequence[NewSubmission], *, submitter: str,
-                        description: str) -> list[Submission]:
-        """Stores prediction files, moved from their `file_path`, and logs the action that adds
-        each of them (`NewSubmission.action`).
+    def apply_model_update(self, update: ModelUpdate, *, submitter: str) -> list[Submission]:
+        """Stores the new submissions of an update, moved from their `file_path`, and logs the
+        actions: the action of each new submission (`ModelUpdate.action`), with the id of the
+        submission that it replaces ('replaced_submission_id'), the deletion of the submissions
+        of other splits, and the restoration of the model and the change of its description, if
+        any.
 
         Either all are stored or none. Files that are not stored stay at their `file_path`.
 
+        Returns:
+            The new submissions, in the order of `update.new_submissions`.
+
         Raises:
-            ValueError: If `submitter` is empty, or `check_new_run` refuses a run, also because
-                of a run stored before it in the same call.
+            ValueError: If `submitter` is empty, the model, the active submission of a split, or
+                a source submission has changed since the update was planned, the active
+                submissions of the model would differ (see `_check_model_invariant`), or the
+                models of the method could not be averaged (see `_check_method_invariant`).
         """
-        submitter = check_actor(submitter)
-        for new in new_submissions:
-            _check_seed_storable(new.header.method.seed)
-        file_sha256s = [_compute_file_sha256(new.file_path) for new in new_submissions]
+        return self._apply(update, check_actor(submitter), is_dry_run=False)
+
+    def _apply(self, update: ModelUpdate, actor: str, is_dry_run: bool) -> list[Submission]:
+        """Applies an update (`apply_model_update`), or, for a dry run, does its checks and
+        writes in a transaction that is rolled back, without moving the files. A dry run ends
+        with `_DryRunFinished`."""
+        file_sha256s = ([""] * len(update.new_submissions) if is_dry_run
+                        else [compute_file_sha256(new.file_path)
+                              for new in update.new_submissions])
         moved_paths: list[tuple[Path, Path]] = []  # (target, source)
         try:
             with begin_write(self.database_path) as connection:
+                _check_sources_in_use(connection, update.source_submissions)
+                model = self._update_model(connection, update, actor)
                 submission_ids = []
-                for new, file_sha256 in zip(new_submissions, file_sha256s, strict=True):
-                    header = new.header
-                    _check_run_distinct(connection, header.dataset, header.split, header.method)
-                    offsets = header.context_offsets
-                    cursor = connection.execute(
-                        "INSERT INTO submissions (file_sha256, dataset, split, method_name,"
-                        " method_seed, context_offsets, output_kind, num_segments,"
-                        " num_attributes, submitter, description, uploaded_at)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (file_sha256, header.dataset, header.split, header.method.name,
-                         header.method.seed,
-                         None if offsets is None else json.dumps(list(offsets)),
-                         new.output_kind, new.num_segments, new.num_attributes, submitter,
-                         description.strip(), get_utc_now().isoformat()))
-                    submission_id = cursor.lastrowid
+                for new, file_sha256 in zip(update.new_submissions, file_sha256s, strict=True):
+                    submission_id = self._insert_submission(connection, model, new, file_sha256,
+                                                            update, actor)
                     submission_ids.append(submission_id)
-                    _log_action(connection, submitter, new.action, submission_id,
-                                {**new.details, "notes": list(new.notes)})
+                if update.replaces_all_files:
+                    self._delete_other_splits(connection, model, update, actor)
+                _check_model_invariant(connection, model.id)
+                _check_method_invariant(connection, model.dataset, model.method_name)
+                if is_dry_run:
+                    raise _DryRunFinished()
+                for new, submission_id in zip(update.new_submissions, submission_ids):
                     target_path = self.get_predictions_path(submission_id)
                     # A directory left by a crash between the move and COMMIT is overwritten.
                     target_path.parent.mkdir(exist_ok=True)
@@ -416,288 +821,138 @@ class SubmissionArchive:
             raise
         return submissions
 
-    def set_submission_deleted(self, submission_id: int, is_deleted: bool, *,
-                               actor: str) -> Submission:
-        """Deletes or restores a submission and logs it.
+    @staticmethod
+    def _update_model(connection: sqlite3.Connection, update: ModelUpdate, actor: str) -> Model:
+        """Checks that the model is as planned, and creates, restores or describes it.
+
+        Raises:
+            ValueError: If the model has changed since the update was planned.
+        """
+        model = _find_model(connection, update.dataset, update.method_name, update.seed)
+        if model != update.model:
+            raise ValueError(f"The model {update.label} has changed since the files were checked,"
+                             f" e.g. by another user. Try again.")
+        description = None if update.description is None else update.description.strip()
+        if model is None:
+            cursor = connection.execute(
+                "INSERT INTO models (dataset, method_name, seed, description, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (update.dataset, update.method_name, update.seed, description or "",
+                 get_utc_now().isoformat()))
+            return _get_model(connection, cursor.lastrowid)
+        if model.is_deleted:
+            _set_model_deleted(connection, model.id, False, actor, {})
+        if description is not None:
+            _set_description(connection, model, description, actor)
+        return _get_model(connection, model.id)
+
+    @staticmethod
+    def _insert_submission(connection: sqlite3.Connection, model: Model, new: NewSubmission,
+                           file_sha256: str, update: ModelUpdate, actor: str) -> int:
+        """Replaces the active submission of the split as planned, and inserts the new one.
+
+        Raises:
+            ValueError: If the active submission of the split has changed since the update was
+                planned.
+        """
+        header = new.header
+        planned = update.replaced.get(header.split)
+        replaced_id = _replace_active_submission(connection, model, header.split,
+                                                 None if planned is None else planned.id)
+        cursor = connection.execute(
+            "INSERT INTO submissions (model_id, split, file_sha256, output_kind, context_offsets,"
+            " training_splits, early_stopping_splits, num_segments, num_attributes, submitter,"
+            " uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (model.id, header.split, file_sha256, new.output_kind,
+             _to_optional_json(header.context_offsets),
+             _to_optional_json(header.model.training_splits),
+             json.dumps(list(header.model.early_stopping_splits)), new.num_segments,
+             new.num_attributes, actor, get_utc_now().isoformat()))
+        details = {**new.details, "notes": list(new.notes)}
+        if replaced_id is not None:
+            details["replaced_submission_id"] = replaced_id
+        _log_action(connection, actor, update.action, model.id, cursor.lastrowid, details)
+        return cursor.lastrowid
+
+    @staticmethod
+    def _delete_other_splits(connection: sqlite3.Connection, model: Model, update: ModelUpdate,
+                             actor: str) -> None:
+        """Deletes the active submissions of the splits without a new submission, as planned
+        (`ModelUpdate.deleted`), and logs it.
+
+        Raises:
+            ValueError: If they have changed since the update was planned.
+        """
+        new_splits = {new.split for new in update.new_submissions}
+        others = {s.split: s.id for s in _list_active_submissions(connection, model.id)
+                  if s.split not in new_splits}
+        if others != {split: s.id for split, s in update.deleted.items()}:
+            raise ValueError(f"The files of {model.label} have changed since the new files were"
+                             f" made, e.g. by another user. Try again.")
+        for submission_id in others.values():
+            _mark_submission_deleted(connection, submission_id)
+            _log_action(connection, actor, "delete", model.id, submission_id,
+                        {"by": update.action})
+
+    # Other changes ################################################################################
+
+    def delete_submission(self, submission_id: int, *, actor: str) -> Submission:
+        """Deletes the active submission of a split and logs it. If it is the last active
+        submission of a model that is not deleted, the model is deleted, too.
 
         Raises:
             LookupError: If there is no such submission.
-            ValueError: If `actor` is empty, the submission is already in that state, or a
-                restored run is no longer distinct from the runs of its method.
+            ValueError: If `actor` is empty, or the submission is already deleted, e.g. after
+                another user replaced it.
         """
         actor = check_actor(actor)
         with begin_write(self.database_path) as connection:
             submission = _get_submission(connection, submission_id)
-            if submission.is_deleted == is_deleted:
-                state = "deleted" if is_deleted else "not deleted"
-                raise ValueError(f"Submission #{submission_id} is already {state}.")
-            if not is_deleted:
-                _check_run_distinct(connection, submission.dataset, submission.split,
-                                    submission.method, excluded_id=submission_id)
-            connection.execute("UPDATE submissions SET deleted_at = ? WHERE id = ?",
-                               (get_utc_now().isoformat() if is_deleted else None,
-                                submission_id))
-            _log_action(connection, actor, "delete" if is_deleted else "restore",
-                        submission_id, {})
+            if submission.is_deleted:
+                raise ValueError(f"File #{submission_id} is already deleted or replaced, e.g. by"
+                                 f" another user.")
+            model = submission.model
+            _mark_submission_deleted(connection, submission_id)
+            _log_action(connection, actor, "delete", model.id, submission_id, {})
+            if not model.is_deleted and not _list_active_submissions(connection, model.id):
+                _set_model_deleted(connection, model.id, True, actor, {"by": "delete"})
             return _get_submission(connection, submission_id)
 
+    def set_model_deleted(self, model_id: int, is_deleted: bool, *, actor: str) -> Model:
+        """Deletes or restores a model and logs it. Its submissions are not changed.
 
-def _override_seed(method: ie.MethodInfo, seed: int | None) -> ie.MethodInfo:
-    """The method with the seed given at the upload, if it is not None."""
-    return method if seed is None else dc.replace(method, seed=seed)
-
-
-def _replace_method(predictions: ie.Predictions, method: ie.MethodInfo) -> ie.Predictions:
-    return dc.replace(predictions, header=dc.replace(predictions.header, method=method))
-
-
-def _get_rewritten_path(uploaded_path: Path) -> Path:
-    """Where `_prepare_upload` writes an uploaded file with a replaced seed."""
-    return uploaded_path.with_name(f"{uploaded_path.name}.rewritten")
-
-
-def _prepare_upload(
-    archive: SubmissionArchive,
-    dataset_contexts: T.Mapping[str, DatasetContext],
-    uploaded: ie.Predictions,
-    uploaded_path: Path,
-    *,
-    seed: int | None,
-    details: T.Mapping[str, T.Any],
-) -> NewSubmission:
-    """Checks the contents of an uploaded prediction file, read from `uploaded_path` (see
-    `add_uploaded_submission`).
-
-    If the seed is replaced, the file is rewritten to `_get_rewritten_path(uploaded_path)`, and
-    the new submission is of that file.
-
-    Args:
-        details: The details of the upload in the action log, without the notes and seeds.
-    """
-    header = uploaded.header
-    method = _override_seed(header.method, seed)
-    is_seed_replaced = method != header.method
-    if header.dataset not in dataset_contexts:
-        raise ValueError(f"The predictions are of the dataset {header.dataset!r}, which the"
-                         f" server does not have. Its datasets: {', '.join(dataset_contexts)}.")
-    archive.check_new_run(header.dataset, header.split, method)
-    notes = dataset_contexts[header.dataset].check_new_predictions(uploaded)
-    # After the checks, since it validates the predictions again.
-    predictions = _replace_method(uploaded, method) if is_seed_replaced else uploaded
-    path = uploaded_path
-    if is_seed_replaced:
-        details = {**details, "original_seed": header.method.seed,
-                   "uploaded_file_sha256": _compute_file_sha256(uploaded_path)}
-        path = _get_rewritten_path(uploaded_path)
-        ie.write_predictions(path, predictions)
-    return NewSubmission.from_predictions(predictions, path, action="upload", details=details,
-                                          notes=notes)
-
-
-def add_uploaded_submission(
-    archive: SubmissionArchive,
-    dataset_contexts: T.Mapping[str, DatasetContext],
-    uploaded_path: Path,
-    *,
-    file_name: str,
-    submitter: str,
-    description: str,
-    seed: int | None = None,
-) -> tuple[Submission, list[str]]:
-    """Checks an uploaded prediction file and stores it in the archive.
-
-    The file must be of a configured dataset, predict attributes of its vocabulary, and be
-    accepted by `irap_evaluation.select_evaluation_sets`. If it is stored, the uploaded file is
-    moved into the archive or removed. Otherwise it is kept, so that the upload can be retried,
-    e.g. with another seed.
-
-    Args:
-        uploaded_path: The uploaded file, at `archive.make_upload_path`.
-        file_name: The name of the file on the uploader's computer, for the action log.
-        seed: If not None, it replaces the seed in the header (`MethodInfo.seed`), e.g. to make
-            the run distinct from another run of its method. The file is then rewritten, and
-            the action log records the original seed and the hash of the uploaded file.
-
-    Returns:
-        The submission and the notes of `select_evaluation_sets`, e.g. that the model is not
-        scored on the reference set.
-
-    Raises:
-        irap_evaluation.PredictionFormatError: If the file is not a valid prediction file, or
-            its attributes or classes differ from the dataset's.
-        ValueError: If `submitter` is empty, the dataset is not configured, or the file is
-            refused by `select_evaluation_sets` or by `SubmissionArchive.check_new_run`.
-    """
-    # The cheap checks come first, so that a refused retry does not wait for the others.
-    submitter = check_actor(submitter)
-    uploaded = ie.read_predictions(uploaded_path)
-    try:
-        new = _prepare_upload(archive, dataset_contexts, uploaded, uploaded_path, seed=seed,
-                              details={"file_name": file_name})
-        [submission] = archive.add_submissions([new], submitter=submitter,
-                                               description=description)
-    finally:
-        _get_rewritten_path(uploaded_path).unlink(missing_ok=True)
-    if new.file_path != uploaded_path:  # Otherwise it is moved into the archive.
-        uploaded_path.unlink()
-    return submission, list(new.notes)
-
-
-def _is_macos_metadata(info: zipfile.ZipInfo) -> bool:
-    """Whether a member is metadata that macOS adds to archives (AppleDouble files)."""
-    return (info.filename.startswith("__MACOSX/")
-            or PurePosixPath(info.filename).name.startswith("._"))
-
-
-def _list_archive_members(zip_file: zipfile.ZipFile, file_name: str) -> list[zipfile.ZipInfo]:
-    members = [info for info in zip_file.infolist()
-               if not info.is_dir() and not _is_macos_metadata(info)]
-    if not members:
-        raise ValueError(f"The archive {file_name} has no files.")
-    if others := [m.filename for m in members if not m.filename.lower().endswith(".parquet")]:
-        raise ValueError(f"The archive {file_name} may hold only prediction files (.parquet)."
-                         f" Other files: {', '.join(others)}.")
-    return members
-
-
-@dc.dataclass(frozen=True)
-class _ArchiveRun:
-    """What the files of an archive must share."""
-
-    dataset: str
-    method_name: str
-    method_seed: int | None
-    context_offsets: tuple[int, ...] | None
-
-    @classmethod
-    def from_header(cls, header: ie.PredictionHeader, seed: int | None) -> T.Self:
-        """Args:
-            seed: The seed given at the upload (see `_override_seed`).
+        Raises:
+            LookupError: If there is no such model.
+            ValueError: If `actor` is empty, the model is already in that state, it is to be
+                restored but has no active submission, or the models of its method could not be
+                averaged after it is restored (see `_check_method_invariant`).
         """
-        method = _override_seed(header.method, seed)
-        return cls(dataset=header.dataset, method_name=method.name, method_seed=method.seed,
-                   context_offsets=header.context_offsets)
+        actor = check_actor(actor)
+        with begin_write(self.database_path) as connection:
+            model = _get_model(connection, model_id)
+            if model.is_deleted == is_deleted:
+                raise ValueError(f"The model {model.label} is already"
+                                 f" {'deleted' if is_deleted else 'not deleted'}.")
+            if not is_deleted and not _list_active_submissions(connection, model_id):
+                raise ValueError(f"The model {model.label} has no active files. Upload a file,"
+                                 f" which restores it.")
+            _set_model_deleted(connection, model_id, is_deleted, actor, {})
+            if not is_deleted:
+                _check_method_invariant(connection, model.dataset, model.method_name)
+            return _get_model(connection, model_id)
 
-    def __str__(self) -> str:
-        run_label = ie.MethodInfo(name=self.method_name, seed=self.method_seed).run_label
-        offsets = self.context_offsets
-        return (f"{run_label} on {self.dataset} with the context offsets"
-                f" {'unknown' if offsets is None else ', '.join(map(str, offsets))}")
+    def set_model_description(self, model_id: int, description: str, *, actor: str) -> Model:
+        """Changes the description of a model and logs it.
 
-
-def _extract_archive_member(zip_file: zipfile.ZipFile, member: zipfile.ZipInfo,
-                            path: Path) -> None:
-    """Extracts a member to `path`.
-
-    Raises:
-        ValueError: If the member cannot be extracted, e.g. it is encrypted, corrupt, or
-            compressed with an unsupported method.
-    """
-    try:
-        with zip_file.open(member) as source, path.open("wb") as target:
-            shutil.copyfileobj(source, target)
-    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError) as e:
-        raise ValueError(f"It cannot be extracted: {e}") from e
-
-
-def add_uploaded_archive(
-    archive: SubmissionArchive,
-    dataset_contexts: T.Mapping[str, DatasetContext],
-    uploaded_path: Path,
-    *,
-    file_name: str,
-    submitter: str,
-    description: str,
-    seed: int | None = None,
-) -> list[tuple[Submission, list[str]]]:
-    """Checks an uploaded .zip archive with the prediction files of one run, one per split, and
-    stores them in the archive.
-
-    Each file is checked as in `add_uploaded_submission`. All must have the same dataset, method
-    name, seed (after `seed` replaces it) and context offsets, and distinct splits. Either all
-    files are stored or none. If they are stored, the uploaded archive is removed. Otherwise it
-    is kept, so that the upload can be retried, e.g. with another seed.
-
-    Args:
-        uploaded_path: The uploaded archive, at `archive.make_upload_path`.
-        file_name: The name of the archive on the uploader's computer, for the action log, which
-            also records the name of each file in it.
-        seed: If not None, it replaces the seed in each header, as in `add_uploaded_submission`.
-
-    Returns:
-        The submissions and their notes, in the order of the files in the archive.
-
-    Raises:
-        ValueError: If `submitter` is empty, the file is not a .zip archive, or it has no files
-            or files without the suffix '.parquet', or a file is refused as in
-            `add_uploaded_submission`, of another run than the first file, or of the split of an
-            earlier file. The message of a refused file starts with its name.
-    """
-    submitter = check_actor(submitter)
-    try:
-        zip_file = zipfile.ZipFile(uploaded_path)
-    except zipfile.BadZipFile as e:
-        raise ValueError(f"{file_name} is not a .zip archive: {e}") from e
-    extracted_paths: list[Path] = []
-    try:
-        prepared: list[NewSubmission] = []
-        with zip_file:
-            first_run_and_member_name: tuple[_ArchiveRun, str] | None = None
-            split_to_member_name: dict[str, str] = {}
-            for member in _list_archive_members(zip_file, file_name):
-                path = archive.make_upload_path(member.filename)
-                extracted_paths.append(path)
-                try:
-                    _extract_archive_member(zip_file, member, path)
-                    uploaded = ie.read_predictions(path)
-                    header = uploaded.header
-                    run = _ArchiveRun.from_header(header, seed)
-                    if first_run_and_member_name is None:
-                        first_run_and_member_name = (run, member.filename)
-                    elif run != first_run_and_member_name[0]:
-                        first_run, first_member_name = first_run_and_member_name
-                        raise ValueError(f"It is of the run {run}, but {first_member_name} is"
-                                         f" of {first_run}. An archive holds the files of one"
-                                         f" run.")
-                    if header.split in split_to_member_name:
-                        raise ValueError(f"It is of the split {header.split!r}, like"
-                                         f" {split_to_member_name[header.split]}. An archive"
-                                         f" holds one file per split.")
-                    split_to_member_name[header.split] = member.filename
-                    prepared.append(_prepare_upload(
-                        archive, dataset_contexts, uploaded, path, seed=seed,
-                        details={"file_name": file_name, "archive_member": member.filename}))
-                except ValueError as e:
-                    raise ValueError(f"{member.filename}: {e}") from e
-        submissions = archive.add_submissions(prepared, submitter=submitter,
-                                              description=description)
-    finally:
-        # Those that are stored are moved into the archive.
-        for path in extracted_paths:
-            path.unlink(missing_ok=True)
-            _get_rewritten_path(path).unlink(missing_ok=True)
-    uploaded_path.unlink()
-    return [(s, list(new.notes)) for s, new in zip(submissions, prepared, strict=True)]
-
-
-def is_archive_upload(uploaded_path: Path) -> bool:
-    """Whether an upload at `SubmissionArchive.make_upload_path` is a .zip archive."""
-    return uploaded_path.name.endswith(_ARCHIVE_SUFFIX)
-
-
-def add_upload(
-    archive: SubmissionArchive,
-    dataset_contexts: T.Mapping[str, DatasetContext],
-    uploaded_path: Path,
-    *,
-    file_name: str,
-    submitter: str,
-    description: str,
-    seed: int | None = None,
-) -> list[tuple[Submission, list[str]]]:
-    """`add_uploaded_archive` for a .zip archive (`is_archive_upload`), otherwise
-    `add_uploaded_submission`, with the same arguments, errors and the submissions in a list."""
-    kwargs = dict(file_name=file_name, submitter=submitter, description=description, seed=seed)
-    if is_archive_upload(uploaded_path):
-        return add_uploaded_archive(archive, dataset_contexts, uploaded_path, **kwargs)
-    return [add_uploaded_submission(archive, dataset_contexts, uploaded_path, **kwargs)]
+        Raises:
+            LookupError: If there is no such model.
+            ValueError: If `actor` is empty, or the description is unchanged.
+        """
+        actor = check_actor(actor)
+        description = description.strip()
+        with begin_write(self.database_path) as connection:
+            model = _get_model(connection, model_id)
+            if description == model.description:
+                raise ValueError("The description is unchanged.")
+            _set_description(connection, model, description, actor)
+            return _get_model(connection, model_id)

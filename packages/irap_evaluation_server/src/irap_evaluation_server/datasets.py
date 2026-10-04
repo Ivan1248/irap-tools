@@ -10,7 +10,7 @@ from irap_data.metadata import IRAPMetadata, load_irap_metadata
 
 from .config import DatasetConfig
 
-#: The names of the evaluation sets that a run can be scored on.
+#: The names of the evaluation sets that a submission can be scored on.
 EVALUATION_SET_NAMES = (ie.REFERENCE_SET_NAME, ie.MODEL_COMPATIBLE_SET_NAME)
 
 
@@ -18,7 +18,7 @@ EVALUATION_SET_NAMES = (ie.REFERENCE_SET_NAME, ie.MODEL_COMPATIBLE_SET_NAME)
 class DatasetContext:
     """A configured dataset with its metadata and cached evaluation sets.
 
-    The cache is shared by the threads that check uploads.
+    The cache is shared by threads, e.g. those that check uploads and the scoring thread.
 
     Attributes:
         name: The dataset name, a key of `irap_data.DATASET_PRESETS`.
@@ -41,8 +41,8 @@ class DatasetContext:
 
     def _get_cached_evaluation_set(self, split: str,
                                    context_offsets: T.Sequence[int] | None) -> ie.EvaluationSet:
-        """The reference set if `context_offsets` is None, otherwise the model-compatible set,
-        computed on first use.
+        """Returns the reference set if `context_offsets` is None, otherwise the
+        model-compatible set, computed on first use.
 
         Raises:
             ValueError: If the dataset has no such split.
@@ -63,20 +63,21 @@ class DatasetContext:
             return self._evaluation_set_cache[key]
 
     def get_reference_set(self, split: str) -> ie.EvaluationSet:
-        """`irap_evaluation.get_reference_set` of a split (see `_get_cached_evaluation_set`)."""
+        """Returns `irap_evaluation.get_reference_set` of a split (see
+        `_get_cached_evaluation_set`)."""
         return self._get_cached_evaluation_set(split, None)
 
     def get_model_compatible_set(self, split: str,
                                  context_offsets: T.Sequence[int]) -> ie.EvaluationSet:
-        """`irap_evaluation.get_model_compatible_set` of a split (see
+        """Returns `irap_evaluation.get_model_compatible_set` of a split (see
         `_get_cached_evaluation_set`)."""
         return self._get_cached_evaluation_set(split, context_offsets)
 
-    def get_run_evaluation_sets(
+    def get_submission_evaluation_sets(
             self, split: str, context_offsets: T.Sequence[int] | None
     ) -> dict[str, ie.EvaluationSet]:
-        """Name -> set, for the evaluation sets that a run of a split can be scored on: the
-        reference set, and the model-compatible set if the context offsets are known.
+        """Returns the evaluation sets that a submission of a split can be scored on, by name:
+        the reference set, and the model-compatible set if the context offsets are known.
 
         Raises:
             ValueError: If the dataset has no such split.
@@ -89,8 +90,8 @@ class DatasetContext:
 
     def select_evaluation_sets(
             self, predictions: ie.Predictions) -> tuple[list[ie.EvaluationSet], list[str]]:
-        """`irap_evaluation.select_evaluation_sets` of a run, with the model-compatible set of
-        the context offsets in its header.
+        """Applies `irap_evaluation.select_evaluation_sets` to predictions, with the
+        model-compatible set of the context offsets in their header.
 
         Raises:
             ValueError: If the predictions are of another dataset or of an unknown split, or
@@ -106,25 +107,27 @@ class DatasetContext:
             None if offsets is None else self.get_model_compatible_set(header.split, offsets))
 
     def check_new_predictions(self, predictions: ie.Predictions) -> list[str]:
-        """Checks the contents of predictions that are to be stored: their attributes and
-        classes (`check_predicted_classes`), and their evaluation sets
-        (`select_evaluation_sets`).
+        """Checks the contents of predictions that are to be stored: the split names of their
+        model (`irap_evaluation.check_split_names`), their attributes and classes
+        (`check_predicted_classes`), and their evaluation sets (`select_evaluation_sets`).
 
         Returns:
             The notes of `select_evaluation_sets`, e.g. that the model is not scored on the
             reference set.
 
         Raises:
-            irap_evaluation.PredictionFormatError: See `check_predicted_classes`.
+            irap_evaluation.PredictionFormatError: For an unknown split name, and see
+                `check_predicted_classes`.
             ValueError: See `select_evaluation_sets`.
         """
+        ie.check_split_names(predictions.header.model, self.split_names)
         self.check_predicted_classes(predictions)
         _, notes = self.select_evaluation_sets(predictions)
         return notes
 
     def find_segment_image(self, segment_id: str) -> Path | None:
-        """The RGB image of a segment in `config.images_dir`, None without an images directory,
-        if the segment has no image, or if its path in the metadata leads outside the
+        """Finds the RGB image of a segment in `config.images_dir`, None without an images
+        directory, if the segment has no image, or if its path in the metadata leads outside the
         directory."""
         images_dir = self.config.images_dir
         relative = self.metadata.segment_id_to_data_paths_rel.get(segment_id, {}).get("rgb")

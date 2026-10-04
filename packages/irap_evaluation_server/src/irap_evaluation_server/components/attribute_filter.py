@@ -33,7 +33,7 @@ class AttributeSubset:
 
     @classmethod
     def from_query(cls, values: T.Sequence[str], options: T.Sequence[str]) -> T.Self:
-        """The subset of the query values, all options if none of them is an option."""
+        """Makes the subset of the query values, all options if none of them is an option."""
         options = tuple(options)
         selected = tuple(a for a in options if a in values)
         return cls(options=options, selected=selected or options,
@@ -48,7 +48,7 @@ class AttributeSubset:
         return len(self.selected) == len(self.options)
 
     def to_query(self) -> tuple[str, ...]:
-        """The query values, none if all attributes are selected."""
+        """Returns the query values, none if all attributes are selected."""
         return () if self.is_all else self.selected
 
     @property

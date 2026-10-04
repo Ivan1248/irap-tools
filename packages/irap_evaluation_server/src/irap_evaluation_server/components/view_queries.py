@@ -16,7 +16,7 @@ VIEW_OPTIONS = {"": "Attribute averages",
 
 def parse_dataset(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, DatasetContext],
                   default: str | None = None) -> str:
-    """The `dataset` parameter.
+    """Parses the `dataset` parameter.
 
     Args:
         default: The dataset without the parameter, by default the first one.
@@ -32,7 +32,7 @@ def parse_dataset(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, D
 
 def parse_dataset_and_split(query: T.Mapping[str, str],
                             dataset_contexts: T.Mapping[str, DatasetContext]) -> tuple[str, str]:
-    """The `dataset` and `split` parameters of a page of any split. They default to the first
+    """Parses the `dataset` and `split` parameters of a page of any split. They default to the first
     dataset and its first analysis split, or its first split.
 
     Raises:
@@ -48,7 +48,7 @@ def parse_dataset_and_split(query: T.Mapping[str, str],
 
 
 def parse_evaluation_set(query: T.Mapping[str, str]) -> str:
-    """The `set` parameter, by default the reference set.
+    """Parses the `set` parameter, which defaults to the reference set.
 
     Raises:
         ValueError: For an unknown evaluation set.
@@ -61,7 +61,7 @@ def parse_evaluation_set(query: T.Mapping[str, str]) -> str:
 
 
 def parse_per_attribute_metric(query: T.Mapping[str, str]) -> str:
-    """The `metric` parameter: a per-attribute metric, or '' for the attribute averages.
+    """Parses the `metric` parameter: a per-attribute metric, or '' for the attribute averages.
 
     Raises:
         ValueError: For an unknown metric.
@@ -74,8 +74,9 @@ def parse_per_attribute_metric(query: T.Mapping[str, str]) -> str:
 
 
 def compile_name_pattern(text: str) -> re.Pattern[str]:
-    """The case-insensitive regular expression of a name filter, e.g. of the methods. Use it with
-    `re.Pattern.search`, so that a part of a name matches, and '' matches all names.
+    """Compiles the case-insensitive regular expression of a name filter, e.g. of the methods.
+    It is meant for `re.Pattern.search`, so that a part of a name matches, and '' matches all
+    names.
 
     Raises:
         ValueError: If `text` is not a valid regular expression.

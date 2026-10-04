@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "irap_evaluation" / "tests"))
 from run_helpers import OTHER_SPLIT
 from synthetic_vietnam import SPLIT, write_metadata_dir
 
-from irap_evaluation_server.archive import SubmissionArchive
+from irap_evaluation_server.archive import ModelArchive
 from irap_evaluation_server.config import DatasetConfig
 from irap_evaluation_server.datasets import load_dataset_contexts
 from irap_evaluation_server.scoring import ScoreStore, ScoringSettings
@@ -41,8 +41,8 @@ def two_split_contexts(metadata_dir):
 
 
 @pytest.fixture
-def archive(tmp_path: Path) -> SubmissionArchive:
-    return SubmissionArchive(tmp_path / "data")
+def archive(tmp_path: Path) -> ModelArchive:
+    return ModelArchive(tmp_path / "data")
 
 
 @pytest.fixture

@@ -12,10 +12,10 @@ from irap_evaluation.metrics import IRAP_MAIN_METRIC, parse_metric_name
 from .archive import Submission
 from .scoring import (
     MethodScores,
-    RunScoring,
-    ScoredRun,
+    ScoredModel,
+    SubmissionScoring,
     compute_method_scores,
-    group_scored_runs_by_method,
+    group_scored_models_by_method,
 )
 
 #: The columns of the method table: the attribute averages of the iRAP protocol, amF1 first.
@@ -48,8 +48,8 @@ def _has_finite_bounds(interval: ie.BootstrapInterval | None) -> bool:
 def compute_highlights(values: T.Sequence[float | None],
                        intervals: T.Sequence[ie.BootstrapInterval | None] | None,
                        is_lower_better: bool) -> list[CellHighlight | None]:
-    """The highlights of values that are compared with each other, e.g. of the methods in a
-    method table column.
+    """Computes the highlights of values that are compared with each other, e.g. of the methods
+    in a method table column.
 
     Only finite values are compared. The others, or all values if fewer than 2 are finite, have
     None.
@@ -79,18 +79,18 @@ def compute_highlights(values: T.Sequence[float | None],
     return [highlight(v, i) for v, i in pairs]
 
 
-def collect_scored_attributes(runs: T.Iterable[ScoredRun]) -> tuple[str, ...]:
-    """The attributes that the runs are scored on, in first-seen order.
+def collect_scored_attributes(models: T.Iterable[ScoredModel]) -> tuple[str, ...]:
+    """Collects the attributes that the models are scored on, in first-seen order.
 
-    The runs of a view normally have the same attributes, since missing attributes are scored as
-    invalid cells. Model-compatible sets can lack labels of some attributes.
+    The models of a view normally have the same attributes, since missing attributes are scored
+    as invalid cells. Model-compatible sets can lack labels of some attributes.
     """
-    return tuple(dict.fromkeys(a for r in runs for a in r.scores.attributes))
+    return tuple(dict.fromkeys(a for m in models for a in m.scores.attributes))
 
 
 def _get_sort_key(metrics: ie.MetricValues[float] | None, metric: str,
                   name: str) -> tuple[bool, float, str]:
-    """The key of `sort_method_scores` and `sort_scored_runs`."""
+    """Returns the sort key of `sort_method_scores` and `sort_scored_models`."""
     value = math.nan if metrics is None else metrics.averages.get(metric, math.nan)
     is_missing = math.isnan(value)
     sign = 1 if ie.is_lower_better(metric) else -1
@@ -98,7 +98,8 @@ def _get_sort_key(metrics: ie.MetricValues[float] | None, metric: str,
 
 
 def sort_method_scores(rows: T.Iterable[MethodScores], metric: str) -> list[MethodScores]:
-    """Best first by the attribute average `metric` (see `irap_evaluation.is_lower_better`).
+    """Sorts methods best first by the attribute average `metric` (see
+    `irap_evaluation.is_lower_better`).
 
     Rows without a value (an error, a metric that the method lacks, or NaN) are last. Ties are
     ordered by method name.
@@ -106,60 +107,100 @@ def sort_method_scores(rows: T.Iterable[MethodScores], metric: str) -> list[Meth
     return sorted(rows, key=lambda r: _get_sort_key(r.metrics, metric, r.method_name))
 
 
-def select_run_metrics(run: ScoredRun,
-                       attributes: T.Sequence[str]) -> ie.MetricValues[float] | None:
-    """The metrics of a run over `attributes` (`irap_evaluation.select_metric_attributes`), None
-    if it is not scored on all of them, or `attributes` is empty."""
-    if not attributes or any(a not in run.scores.attributes for a in attributes):
+def select_model_metrics(model: ScoredModel,
+                         attributes: T.Sequence[str]) -> ie.MetricValues[float] | None:
+    """Selects the metrics of a model over `attributes`
+    (`irap_evaluation.select_metric_attributes`), None if it is not scored on all of them, or
+    `attributes` is empty."""
+    if not attributes or any(a not in model.scores.attributes for a in attributes):
         return None
-    return ie.select_metric_attributes(run.scores.metrics, attributes)
+    return ie.select_metric_attributes(model.scores.metrics, attributes)
 
 
-def sort_scored_runs(runs: T.Iterable[ScoredRun], metric: str,
-                     attributes: T.Sequence[str]) -> list[ScoredRun]:
-    """Best first by the attribute average `metric` over `attributes` (`select_run_metrics`), as
-    `sort_method_scores` sorts methods. Ties are ordered by run label."""
-    return sorted(runs, key=lambda r: _get_sort_key(select_run_metrics(r, attributes), metric,
-                                                    r.submission.run_label))
+def sort_scored_models(models: T.Iterable[ScoredModel], metric: str,
+                       attributes: T.Sequence[str]) -> list[ScoredModel]:
+    """Sorts models best first by the attribute average `metric` over `attributes`
+    (`select_model_metrics`), as `sort_method_scores` sorts methods. Ties are ordered by model
+    label."""
+    return sorted(models, key=lambda m: _get_sort_key(select_model_metrics(m, attributes),
+                                                      metric, m.submission.label))
 
 
-def rank_methods(runs: T.Iterable[ScoredRun], attributes: T.Sequence[str],
-                        sort_metric: str) -> list[MethodScores]:
-    """The scores of each method over `attributes` (`scoring.compute_method_scores`), sorted by
-    `sort_metric` (`sort_method_scores`).
+def rank_methods(models: T.Iterable[ScoredModel], attributes: T.Sequence[str],
+                 sort_metric: str) -> list[MethodScores]:
+    """Computes the scores of each method over `attributes` (`scoring.compute_method_scores`),
+    sorted by `sort_metric` (`sort_method_scores`).
 
     Raises:
         ValueError: If `attributes` is empty.
     """
     return sort_method_scores(
-        [compute_method_scores(name, method_runs, attributes)
-         for name, method_runs in group_scored_runs_by_method(runs).items()],
+        [compute_method_scores(name, method_models, attributes)
+         for name, method_models in group_scored_models_by_method(models).items()],
         sort_metric)
 
 
+def get_method_split_use(row: MethodScores, split: str) -> ie.SplitUse:
+    """Returns what the models of a method used `split` for
+    (`irap_evaluation.ModelInfo.get_split_use`), which is the same for all of them
+    (`irap_evaluation.check_method_models`)."""
+    return row.models[0].submission.model_info.get_split_use(split)
+
+
+def describe_split_use(split_use: ie.SplitUse, split: str) -> str:
+    """Returns a short mark of what a model used a split for, '' if the split is held out.
+    `irap_evaluation.explain_split_use` gives the explanation."""
+    return {"training": f"trained on {split}", "early_stopping": f"early stopping on {split}",
+            "unknown": "training splits unknown", "held_out": ""}[split_use]
+
+
 def select_shown_methods(rows: T.Iterable[MethodScores], pattern: re.Pattern[str],
-                         reference_method: str = "") -> list[MethodScores]:
-    """The rows whose method name matches `pattern` (`re.Pattern.search`), and the row of
-    `reference_method`, which the others are compared with, in their order."""
-    return [r for r in rows if pattern.search(r.method_name) or r.method_name == reference_method]
+                         reference_method: str = "",
+                         hidden_training_split: str | None = None
+                         ) -> tuple[list[MethodScores], int]:
+    """Selects the rows whose method name matches `pattern` (`re.Pattern.search`), and the row
+    of `reference_method`, in their order.
+
+    Args:
+        reference_method: The method that the others are compared with, shown even if it does
+            not match `pattern` or was trained on `hidden_training_split`.
+        hidden_training_split: If not None, the methods trained on this split
+            (`get_method_split_use`) are hidden.
+
+    Returns:
+        The selected rows, and the number of matching rows that are hidden.
+    """
+    shown, num_hidden = [], 0
+    for row in rows:
+        if row.method_name == reference_method:
+            shown.append(row)
+        elif not pattern.search(row.method_name):
+            continue
+        elif (hidden_training_split is not None
+              and get_method_split_use(row, hidden_training_split) == "training"):
+            num_hidden += 1
+        else:
+            shown.append(row)
+    return shown, num_hidden
 
 
-def get_unscored_reason(submission: Submission, scoring: RunScoring | None, is_current: bool,
-                        is_pending: bool) -> str | None:
-    """Why a submission has no current scores, or None if it has them.
+def get_unscored_reason(submission: Submission, scoring: SubmissionScoring | None,
+                        is_current: bool, is_pending: bool) -> str | None:
+    """Explains why a submission has no current scores. Returns None if it has them.
 
     Args:
         scoring: Its stored scoring, or None.
-        is_current: Whether `scoring` is current (`scoring.is_run_scoring_current`).
-        is_pending: Whether the worker is scoring it.
+        is_current: Whether `scoring` is current (`scoring.is_scoring_current`).
+        is_pending: Whether its scoring is queued or running.
     """
     if is_pending:
         return "Scoring…"
-    if scoring is not None and scoring.status == "error":
-        return f"{scoring.message} It is scored again when the server starts."
-    if scoring is None or not is_current:
-        return ("Deleted submissions are not scored." if submission.is_deleted
-                else "Not scored with the current settings and metadata.")
+    if submission.is_in_use and scoring is not None and scoring.status == "error":
+        return f"{scoring.message} It is scored again when the server restarts."
+    if scoring is None or not is_current:  # An 'error' scoring is not current.
+        return ("Deleted files and the files of deleted models are not scored."
+                if not submission.is_in_use
+                else "No scores for the current settings and metadata.")
     if scoring.status == "failed":
         return scoring.message
     return None
