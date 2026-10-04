@@ -351,7 +351,7 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
                          f"<td>{_make_notes_html(row, is_model_compatible_view)}</td></tr>")
     footnote = (f'<div class="muted">* {SINGLE_MODEL_NOTE}</div>'
                 if any(_is_single_model(r) for r in rows) else "")
-    return (make_table_html_from_header(header, html_rows, fits_content=True) + footnote
+    return (make_table_html_from_header(header, html_rows) + footnote
             + _make_highlight_note_html("the other methods in its column", has_best_or_tied=True))
 
 
@@ -378,7 +378,7 @@ def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
             notes=["not predicted" if attribute in r.missing_attributes else "" for r in rows])
         html_rows.append(f"<tr><td>{html.escape(attribute)}</td>{''.join(cells)}</tr>")
     method_labels = [_make_method_label(r, comparisons, split) for r in rows]
-    return (make_table_html(["Attribute", *method_labels], html_rows, fits_content=True)
+    return (make_table_html(["Attribute", *method_labels], html_rows)
             + _make_highlight_note_html("the other methods in its row", has_best_or_tied=True))
 
 
@@ -415,6 +415,6 @@ def make_model_scores_html(scores: MethodScores, state: ResultState) -> str:
                               f'<td class="number">{num_invalid}</td></tr>')
     attribute_header = ["Attribute", *IRAP_ATTRIBUTE_METRIC_NAMES, "Invalid cells"]
     return (f'<div class="score-tables">'
-            f'{make_table_html(["Average", "Value"], average_rows, fits_content=True)}'
-            f"{make_table_html(attribute_header, attribute_rows, fits_content=True)}</div>"
+            f'{make_table_html(["Average", "Value"], average_rows)}'
+            f"{make_table_html(attribute_header, attribute_rows)}</div>"
             f"{_make_highlight_note_html('the other attributes', has_best_or_tied=False)}")

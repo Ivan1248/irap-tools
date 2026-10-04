@@ -37,8 +37,8 @@ def _create_accounts_table(sessions: AccountSessions) -> None:
         # Plain HTML, which a render of the page does not change, so a select keeps the user's
         # choice until the table is refreshed after the change.
         ui.html(make_table_html(["Account", "Permission", "Registered", ""],
-                                [_make_account_row_html(a) for a in accounts.list_accounts()],
-                                fits_content=True), sanitize=False).on(
+                                [_make_account_row_html(a) for a in accounts.list_accounts()]),
+                sanitize=False).on(
             "change", lambda e: on_permission_changed(e.args["name"], e.args["permission"]),
             js_handler="(e) => { const select = e.target.closest('[data-permission-of]');"
                        " if (select) emit({name: select.dataset.permissionOf,"

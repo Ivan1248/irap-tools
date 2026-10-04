@@ -60,22 +60,15 @@ def make_code_spans_html(text: str) -> str:
                    for i, p in enumerate(parts))
 
 
-def make_table_html(header_cells: T.Sequence[str], rows: T.Sequence[str],
-                    fits_content: bool = False) -> str:
+def make_table_html(header_cells: T.Sequence[str], rows: T.Sequence[str]) -> str:
     """Makes a `data-table` (`styles.css`) of escaped header texts and `<tr>` rows."""
     return make_table_html_from_header(
-        "".join(f"<th>{html.escape(cell)}</th>" for cell in header_cells), rows, fits_content)
+        "".join(f"<th>{html.escape(cell)}</th>" for cell in header_cells), rows)
 
 
-def make_table_html_from_header(header_html: str, rows: T.Sequence[str],
-                                fits_content: bool = False) -> str:
-    """Makes a `data-table` (`styles.css`) of `<th>` header cells and `<tr>` rows.
-
-    Args:
-        fits_content: Whether the table is as wide as its content instead of its container.
-    """
-    classes = "data-table fits-content" if fits_content else "data-table"
-    return (f'<table class="{classes}"><thead><tr>{header_html}</tr></thead>'
+def make_table_html_from_header(header_html: str, rows: T.Sequence[str]) -> str:
+    """Makes a `data-table` (`styles.css`) of `<th>` header cells and `<tr>` rows."""
+    return (f'<table class="data-table"><thead><tr>{header_html}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 

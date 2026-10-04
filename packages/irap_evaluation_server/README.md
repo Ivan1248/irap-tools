@@ -244,8 +244,8 @@ The logic modules (all but `components`, `pages` and `server`) do not import Nic
 python -m pytest packages/irap_evaluation_server/tests
 ```
 
-[`scripts/add_synthetic_models.py`](scripts/add_synthetic_models.py) fills an archive with synthetic Vietnam models and an ensemble, e.g. to try the pages:
+[`scripts/add_synthetic_predictions.py`](scripts/add_synthetic_predictions.py) fills an archive with synthetic Vietnam predictions and those of an ensemble, e.g. to try the pages:
 
 ```bash
-python packages/irap_evaluation_server/scripts/add_synthetic_models.py server.toml
+python packages/irap_evaluation_server/scripts/add_synthetic_predictions.py server.toml
 ```

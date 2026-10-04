@@ -1,4 +1,4 @@
-"""Synthetic models, their uploads and scoring, for the tests."""
+"""Synthetic predictions, their uploads and scoring, for the tests."""
 
 import dataclasses as dc
 import math
