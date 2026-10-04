@@ -24,7 +24,7 @@ uv pip install "irap-data @ git+https://github.com/Ivan1248/irap-tools#subdirect
                "irap-evaluation[xlsx] @ git+https://github.com/Ivan1248/irap-tools#subdirectory=packages/irap_evaluation"
 ```
 
-The `xlsx` extra (openpyxl) is needed only for `.xlsx` coding tables.
+The `xlsx` extra (xlsxwriter) is needed only for `.xlsx` coding tables.
 
 ## Command-line use
 

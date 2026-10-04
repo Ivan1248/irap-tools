@@ -276,10 +276,8 @@ def write_coding_table(path: str | Path, table: pd.DataFrame,
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix == ".xlsx":
-        with pd.ExcelWriter(path) as writer:
-            table.to_excel(writer, sheet_name="Coding table", index=False)
-            if confidence_table is not None:
-                confidence_table.to_excel(writer, sheet_name="Confidence", index=False)
+        _write_xlsx(path, {"Coding table": table} if confidence_table is None
+                    else {"Coding table": table, "Confidence": confidence_table})
         return [path]
     if path.suffix == ".csv":
         table.to_csv(path, index=False)
@@ -289,3 +287,25 @@ def write_coding_table(path: str | Path, table: pd.DataFrame,
         confidence_table.to_csv(confidence_path, index=False)
         return [path, confidence_path]
     raise ValueError(f"Expected a .xlsx or .csv path, got {path}.")
+
+
+def _write_xlsx(path: Path, sheet_name_to_table: T.Mapping[str, pd.DataFrame]) -> None:
+    """Writes each table as a sheet, with the column names as the first row and missing values
+    as blank cells.
+
+    The rows are written with xlsxwriter, since `DataFrame.to_excel` is about 3 times slower
+    with either engine (2026-10-04). Strings are written as text, not as formulas or URLs.
+    """
+    import xlsxwriter  # The `xlsx` extra.
+
+    # `constant_memory` writes each row to disk when the next one starts.
+    with xlsxwriter.Workbook(path, {"constant_memory": True}) as workbook:
+        for sheet_name, table in sheet_name_to_table.items():
+            sheet = workbook.add_worksheet(sheet_name)
+            sheet.add_write_handler(
+                str, lambda sheet, row, col, text, *args: sheet.write_string(row, col, text, *args))
+            sheet.write_row(0, 0, table.columns)
+            rows = table.astype(object).where(table.notna(), None).itertuples(index=False,
+                                                                              name=None)
+            for i, row in enumerate(rows, start=1):
+                sheet.write_row(i, 0, row)

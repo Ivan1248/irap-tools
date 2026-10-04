@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "openpyxl"]
 
 [project.scripts]
 irap-eval-server = "irap_evaluation_server.server:main"

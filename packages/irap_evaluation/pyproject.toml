@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-xlsx = ["openpyxl"]
-test = ["pytest"]
+xlsx = ["xlsxwriter"]
+test = ["pytest", "openpyxl"]
 
 [project.scripts]
 irap-eval = "irap_evaluation.tools.cli:main"

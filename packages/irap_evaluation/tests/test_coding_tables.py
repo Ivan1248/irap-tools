@@ -55,7 +55,8 @@ def test_template_rejects_unknown_columns(template):
 def test_coding_table(metadata, template, tmp_path):
     segments = list(reversed(metadata.splits[SPLIT]))
     predictions = make_predictions(metadata.vocabulary, segments, name="m", seed=0)
-    table = predictions_to_coding_table([predictions], metadata, template, coder_name="m",
+    # Written as text, not as a formula.
+    table = predictions_to_coding_table([predictions], metadata, template, coder_name="=1+1",
                                         coding_date="2026-09-28")
     assert tuple(table.columns) == template.columns
     # Rows follow the road sequences, whatever the order of the predictions.
@@ -77,7 +78,11 @@ def test_coding_table(metadata, template, tmp_path):
     np.testing.assert_allclose(confidence["Lane width"].astype(float),
                                predictions.probs["Lane width"][rows].max(1))
     paths = write_coding_table(tmp_path / "table.xlsx", table, confidence)
-    assert pd.read_excel(paths[0], sheet_name=None).keys() == {"Coding table", "Confidence"}
+    sheets = pd.read_excel(paths[0], sheet_name=None, dtype=object)
+    assert sheets.keys() == {"Coding table", "Confidence"}
+    for stored, written in ((sheets["Coding table"], table),
+                            (sheets["Confidence"], confidence)):
+        pd.testing.assert_frame_equal(stored, written.astype(object).where(written.notna(), np.nan))
     csv_paths = write_coding_table(tmp_path / "table.csv", table, confidence)
     assert [p.name for p in csv_paths] == ["table.csv", "table.confidence.csv"]
 
