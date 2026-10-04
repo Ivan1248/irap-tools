@@ -1,6 +1,6 @@
 # iRAP evaluation server
 
-An internal web app that keeps an archive of iRAP models and their prediction files, scores them, and compares, analyses and ensembles them. It is built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/).
+An web app that keeps an archive of model predictions, scores them, and compares, analyses and ensembles them. It is built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/).
 
 | Page | Path | Content |
 |---|---|---|
