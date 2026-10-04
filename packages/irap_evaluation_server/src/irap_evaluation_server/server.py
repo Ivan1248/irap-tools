@@ -93,7 +93,8 @@ def main(argv: list[str] | None = None) -> None:
     # No sad face on NiceGUI's error pages (`nicegui/error.py`, whose SVG has the id "Ebene_1").
     ui.add_css("div:has(> svg#Ebene_1) { display: none; }", shared=True)
     ui.run(host=config.host, port=config.port, title="iRAP evaluation", favicon="🛣️",
-           reload=False, show=False, storage_secret=_load_storage_secret(config.data_dir))
+           reload=False, show=False, storage_secret=_load_storage_secret(config.data_dir),
+           session_middleware_kwargs={"https_only": config.is_served_over_https})
 
 
 if __name__ == "__main__":

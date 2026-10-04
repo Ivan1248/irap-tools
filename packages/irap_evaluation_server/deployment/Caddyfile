@@ -1,0 +1,10 @@
+# Caddy in front of the evaluation server (see ../README.md#public-deployment).
+# Install as /etc/caddy/Caddyfile. Caddy gets and renews a Let's Encrypt certificate for the name.
+strider.zemris.fer.hr {
+	# A .zip archive of all splits of a model can be several hundred MB.
+	request_body {
+		max_size 2GB
+	}
+	# Also forwards the WebSocket connection of NiceGUI.
+	reverse_proxy 127.0.0.1:8600
+}

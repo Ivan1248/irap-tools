@@ -36,6 +36,7 @@ The map of the Analysis page needs internet access:
 data_dir = "data"       # the archive
 host = "127.0.0.1"      # optional, "0.0.0.0" to serve the lab network
 port = 8600             # optional
+is_served_over_https = false   # optional, true behind an HTTPS proxy: the session cookie is then sent only over HTTPS
 
 [datasets.vietnam]      # a key of irap_data.DATASET_PRESETS
 dataset_dir = "/data/IRAP_Vietnam"   # the images (FRAMES/) and the metadata
@@ -76,7 +77,68 @@ The first account to register is an admin. Later accounts can view until an admi
 
 There is no password change. An admin can remove an account with a lost password, so that the user can register the name again. If no admin can sign in any more, stop the server and delete `accounts.sqlite3`, which removes all accounts, so that the next to register becomes the admin. The action log keeps the names.
 
-The app does not limit registrations or sign-in attempts. Use long passwords.
+The app does not limit registrations or sign-in attempts. Use long passwords. See [Public deployment](#public-deployment) for HTTPS.
+
+## Public deployment
+
+On a server with a public DNS name, the app listens only on `127.0.0.1`, and [Caddy](https://caddyserver.com) serves it over HTTPS. The files are in [`deployment/`](deployment/). The steps are for Arch Linux.
+
+1. Install the packages, create a system user, and install the app in a virtual environment:
+
+   ```bash
+   sudo pacman -S --needed caddy git uv
+   sudo useradd --system --create-home --home-dir /srv/irap-eval --shell /usr/bin/nologin irap-eval
+   sudo -u irap-eval -H bash -c 'cd ~ && mkdir -p data \
+       && git clone https://github.com/Ivan1248/irap-tools.git && uv venv venv \
+       && VIRTUAL_ENV=~/venv uv pip install -e irap-tools/packages/irap_data \
+          -e irap-tools/packages/irap_evaluation -e irap-tools/packages/irap_evaluation_server'
+   ```
+
+2. Copy [`deployment/server.toml`](deployment/server.toml) to `/srv/irap-eval/server.toml` and set the dataset directories in it:
+
+   ```bash
+   sudo -u irap-eval cp /srv/irap-eval/irap-tools/packages/irap_evaluation_server/deployment/server.toml /srv/irap-eval/
+   ```
+
+   The user `irap-eval` must be able to read the dataset directories. The service cannot read `/home` (`ProtectHome`), so the datasets must be elsewhere, e.g. under `/data`.
+
+3. Start the app as a service:
+
+   ```bash
+   sudo cp /srv/irap-eval/irap-tools/packages/irap_evaluation_server/deployment/irap-eval-server.service /etc/systemd/system/
+   sudo systemctl enable --now irap-eval-server
+   journalctl -u irap-eval-server -f   # the log
+   ```
+
+4. Register the first account, which becomes the admin, before the app is public. On your computer, forward a port to the app over SSH and open `http://localhost:8600/register`:
+
+   ```bash
+   ssh -L 8600:127.0.0.1:8600 <server>
+   ```
+
+   With `is_served_over_https = true`, the browser may not keep the sign-in over plain HTTP, but the account is registered.
+
+5. Copy [`deployment/Caddyfile`](deployment/Caddyfile) to `/etc/caddy/Caddyfile`, with the server's name in it, and start Caddy:
+
+   ```bash
+   sudo cp /srv/irap-eval/irap-tools/packages/irap_evaluation_server/deployment/Caddyfile /etc/caddy/Caddyfile
+   sudo systemctl enable --now caddy
+   journalctl -u caddy -f   # shows whether the certificate was issued
+   ```
+
+   Caddy gets a Let's Encrypt certificate for the name and renews it. Let's Encrypt must reach the server on port 80 or 443. Caddy also redirects HTTP to HTTPS.
+
+6. Open only SSH, HTTP and HTTPS in the firewall, e.g. with `ufw`:
+
+   ```bash
+   sudo pacman -S ufw
+   sudo ufw allow ssh && sudo ufw allow http && sudo ufw allow https
+   sudo ufw enable && sudo systemctl enable ufw
+   ```
+
+   A network firewall of the institution may also block incoming connections.
+
+To update the app, pull the checkout as `irap-eval` and run `sudo systemctl restart irap-eval-server`. Back up `/srv/irap-eval/data`.
 
 ## Models and files
 

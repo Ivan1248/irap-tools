@@ -43,8 +43,8 @@ def test_load_server_config(tmp_path):
 
 def test_load_server_config_host_and_port(tmp_path):
     config = load_server_config(write_config(
-        tmp_path, 'host = "0.0.0.0"\nport = 9000\n' + VALID_CONFIG))
-    assert (config.host, config.port) == ("0.0.0.0", 9000)
+        tmp_path, 'host = "0.0.0.0"\nport = 9000\nis_served_over_https = true\n' + VALID_CONFIG))
+    assert (config.host, config.port, config.is_served_over_https) == ("0.0.0.0", 9000, True)
 
 
 @pytest.mark.parametrize("text, message", [
@@ -52,6 +52,7 @@ def test_load_server_config_host_and_port(tmp_path):
     ("colour = 1\n" + VALID_CONFIG, "unknown ['colour']"),
     ("port = true\n" + VALID_CONFIG, "expected int"),
     ('port = "80"\n' + VALID_CONFIG, "expected int"),
+    ("is_served_over_https = 1\n" + VALID_CONFIG, "expected bool"),
     (VALID_CONFIG.replace("[datasets.bh]", "[datasets.croatia]"), "unknown datasets"),
     (VALID_CONFIG.replace('analysis_splits = []', ""), "missing ['analysis_splits']"),
     (VALID_CONFIG.replace('dataset_dir = "IRAP_BIH"', 'images_dir = "IRAP_BIH"'),
