@@ -26,7 +26,7 @@ def metadata_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def dataset_contexts(metadata_dir):
     return load_dataset_contexts({"vietnam": DatasetConfig(
-        metadata_dir=metadata_dir, images_dir=None, analysis_splits=(SPLIT,))})
+        dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=(SPLIT,))})
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def two_split_contexts(metadata_dir):
     splits[OTHER_SPLIT] = splits[SPLIT]
     splits_path.write_text(json.dumps(splits), encoding="utf-8")
     return load_dataset_contexts({"vietnam": DatasetConfig(
-        metadata_dir=metadata_dir, images_dir=None, analysis_splits=())})
+        dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=())})
 
 
 @pytest.fixture

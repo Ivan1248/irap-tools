@@ -56,7 +56,7 @@ def disjoint_split_contexts(metadata_dir):
               OTHER_SPLIT: [s for seq in sequences[2:] for s in seq]}
     splits_path.write_text(json.dumps(splits), encoding="utf-8")
     return load_dataset_contexts({"vietnam": DatasetConfig(
-        metadata_dir=metadata_dir, images_dir=None, analysis_splits=())})
+        dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=())})
 
 
 def test_coding_table_of_several_splits(archive, disjoint_split_contexts, tmp_path):

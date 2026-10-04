@@ -200,7 +200,7 @@ def test_out_of_date_scorings_are_scored_again(archive, dataset_contexts, metada
     codes["Number of lanes"] = 1 if codes["Number of lanes"] != 1 else 2
     path.write_text(json.dumps(road_data), encoding="utf-8")
     new_contexts = load_dataset_contexts({"vietnam": DatasetConfig(
-        metadata_dir=metadata_dir, images_dir=None, analysis_splits=(SPLIT,))})
+        dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=(SPLIT,))})
     new_worker = ScoringWorker(archive, store, new_contexts, ScoringSettings(num_resamples=20))
     assert new_worker.get_current_scorings([submission]) == {}
     new_worker.update_all_submissions()

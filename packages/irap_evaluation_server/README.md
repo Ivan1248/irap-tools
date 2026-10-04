@@ -37,10 +37,16 @@ host = "127.0.0.1"      # optional, "0.0.0.0" to serve the lab network
 port = 8600             # optional
 
 [datasets.vietnam]      # a key of irap_data.DATASET_PRESETS
-metadata_dir = "/data/IRAP_Vietnam"
-images_dir = "/data/IRAP_Vietnam_images"   # optional, the segment images of the Analysis page
-analysis_splits = ["train", "val"]          # the splits of the Analysis page, e.g. without test to keep its labels unseen
+dataset_dir = "/data/IRAP_Vietnam"   # the images (FRAMES/) and the metadata
+analysis_splits = ["train", "val"]   # the splits of the Analysis page, e.g. without test to keep its labels unseen
+
+[datasets.bh]
+dataset_dir = "/data/IRAP_BIH"
+metadata_dir = "/data/IRAP_BIH_METADATA"   # optional, default dataset_dir
+analysis_splits = ["train", "val"]
 ```
+
+The image paths in the metadata (`segment_id_to_data_paths_rel.json`) are relative to `dataset_dir`. A Vietnam dataset directory, as [`irap_vietnam_data_preparation`](../irap_vietnam_data_preparation/README.md#directory-layout) builds it, also holds the metadata. Without the images, e.g. on a server with only the metadata files, the Analysis page shows no images.
 
 The data directory holds:
 
@@ -109,7 +115,7 @@ The Analysis page shows the predictions of a model (A) for one attribute on an e
 - **Confusion matrix:** labels (rows) × predictions of A (columns), with a column of invalid predictions. Scores count an invalid prediction as the first class (`null_policy="first_class"`), i.e. they add the invalid column to the first.
 - **Segments of a cell:** a click on a cell lists its segments, most confident first, so that confident errors come first.
 - **Map:** segments coloured by outcome, or, with a second model (B), by which of A and B is correct. The segments of the selected cell are highlighted.
-- **Segment details:** a click on a segment shows its context images (at A's context offsets, from `images_dir`), its label, and the distributions predicted by A and B.
+- **Segment details:** a click on a segment shows its context images (at A's context offsets, from `dataset_dir`), its label, and the distributions predicted by A and B.
 
 The page keeps the 8 most recently used files in memory. Reading and aligning a file takes about 0.06 s on Vietnam val and 0.3 s on train.
 

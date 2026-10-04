@@ -7,8 +7,12 @@ Example::
     port = 8600                   # optional
 
     [datasets.vietnam]            # a key of irap_data.DATASET_PRESETS
-    metadata_dir = "/data/IRAP_Vietnam"
-    images_dir = "/data/IRAP_Vietnam_images"   # optional
+    dataset_dir = "/data/IRAP_Vietnam"
+    analysis_splits = ["train", "val"]
+
+    [datasets.bh]
+    dataset_dir = "/data/IRAP_BIH"
+    metadata_dir = "/data/IRAP_BIH_METADATA"   # optional, default dataset_dir
     analysis_splits = ["train", "val"]
 """
 
@@ -28,14 +32,16 @@ class DatasetConfig:
     """A dataset that the server scores submissions on.
 
     Attributes:
-        metadata_dir: The metadata directory of the release (see `irap_data.load_irap_metadata`).
-        images_dir: The dataset directory with the segment images, or None without images.
+        dataset_dir: The dataset directory, which the image paths of the metadata are relative
+            to (`segment_id_to_data_paths_rel.json`).
+        metadata_dir: The metadata directory of the release (see `irap_data.load_irap_metadata`),
+            e.g. `dataset_dir` for Vietnam.
         analysis_splits: The splits of the Analysis page, e.g. without test to keep its labels
             unseen. All splits are scored.
     """
 
+    dataset_dir: Path
     metadata_dir: Path
-    images_dir: Path | None
     analysis_splits: tuple[str, ...]
 
 
@@ -71,17 +77,16 @@ def _check_type(value: T.Any, expected_type: type, where: str) -> None:
 
 def _to_dataset_config(table: T.Any, base_dir: Path, where: str) -> DatasetConfig:
     _check_type(table, dict, where)
-    _check_keys(table, {"metadata_dir", "analysis_splits"}, {"images_dir"}, where)
-    for key in ("metadata_dir", "images_dir"):
+    _check_keys(table, {"dataset_dir", "analysis_splits"}, {"metadata_dir"}, where)
+    for key in ("dataset_dir", "metadata_dir"):
         if key in table:
             _check_type(table[key], str, f"{where}.{key}")
     splits = table["analysis_splits"]
     _check_type(splits, list, f"{where}.analysis_splits")
     for split in splits:
         _check_type(split, str, f"{where}.analysis_splits")
-    images_dir = table.get("images_dir")
-    return DatasetConfig(metadata_dir=base_dir / table["metadata_dir"],
-                         images_dir=None if images_dir is None else base_dir / images_dir,
+    return DatasetConfig(dataset_dir=base_dir / table["dataset_dir"],
+                         metadata_dir=base_dir / table.get("metadata_dir", table["dataset_dir"]),
                          analysis_splits=tuple(splits))
 
 

@@ -552,8 +552,7 @@ class _AnalysisPage:
                                     self.view.attribute_name)
         dataset = self.context.name
         self.detail_html.set_content(make_segment_detail_html(
-            detail, None if self.context.config.images_dir is None
-            else lambda s: get_segment_image_path(dataset, s)))
+            detail, lambda s: get_segment_image_path(dataset, s)))
 
     # Event handlers ###############################################################################
 

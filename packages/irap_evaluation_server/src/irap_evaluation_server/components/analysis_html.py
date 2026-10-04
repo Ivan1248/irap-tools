@@ -126,23 +126,20 @@ def _make_probability_table_html(detail: SegmentDetail) -> str:
 
 
 def make_segment_detail_html(detail: SegmentDetail,
-                             get_image_url: T.Callable[[str], str] | None) -> str:
+                             get_image_url: T.Callable[[str], str]) -> str:
     """Makes the details of a segment: its context images, road position, location, label and
     predicted distributions.
 
     Args:
-        get_image_url: Segment id -> the URL of its image, or None without images.
+        get_image_url: Segment id -> the URL of its image.
     """
-    if get_image_url is None:
-        images = '<div class="muted">The dataset has no images configured.</div>'
-    else:
-        figures = []
-        for offset, segment_id in detail.context_segment_ids:
-            image = (f'<img src="{html.escape(get_image_url(segment_id))}" alt="No image">'
-                     if segment_id is not None
-                     else '<div class="muted">Outside the road sequence</div>')
-            figures.append(f"<figure>{image}<figcaption>offset {offset}</figcaption></figure>")
-        images = f'<div class="context-images">{"".join(figures)}</div>'
+    figures = []
+    for offset, segment_id in detail.context_segment_ids:
+        image = (f'<img src="{html.escape(get_image_url(segment_id))}" alt="No image">'
+                 if segment_id is not None
+                 else '<div class="muted">Outside the road sequence</div>')
+        figures.append(f"<figure>{image}<figcaption>offset {offset}</figcaption></figure>")
+    images = f'<div class="context-images">{"".join(figures)}</div>'
     road = ("no road sequence" if detail.road_id is None
             else f"road {detail.road_id}, position {detail.position}")
     location = ("no location" if detail.coordinates is None

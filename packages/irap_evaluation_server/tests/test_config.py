@@ -16,28 +16,29 @@ VALID_CONFIG = """
 data_dir = "data"
 
 [datasets.vietnam]
-metadata_dir = "IRAP_Vietnam"
-images_dir = "{images_dir}"
+dataset_dir = "IRAP_Vietnam"
 analysis_splits = ["train", "val"]
 
 [datasets.bh]
-metadata_dir = "IRAP_BH"
+dataset_dir = "IRAP_BIH"
+metadata_dir = "{metadata_dir}"
 analysis_splits = []
 """
 
 
 def test_load_server_config(tmp_path):
-    images_dir = tmp_path.resolve() / "elsewhere" / "images"
+    metadata_dir = tmp_path.resolve() / "elsewhere" / "IRAP_BIH_METADATA"
     config = load_server_config(write_config(
-        tmp_path / "config", VALID_CONFIG.replace("{images_dir}", images_dir.as_posix())))
+        tmp_path / "config", VALID_CONFIG.replace("{metadata_dir}", metadata_dir.as_posix())))
     base_dir = (tmp_path / "config").resolve()
     assert config.data_dir == base_dir / "data"
     assert (config.host, config.port) == (DEFAULT_HOST, DEFAULT_PORT)
     vietnam, bh = config.datasets["vietnam"], config.datasets["bh"]
-    assert vietnam.metadata_dir == base_dir / "IRAP_Vietnam"
-    assert vietnam.images_dir == images_dir  # An absolute path is kept.
+    assert vietnam.dataset_dir == vietnam.metadata_dir == base_dir / "IRAP_Vietnam"
     assert vietnam.analysis_splits == ("train", "val")
-    assert bh.images_dir is None and bh.analysis_splits == ()
+    assert bh.dataset_dir == base_dir / "IRAP_BIH"
+    assert bh.metadata_dir == metadata_dir  # An absolute path is kept.
+    assert bh.analysis_splits == ()
 
 
 def test_load_server_config_host_and_port(tmp_path):
@@ -53,6 +54,8 @@ def test_load_server_config_host_and_port(tmp_path):
     ('port = "80"\n' + VALID_CONFIG, "expected int"),
     (VALID_CONFIG.replace("[datasets.bh]", "[datasets.croatia]"), "unknown datasets"),
     (VALID_CONFIG.replace('analysis_splits = []', ""), "missing ['analysis_splits']"),
+    (VALID_CONFIG.replace('dataset_dir = "IRAP_BIH"', 'images_dir = "IRAP_BIH"'),
+     "missing ['dataset_dir']"),
     (VALID_CONFIG.replace('analysis_splits = []', 'analysis_splits = "val"'), "expected list"),
     ('data_dir = "data"\ndatasets = {}\n', "no datasets"),
 ])

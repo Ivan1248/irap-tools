@@ -1,5 +1,4 @@
 import concurrent.futures
-import dataclasses as dc
 import json
 import time
 
@@ -16,7 +15,7 @@ from irap_evaluation_server.datasets import load_dataset_contexts
 def test_load_dataset_contexts_checks_the_analysis_splits(metadata_dir):
     with pytest.raises(ValueError, match=r"analysis splits \['test'\]"):
         load_dataset_contexts({"vietnam": DatasetConfig(
-            metadata_dir=metadata_dir, images_dir=None, analysis_splits=("test",))})
+            dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=("test",))})
 
 
 def test_unlabeled_split_is_not_scored(metadata_dir):
@@ -31,7 +30,7 @@ def test_unlabeled_split_is_not_scored(metadata_dir):
         del road_data[segment_id]
     road_data_path.write_text(json.dumps(road_data), encoding="utf-8")
     context = load_dataset_contexts({"vietnam": DatasetConfig(
-        metadata_dir=metadata_dir, images_dir=None, analysis_splits=())})["vietnam"]
+        dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=())})["vietnam"]
     predictions = make_predictions(context.metadata.vocabulary, splits["unlabeled_val"],
                                    name="m", seed=0)
     evaluation_sets, notes = context.select_evaluation_sets(
@@ -40,14 +39,12 @@ def test_unlabeled_split_is_not_scored(metadata_dir):
     assert len(notes) == 2 and all("has no labels" in note for note in notes)
 
 
-def test_segment_images_must_be_in_the_images_directory(dataset_contexts, tmp_path):
+def test_segment_images_must_be_in_the_dataset_directory(dataset_contexts, tmp_path):
     context = dataset_contexts["vietnam"]
     segment_id = context.metadata.splits[SPLIT][0]
-    images_dir = tmp_path / "images"
-    path = images_dir / context.metadata.segment_id_to_data_paths_rel[segment_id]["rgb"]
-    assert context.find_segment_image(segment_id) is None  # No images directory.
-    context = dc.replace(context, config=dc.replace(context.config, images_dir=images_dir))
-    assert context.find_segment_image(segment_id) is None
+    path = (context.config.dataset_dir
+            / context.metadata.segment_id_to_data_paths_rel[segment_id]["rgb"])
+    assert context.find_segment_image(segment_id) is None  # No image file.
     path.parent.mkdir(parents=True)
     path.write_bytes(b"png")
     assert context.find_segment_image(segment_id) == path.resolve()

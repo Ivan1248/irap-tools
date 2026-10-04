@@ -126,15 +126,15 @@ class DatasetContext:
         return notes
 
     def find_segment_image(self, segment_id: str) -> Path | None:
-        """Finds the RGB image of a segment in `config.images_dir`, None without an images
-        directory, if the segment has no image, or if its path in the metadata leads outside the
+        """Finds the RGB image of a segment in `config.dataset_dir`, None if the segment has no
+        image, the file does not exist, or its path in the metadata leads outside the
         directory."""
-        images_dir = self.config.images_dir
+        dataset_dir = self.config.dataset_dir
         relative = self.metadata.segment_id_to_data_paths_rel.get(segment_id, {}).get("rgb")
-        if images_dir is None or relative in (None, "NONE"):
+        if relative in (None, "NONE"):
             return None
-        path = (images_dir / relative).resolve()
-        return path if path.is_relative_to(images_dir.resolve()) and path.is_file() else None
+        path = (dataset_dir / relative).resolve()
+        return path if path.is_relative_to(dataset_dir.resolve()) and path.is_file() else None
 
     def check_predicted_classes(self, predictions: ie.Predictions) -> None:
         """Checks that the predicted attributes and their iRAP codes are those of the dataset.
@@ -155,17 +155,17 @@ def load_dataset_contexts(
     """Loads the metadata of each dataset.
 
     Raises:
-        ValueError: If an analysis split is not in the metadata, or an images directory does not
-            exist.
+        ValueError: If a dataset directory does not exist, or an analysis split is not in the
+            metadata.
     """
     contexts = {}
     for name, config in datasets.items():
+        if not config.dataset_dir.is_dir():
+            raise ValueError(f"Dataset {name!r}: the dataset directory {config.dataset_dir} does"
+                             f" not exist.")
         metadata = load_irap_metadata(config.metadata_dir)
         if unknown := [s for s in config.analysis_splits if s not in metadata.splits]:
             raise ValueError(f"Dataset {name!r}: the analysis splits {unknown} are not in"
                              f" {config.metadata_dir}. Its splits: {', '.join(metadata.splits)}.")
-        if config.images_dir is not None and not config.images_dir.is_dir():
-            raise ValueError(f"Dataset {name!r}: the images directory {config.images_dir} does"
-                             f" not exist.")
         contexts[name] = DatasetContext(name=name, config=config, metadata=metadata)
     return contexts
