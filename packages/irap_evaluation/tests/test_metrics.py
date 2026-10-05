@@ -10,6 +10,7 @@ from irap_evaluation.metrics import (
     compute_classification_metrics,
     compute_classification_statistics,
     compute_multi_attribute_metrics,
+    describe_metric,
     get_irap_metric_names,
     is_lower_better,
     parse_metric_name,
@@ -45,6 +46,15 @@ def test_support_restricted_metrics():
     assert metrics["nc_supp5"] == 2
     assert metrics["mF1_supp5"] == pytest.approx(metrics["F1"][:2].mean())
     assert np.isnan(metrics["mF1_supp9"])
+
+
+def test_describe_metric_depends_on_ignore_missing_classes_only_where_it_applies():
+    def is_affected(name: str) -> bool:
+        return (describe_metric(name, ignore_missing_classes=True)
+                != describe_metric(name, ignore_missing_classes=False))
+
+    assert is_affected("mF1") and is_affected("amIoU")
+    assert not any(map(is_affected, ["mF1_supp10", "nc_supp5", "mNLL", "F1", "MCC"]))
 
 
 def test_statistics_ignore_unlabeled_examples_and_sum_over_groups():

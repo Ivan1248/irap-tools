@@ -163,10 +163,15 @@ _BASE_METRIC_DESCRIPTIONS = {
 _COUNT_METRICS = frozenset({"n", "nc"})
 
 
-def describe_metric(name: str) -> str:
+def describe_metric(name: str,
+                    ignore_missing_classes: bool = IRAP_IGNORE_MISSING_CLASSES) -> str:
     """Describes a metric in words, e.g. 'Macro F1 (mF1): the mean of F1 over …', for a tooltip. An
     attribute average gets a sentence about the average, then a line break and the description of
     its per-attribute metric.
+
+    Args:
+        ignore_missing_classes: The setting of `compute_classification_metrics` that the metric
+            was computed with.
 
     Raises:
         ValueError: For an invalid name (`parse_metric_name`).
@@ -176,8 +181,10 @@ def describe_metric(name: str) -> str:
         classes = f"classes with at least {parsed.min_support} labeled examples"
     elif parsed.base in PROBABILISTIC_METRICS:
         classes = "labeled classes"
-    else:
+    elif ignore_missing_classes:
         classes = "classes that are labeled or predicted"
+    else:
+        classes = "all classes"
     description = _BASE_METRIC_DESCRIPTIONS[parsed.base].format(name=parsed.name, classes=classes)
     if parsed.base not in _COUNT_METRICS:
         description += " Lower is better." if is_lower_better(name) else " Higher is better."
