@@ -1,3 +1,4 @@
+import codecs
 import dataclasses as dc
 
 import numpy as np
@@ -85,6 +86,9 @@ def test_coding_table(metadata, template, tmp_path):
         pd.testing.assert_frame_equal(stored, written.astype(object).where(written.notna(), np.nan))
     csv_paths = write_coding_table(tmp_path / "table.csv", table, confidence)
     assert [p.name for p in csv_paths] == ["table.csv", "table.confidence.csv"]
+    for path in csv_paths:
+        assert path.read_bytes().startswith(codecs.BOM_UTF8)
+    assert list(pd.read_csv(csv_paths[0]).columns) == list(template.columns)
 
 
 def test_confidence_table_refuses_hard_predictions(metadata, template, predictions):

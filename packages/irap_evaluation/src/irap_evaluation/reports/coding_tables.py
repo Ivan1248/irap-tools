@@ -265,7 +265,8 @@ def write_coding_table(path: str | Path, table: pd.DataFrame,
     """Writes a coding table as `.xlsx` or `.csv`, depending on the suffix of `path`.
 
     An `.xlsx` file gets the confidence table as a second sheet. With `.csv`, it goes to a
-    separate `<stem>.confidence.csv` file.
+    separate `<stem>.confidence.csv` file. A `.csv` file is UTF-8 with a byte order mark, without
+    which Excel reads it in the ANSI code page and garbles e.g. Vietnamese section names.
 
     Returns:
         The written files.
@@ -280,11 +281,11 @@ def write_coding_table(path: str | Path, table: pd.DataFrame,
                     else {"Coding table": table, "Confidence": confidence_table})
         return [path]
     if path.suffix == ".csv":
-        table.to_csv(path, index=False)
+        table.to_csv(path, index=False, encoding="utf-8-sig")
         if confidence_table is None:
             return [path]
         confidence_path = path.with_suffix(".confidence.csv")
-        confidence_table.to_csv(confidence_path, index=False)
+        confidence_table.to_csv(confidence_path, index=False, encoding="utf-8-sig")
         return [path, confidence_path]
     raise ValueError(f"Expected a .xlsx or .csv path, got {path}.")
 

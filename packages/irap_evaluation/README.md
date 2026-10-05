@@ -117,6 +117,8 @@ evaluation_report.write_evaluation_reports([result], "results/", table_metrics=[
 - location columns: from the dataset metadata, with the end coordinates from the next segment,
 - other columns: blank, with the reason in the template's `_comment`.
 
+A `.csv` file is UTF-8 with a byte order mark, so that Excel shows Vietnamese section names correctly.
+
 ## Layout
 
 The layers import only downward:
