@@ -286,7 +286,7 @@ def to_evaluation_set_tables(
             for key, table in long_table.groupby(list(EVALUATION_SET_COLUMNS), sort=False)}
 
 
-def to_file_name(name: str) -> str:
+def to_valid_file_name(name: str) -> str:
     return re.sub(r"[^\w.-]+", "_", name)
 
 
@@ -296,7 +296,7 @@ def check_model_dir_names(model_labels: T.Iterable[str]) -> None:
     Raises:
         ValueError: If several model labels (`ModelInfo.label`) map to the same directory name.
     """
-    num_models_per_dir = collections.Counter(map(to_file_name, set(model_labels)))
+    num_models_per_dir = collections.Counter(map(to_valid_file_name, set(model_labels)))
     if clashes := sorted(d for d, n in num_models_per_dir.items() if n > 1):
         raise ValueError(f"Several models map to the output directories {clashes}. Rename the"
                          f" methods.")
@@ -356,12 +356,12 @@ def write_evaluation_reports(
     table_files = [(out_dir / "summary_long.csv", long_table.set_index("model"))]
     for key, name_to_table in to_evaluation_set_tables(long_table, table_metrics,
                                                        with_intervals).items():
-        table_files += [(out_dir / to_file_name(f"{table_name}_{'_'.join(key)}.csv"), table)
+        table_files += [(out_dir / to_valid_file_name(f"{table_name}_{'_'.join(key)}.csv"), table)
                         for table_name, table in name_to_table.items()]
-    table_files += [(out_dir / to_file_name(f"method_averages_{'_'.join(key)}.csv"), table)
+    table_files += [(out_dir / to_valid_file_name(f"method_averages_{'_'.join(key)}.csv"), table)
                     for key, table in (method_average_tables or {}).items()]
     json_files = [
-        (out_dir / to_file_name(r.model.label) / to_file_name(
+        (out_dir / to_valid_file_name(r.model.label) / to_valid_file_name(
             f"metrics_{r.evaluation_set.dataset}_{r.evaluation_set.split}"
             f"_{r.evaluation_set.name}.json"),
          json.dumps(to_json_dict(r), indent=2, ensure_ascii=False, allow_nan=False))
