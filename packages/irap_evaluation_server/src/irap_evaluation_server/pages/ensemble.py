@@ -2,6 +2,7 @@
 
 import typing as T
 
+import irap_evaluation as ie
 from fastapi import Request
 from nicegui import run, ui
 
@@ -16,6 +17,7 @@ from ..components.native_controls import (
     create_native_input,
     create_native_select,
     set_native_checkbox_checked,
+    set_native_input_placeholder,
     set_status,
 )
 from ..components.page_frame import create_page_frame, create_write_permission_panel
@@ -31,7 +33,7 @@ from ..ensembles import (
     prepare_ensemble,
 )
 from ..scoring_worker import ScoringWorker
-from ..uploads import parse_description, parse_seed
+from ..uploads import parse_optional_text, parse_seed
 
 _FORM_TITLE = "Create an ensemble"
 
@@ -74,17 +76,20 @@ def _parse_members(member_models: T.Sequence[MemberModel], is_selected: T.Mappin
         try:
             weight = float(text)
         except ValueError:
-            raise ValueError(f"The weight of {model.label} must be a number, got {text!r}."
+            raise ValueError(f"The weight of {model.shown_label} must be a number, got {text!r}."
                              ) from None
         members.append(EnsembleMember(model, weight))
     return members
 
 
-def _describe_plan(plan: EnsemblePlan) -> str:
+def _describe_plan(plan: EnsemblePlan, model: ie.ModelInfo) -> str:
+    """
+    Args:
+        model: `plan.make_model_info()`.
+    """
     text = f"Creates the ensemble on the splits {', '.join(plan.split_to_submissions)}."
     for split, labels in plan.split_to_missing.items():
         text += f" Skips {split}, which has no file of {', '.join(labels)}."
-    model = plan.make_model_info("")
     if model.training_splits is None:
         text += " Its training splits are unknown, since a member's are."
     else:
@@ -114,10 +119,11 @@ def _create_ensemble_form(archive: ModelArchive,
     weight_texts: dict[int, str] = {}
     id_to_checkbox: dict[int, ui.element] = {}
     id_to_container: dict[int, ui.element] = {}
-    id_to_label = {m.model.id: m.model.label for m in member_models}
+    id_to_label = {m.model.id: m.model.shown_label for m in member_models}
     # The labels that the member filter matches.
     matching_labels = set(id_to_label.values())
-    form = {"name": "", "seed": "", "description": "", "intersect_segments": False}
+    form = {"name": "", "display_name": "", "seed": "", "description": "",
+            "intersect_segments": False}
 
     def get_plan(submissions: T.Sequence[Submission]) -> EnsemblePlan:
         """
@@ -130,9 +136,18 @@ def _create_ensemble_form(archive: ModelArchive,
 
     def update_plan() -> None:
         try:
-            set_status(plan_label, _describe_plan(get_plan(submissions)))
+            plan = get_plan(submissions)
         except ValueError as e:
             set_status(plan_label, str(e), is_error=True)
+            set_default_name("")
+            return
+        model = plan.make_model_info()
+        set_status(plan_label, _describe_plan(plan, model))
+        set_default_name(model.method_name)
+
+    def set_default_name(default_name: str) -> None:
+        set_native_input_placeholder(name_input,
+                                     f"blank: {default_name}" if default_name else "")
 
     def set_member(model_id: int, is_checked: bool) -> None:
         is_selected[model_id] = is_checked
@@ -174,9 +189,6 @@ def _create_ensemble_form(archive: ModelArchive,
     async def on_create_clicked() -> None:
         try:
             plan = get_plan(archive.list_submissions())
-            name = form["name"].strip()
-            if not name:
-                raise ValueError("Enter the method name of the ensemble.")
             actor = get_actor()
             seed = parse_seed(form["seed"])
         except ValueError as e:
@@ -186,8 +198,10 @@ def _create_ensemble_form(archive: ModelArchive,
         set_status(status_label, "Creating the ensemble…")
         set_creating(True)
         try:
-            created = await _create(archive, context, plan, method_name=name, seed=seed,
-                                    intersect_segments=form["intersect_segments"],
+            created = await _create(archive, context, plan,
+                                    method_name=parse_optional_text(form["name"]),
+                                    method_display_name=parse_optional_text(form["display_name"]),
+                                    seed=seed, intersect_segments=form["intersect_segments"],
                                     description=form["description"], actor=actor)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             if not client.is_deleted:
@@ -211,7 +225,7 @@ def _create_ensemble_form(archive: ModelArchive,
         status_label.set_text("")
         model = created[0].model
         result_html.set_content(
-            f"Created {make_model_link_html(model.id, model.label)} on the splits"
+            f"Created {make_model_link_html(model.id, model.shown_label)} on the splits"
             f" {', '.join(s.split for s in created)}. It is scored in the background.")
 
     with ui.element("section").classes("panel"):
@@ -237,12 +251,11 @@ def _create_ensemble_form(archive: ModelArchive,
             create_native_button("Unselect shown", lambda: select_shown_members(False))
             filter_status = ui.label().classes("muted")
         with ui.element("div").classes("ensemble-members"):
-            for member_model in sorted(member_models,
-                                       key=lambda m: (m.model.method_name, m.model.label)):
+            for member_model in member_models:  # Sorted by shown label.
                 model_id = member_model.model.id
                 with ui.element("div").classes("ensemble-member") as container:
                     id_to_checkbox[model_id] = create_native_checkbox(
-                        member_model.model.label, False,
+                        member_model.model.shown_label, False,
                         lambda is_checked, i=model_id: set_member(i, is_checked))
                     create_native_input("", "1", lambda text, i=model_id: set_weight(i, text),
                                         input_type="number", size=6)
@@ -250,7 +263,10 @@ def _create_ensemble_form(archive: ModelArchive,
                 id_to_container[model_id] = container
         plan_label = ui.label("Select at least 2 members.").classes("muted")
         with ui.element("div").classes("form-row"):
-            create_native_input("Method name", "", lambda v: form.update(name=v), size=24)
+            name_input = create_native_input("Method name", "", lambda v: form.update(name=v),
+                                             size=40)
+            create_native_input("Display name", "", lambda v: form.update(display_name=v),
+                                placeholder="blank: keep the method's", size=30)
             create_native_input("Seed (optional)", "", lambda v: form.update(seed=v),
                                 input_type="number", size=10)
             create_native_input("Description", "", lambda v: form.update(description=v),
@@ -266,12 +282,13 @@ def _create_ensemble_form(archive: ModelArchive,
 
 
 async def _create(archive: ModelArchive, context: DatasetContext, plan: EnsemblePlan, *,
-                  method_name: str, seed: int | None, intersect_segments: bool,
-                  description: str, actor: str) -> list[Submission]:
+                  method_name: str | None, method_display_name: str | None, seed: int | None,
+                  intersect_segments: bool, description: str, actor: str) -> list[Submission]:
     """Makes the ensemble files (`ensembles.prepare_ensemble`), asks the user to confirm the
     changes, if any, and stores them.
 
     Args:
+        method_name, method_display_name: See `ensembles.prepare_ensemble`.
         actor: The name of the signed-in account.
 
     Returns:
@@ -284,9 +301,9 @@ async def _create(archive: ModelArchive, context: DatasetContext, plan: Ensemble
     """
     client = ui.context.client
     update = await run.io_bound(prepare_ensemble, archive, context, plan,
-                                method_name=method_name, seed=seed,
-                                intersect_segments=intersect_segments,
-                                description=parse_description(description))
+                                method_name=method_name, method_display_name=method_display_name,
+                                seed=seed, intersect_segments=intersect_segments,
+                                description=parse_optional_text(description))
     if update is None:  # The server is stopping.
         return []
     try:

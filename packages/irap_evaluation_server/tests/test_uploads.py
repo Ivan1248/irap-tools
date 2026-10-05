@@ -14,6 +14,7 @@ from irap_evaluation_server.uploads import (
     apply_upload,
     is_archive_upload,
     plan_upload,
+    read_upload_headers,
 )
 
 
@@ -24,9 +25,9 @@ def make_model_files(dataset_contexts, splits=(SPLIT, OTHER_SPLIT), **kwargs):
             for split in splits}
 
 
-def write_archive(path, member_name_to_contents, tmp_path):
+def write_archive(path, member_name_to_contents, tmp_path, compression=zipfile.ZIP_STORED):
     """Writes a .zip archive of predictions, or of texts for other files."""
-    with zipfile.ZipFile(path, "w") as zip_file:
+    with zipfile.ZipFile(path, "w", compression=compression) as zip_file:
         zip_file.writestr("model/", "")  # A directory entry, which is skipped.
         for member_name, contents in member_name_to_contents.items():
             if isinstance(contents, str):
@@ -124,6 +125,29 @@ def test_upload_of_an_archive(archive, two_split_contexts, tmp_path):
         assert submission.file_sha256 == sha256
         assert hashlib.sha256(archive.get_predictions_path(submission.id).read_bytes()
                               ).hexdigest() == sha256
+
+
+@pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_read_upload_headers(archive, two_split_contexts, tmp_path, compression):
+    files = make_model_files(two_split_contexts, model_seed=1)
+    headers = [p.header for p in files.values()]
+    path = write_archive(archive.make_upload_path("m.zip"), files, tmp_path, compression)
+    assert read_upload_headers(path, file_name="m.zip") == headers
+    path = write_upload(archive, next(iter(files.values())))
+    assert read_upload_headers(path, file_name="m") == headers[:1]
+
+
+def test_read_upload_headers_refuses_invalid_files(archive, two_split_contexts, tmp_path,
+                                                   monkeypatch):
+    files = make_model_files(two_split_contexts)
+    path = write_archive(archive.make_upload_path("m.zip"),
+                         {**files, "model/x.parquet": "not parquet"}, tmp_path)
+    with pytest.raises(ValueError, match=r"^model/x\.parquet: "):
+        read_upload_headers(path, file_name="m.zip")
+    path = write_archive(archive.make_upload_path("m.zip"), files, tmp_path)
+    monkeypatch.setattr(uploads, "MAX_UPLOAD_NUM_BYTES", 1000)
+    with pytest.raises(ValueError, match="The files of the archive have more"):
+        read_upload_headers(path, file_name="m.zip")
 
 
 def test_archive_seed_replaces_the_seeds_of_all_files(archive, two_split_contexts, tmp_path):

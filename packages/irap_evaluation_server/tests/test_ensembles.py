@@ -58,18 +58,21 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
     members = [member(submissions, "a", 2.0), member(submissions, "b")]
     plan = plan_ensemble(archive.list_submissions(), "vietnam", members, SPLITS)
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                              seed=7, intersect_segments=False, description="test")
+                              method_display_name="Ensemble", seed=7, intersect_segments=False,
+                              description="test")
     assert update.confirmations == []
     created = archive.apply_model_update(update, submitter="Bo")
-    assert [(s.split, s.label, s.model.description) for s in created] == [
-        (SPLIT, "ens/seed7", "test"), (OTHER_SPLIT, "ens/seed7", "test")]
+    assert [(s.split, s.label, s.shown_label, s.model.description) for s in created] == [
+        (SPLIT, "ens/seed7", "Ensemble/seed7", "test"),
+        (OTHER_SPLIT, "ens/seed7", "Ensemble/seed7", "test")]
     for submission in created:
         stored = ie.read_predictions(archive.get_predictions_path(submission.id))
         expected = ie.ensemble_predictions(
             [ie.read_predictions(archive.get_predictions_path(submissions[(n, submission.split)]
                                                               .id)) for n in "ab"],
-            "ens", seed=7, weights=[2.0, 1.0])
+            "ens", method_display_name="Ensemble", seed=7, weights=[2.0, 1.0])
         assert stored.header == expected.header
+        assert stored.header.model.method_display_name == "Ensemble"
         assert stored.header.model.training_splits == ()
         for attribute in expected.attributes:
             np.testing.assert_array_equal(stored.probs[attribute], expected.probs[attribute])
@@ -84,17 +87,30 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
 
     # The model exists now, so another ensemble with its name and seed replaces its files.
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                              seed=7, intersect_segments=False, description=None)
+                              method_display_name=None, seed=7, intersect_segments=False,
+                              description=None)
     assert len(update.confirmations) == 2
     discard_model_update(update)
     assert not list(archive.uploads_dir.iterdir())
+
+
+def test_an_ensemble_gets_the_default_method_name(archive, two_split_contexts, submissions):
+    plan = plan_ensemble(archive.list_submissions(), "vietnam",
+                         [member(submissions, "b"), member(submissions, "a")], SPLITS)
+    assert plan.make_model_info().method_name == "a_seed1+b"
+    update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name=None,
+                              method_display_name=None, seed=None, intersect_segments=False,
+                              description=None)
+    created = archive.apply_model_update(update, submitter="Bo")
+    assert {(s.label, s.model.method_display_name) for s in created} == {("a_seed1+b", None)}
 
 
 def _prepare(archive, two_split_contexts, submissions, names):
     plan = plan_ensemble(archive.list_submissions(), "vietnam",
                          [member(submissions, n) for n in names], SPLITS)
     return prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                            seed=None, intersect_segments=False, description=None)
+                            method_display_name=None, seed=None, intersect_segments=False,
+                            description=None)
 
 
 def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts, submissions):
@@ -151,5 +167,6 @@ def test_ensemble_files_are_removed_if_it_fails(archive, two_split_contexts, sub
     monkeypatch.setattr(ie, "ensemble_predictions", fail_on_second_split)
     with pytest.raises(ie.PredictionFormatError, match="Refused"):
         prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                         seed=None, intersect_segments=False, description=None)
+                         method_display_name=None, seed=None, intersect_segments=False,
+                         description=None)
     assert not list(archive.uploads_dir.iterdir())

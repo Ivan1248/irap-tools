@@ -48,9 +48,9 @@ def parse_seed(text: str) -> int | None:
         raise ValueError(f"The seed must be an integer, not {text.strip()!r}.") from None
 
 
-def parse_description(text: str) -> str | None:
-    """Parses the description that a user entered with an upload, None for a blank text, which
-    keeps the description of the model."""
+def parse_optional_text(text: str) -> str | None:
+    """Parses an optional text that a user entered, e.g. a description or a method display name
+    with an upload, None for a blank text, which keeps the stored one."""
     return text.strip() or None
 
 
@@ -150,6 +150,18 @@ def _check_same_model(new: NewSubmission, first: NewSubmission, first_member_nam
                          f" and training and early stopping splits.")
 
 
+#: The errors of reading a member of an archive that cannot be extracted, e.g. one that is
+#: encrypted, corrupt, or compressed with an unsupported method.
+_EXTRACTION_ERRORS = (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError)
+
+
+def _open_archive(uploaded_path: Path, file_name: str) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(uploaded_path)
+    except zipfile.BadZipFile as e:
+        raise ValueError(f"{file_name} is not a .zip archive: {e}") from e
+
+
 def _extract_archive_member(zip_file: zipfile.ZipFile, member: zipfile.ZipInfo, path: Path,
                             max_num_bytes: int) -> int:
     """Extracts a member to `path`. Returns its size.
@@ -168,7 +180,7 @@ def _extract_archive_member(zip_file: zipfile.ZipFile, member: zipfile.ZipInfo, 
                     raise ValueError(f"The files of the archive have more than"
                                      f" {MAX_UPLOAD_SIZE_TEXT}.")
                 target.write(chunk)
-    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError) as e:
+    except _EXTRACTION_ERRORS as e:
         raise ValueError(f"It cannot be extracted: {e}") from e
     return num_bytes
 
@@ -182,13 +194,9 @@ def _prepare_archive(archive: ModelArchive, dataset_contexts: T.Mapping[str, Dat
         new_paths: Receives the paths of the extracted and rewritten files, which the caller
             removes.
     """
-    try:
-        zip_file = zipfile.ZipFile(uploaded_path)
-    except zipfile.BadZipFile as e:
-        raise ValueError(f"{file_name} is not a .zip archive: {e}") from e
     prepared: list[NewSubmission] = []
     num_extracted_bytes = 0
-    with zip_file:
+    with _open_archive(uploaded_path, file_name) as zip_file:
         split_to_member_name: dict[str, str] = {}
         for member in _list_archive_members(zip_file, file_name):
             path = archive.make_upload_path(member.filename)
@@ -212,6 +220,39 @@ def _prepare_archive(archive: ModelArchive, dataset_contexts: T.Mapping[str, Dat
             except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
                 raise ValueError(f"{member.filename}: {e}") from e
     return prepared
+
+
+def read_upload_headers(uploaded_path: Path, *, file_name: str) -> list[ie.PredictionHeader]:
+    """Reads the headers of an uploaded prediction file or of the files of a .zip archive
+    (`irap_evaluation.read_prediction_header`), without checking the files (see `plan_upload`),
+    e.g. to show what the upload will set.
+
+    Args:
+        uploaded_path: At `archive.make_upload_path`.
+        file_name: The name of the file on the uploader's computer, for messages.
+
+    Raises:
+        ValueError: If a header cannot be read (also irap_evaluation.PredictionFormatError), the
+            archive is refused, or its files would have more than `MAX_UPLOAD_NUM_BYTES`. A
+            message about a file of an archive starts with the file's name.
+    """
+    if not is_archive_upload(uploaded_path):
+        return [ie.read_prediction_header(uploaded_path)]
+    headers = []
+    with _open_archive(uploaded_path, file_name) as zip_file:
+        members = _list_archive_members(zip_file, file_name)
+        # A member is read up to its size in the archive's directory, which bounds the reading.
+        if sum(m.file_size for m in members) > MAX_UPLOAD_NUM_BYTES:
+            raise ValueError(f"The files of the archive have more than {MAX_UPLOAD_SIZE_TEXT}.")
+        for member in members:
+            try:
+                with zip_file.open(member) as file:
+                    headers.append(ie.read_prediction_header(file))
+            except _EXTRACTION_ERRORS as e:
+                raise ValueError(f"{member.filename}: It cannot be extracted: {e}") from e
+            except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
+                raise ValueError(f"{member.filename}: {e}") from e
+    return headers
 
 
 @dc.dataclass(frozen=True)
@@ -250,6 +291,7 @@ def plan_upload(
     file_name: str,
     seed: int | None = None,
     description: str | None = None,
+    method_display_name: str | None = None,
 ) -> PlannedUpload:
     """Checks an uploaded prediction file or .zip archive and plans storing its files as
     submissions of their model (`ModelArchive.plan_model_update`).
@@ -268,6 +310,8 @@ def plan_upload(
             e.g. to add another model of a method. The files are then rewritten, and the action
             log records the original seed and the hash of the uploaded file.
         description: The new description of the model, or None to keep it.
+        method_display_name: The new display name of the method, or None to take it from the
+            headers (see `ModelArchive.plan_model_update`). The files are not rewritten.
 
     Raises:
         irap_evaluation.PredictionFormatError: If an uploaded prediction file is not valid,
@@ -288,7 +332,8 @@ def plan_upload(
                 dataset_contexts, ie.read_predictions(uploaded_path), uploaded_path, seed=seed,
                 details={"file_name": file_name})]
         update = archive.plan_model_update(new_submissions, action="upload",
-                                           description=description)
+                                           description=description,
+                                           method_display_name=method_display_name)
     except BaseException:
         for path in temporary_paths:
             path.unlink(missing_ok=True)

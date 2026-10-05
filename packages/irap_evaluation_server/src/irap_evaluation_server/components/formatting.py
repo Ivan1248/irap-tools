@@ -19,6 +19,7 @@ _ACTION_DETAIL_LABELS = {"file_name": "File", "archive_member": "File in the arc
                          "replaced_submission_id": "Replaced file",
                          "members": "Members", "intersect_segments": "Only common segments",
                          "old_description": "Old description", "description": "Description",
+                         "old_display_name": "Old display name", "display_name": "Display name",
                          "by": "Part of"}
 
 
@@ -98,7 +99,8 @@ def _make_action_details_html(details: T.Mapping[str, T.Any]) -> str:
 #: The text of each `archive.ActionKind` in the action log.
 _ACTION_TEXTS = {"upload": "upload", "ensemble": "ensemble", "delete": "delete file",
                  "delete_model": "delete model", "restore_model": "restore model",
-                 "edit_description": "edit description"}
+                 "edit_description": "edit description",
+                 "edit_method_display_name": "edit method display name"}
 
 
 def make_action_table_html(entries: T.Sequence[ActionLogEntry],
@@ -113,7 +115,7 @@ def make_action_table_html(entries: T.Sequence[ActionLogEntry],
         submission = "" if entry.submission_id is None else f"#{entry.submission_id}"
         return (f"<tr><td>{format_utc_time(entry.time)}</td><td>{html.escape(entry.actor)}</td>"
                 f"<td>{_ACTION_TEXTS[entry.action]}</td>"
-                f"<td>{make_model_link_html(model.id, model.label)}</td>"
+                f"<td>{make_model_link_html(model.id, model.shown_label)}</td>"
                 f"<td>{submission}</td><td>{_make_action_details_html(entry.details)}</td></tr>")
 
     return make_table_html(["Time", "Who", "Action", "Model", "File", "Details"],

@@ -101,9 +101,9 @@ def sort_method_scores(rows: T.Iterable[MethodScores], metric: str) -> list[Meth
     `irap_evaluation.is_lower_better`).
 
     Rows without a value (an error, a metric that the method lacks, or NaN) are last. Ties are
-    ordered by method name.
+    ordered by shown method name.
     """
-    return sorted(rows, key=lambda r: _get_sort_key(r.metrics, metric, r.method_name))
+    return sorted(rows, key=lambda r: _get_sort_key(r.metrics, metric, r.shown_method_name))
 
 
 def select_model_metrics(model: ScoredModel,
@@ -119,10 +119,10 @@ def select_model_metrics(model: ScoredModel,
 def sort_scored_models(models: T.Iterable[ScoredModel], metric: str,
                        attributes: T.Sequence[str]) -> list[ScoredModel]:
     """Sorts models best first by the attribute average `metric` over `attributes`
-    (`select_model_metrics`), as `sort_method_scores` sorts methods. Ties are ordered by model
-    label."""
+    (`select_model_metrics`), as `sort_method_scores` sorts methods. Ties are ordered by shown
+    model label."""
     return sorted(models, key=lambda m: _get_sort_key(select_model_metrics(m, attributes),
-                                                      metric, m.submission.label))
+                                                      metric, m.submission.shown_label))
 
 
 def rank_methods(models: T.Iterable[ScoredModel], attributes: T.Sequence[str],

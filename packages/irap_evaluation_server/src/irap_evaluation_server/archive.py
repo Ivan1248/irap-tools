@@ -10,10 +10,14 @@ submission of a model deletes the model, and an upload restores it, so a model t
 has an active submission. Each action records who did it, the name of an account that can write
 (`accounts`).
 
+A method on a dataset can have a display name, which the pages show instead of the method name.
+An update sets it, given with the update or from the files that have one
+(`irap_evaluation.ModelInfo.method_display_name`), and it can be edited.
+
 The data directory holds:
 
-- `archive.sqlite3`: the index of the models and submissions, and the action log (and the score
-  cache of `scoring.ScoreStore`),
+- `archive.sqlite3`: the index of the models and submissions, the method display names, and the
+  action log (and the score cache of `scoring.ScoreStore`),
 - `submissions/<id>/predictions.parquet`: the stored files, which are not modified,
 - `uploads/`: files that are not stored yet: uploaded files and .zip archives, the files
   extracted from archives or rewritten with another seed, and ensembles.
@@ -41,7 +45,7 @@ from .database import begin_write, connect, get_utc_now, initialize_schema
 AddingActionKind = T.Literal["upload", "ensemble"]
 ADDING_ACTION_KINDS: tuple[str, ...] = T.get_args(AddingActionKind)
 ActionKind = AddingActionKind | T.Literal[
-    "delete", "delete_model", "restore_model", "edit_description"]
+    "delete", "delete_model", "restore_model", "edit_description", "edit_method_display_name"]
 
 #: The version of the database schema (`PRAGMA user_version`). A database of another version is
 #: refused, since there is no migration.
@@ -67,6 +71,13 @@ CREATE TABLE models (
     deleted_at TEXT
 );
 CREATE UNIQUE INDEX model_identity ON models (dataset, method_name, COALESCE(seed, 'none'));
+-- The methods with a display name.
+CREATE TABLE methods (
+    dataset TEXT NOT NULL,
+    method_name TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    PRIMARY KEY (dataset, method_name)
+);
 CREATE TABLE submissions (
     id INTEGER PRIMARY KEY,
     model_id INTEGER NOT NULL REFERENCES models (id),
@@ -94,9 +105,12 @@ CREATE TABLE actions (
 );
 """
 
+_METHOD_JOIN = ("LEFT JOIN methods d ON d.dataset = m.dataset"
+                " AND d.method_name = m.method_name")
+_MODEL_QUERY = f"SELECT m.*, d.display_name AS method_display_name FROM models m {_METHOD_JOIN}"
 _SUBMISSION_QUERY = ("SELECT s.*, m.dataset, m.method_name, m.seed, m.description, m.created_at,"
-                     " m.deleted_at AS model_deleted_at"
-                     " FROM submissions s JOIN models m ON m.id = s.model_id")
+                     " m.deleted_at AS model_deleted_at, d.display_name AS method_display_name"
+                     f" FROM submissions s JOIN models m ON m.id = s.model_id {_METHOD_JOIN}")
 
 
 @dc.dataclass(frozen=True)
@@ -104,6 +118,7 @@ class Model:
     """A stored model: one model of a method on a dataset (see the module docstring).
 
     Attributes:
+        method_display_name: The display name of the method on the dataset, or None.
         description: Free text about the model, e.g. how it was trained.
         created_at: The time of its first submission, in UTC.
         deleted_at: The time of the deletion, in UTC, or None if it is not deleted.
@@ -112,6 +127,7 @@ class Model:
     id: int
     dataset: str
     method_name: str
+    method_display_name: str | None
     seed: int | None
     description: str
     created_at: datetime
@@ -123,7 +139,18 @@ class Model:
 
     @property
     def label(self) -> str:
+        """Identifies the model, e.g. in messages and file names."""
         return ie.format_model_label(self.method_name, self.seed)
+
+    @property
+    def shown_method_name(self) -> str:
+        """The method display name, or the method name if there is none."""
+        return self.method_display_name or self.method_name
+
+    @property
+    def shown_label(self) -> str:
+        """The label shown on the pages: `label` with the method display name."""
+        return ie.format_model_label(self.shown_method_name, self.seed)
 
 
 @dc.dataclass(frozen=True)
@@ -166,6 +193,10 @@ class Submission:
     @property
     def label(self) -> str:
         return self.model.label
+
+    @property
+    def shown_label(self) -> str:
+        return self.model.shown_label
 
     @property
     def model_info(self) -> ie.ModelInfo:
@@ -285,7 +316,10 @@ class ModelUpdate:
         new_submissions: Of distinct splits and one model, the model of their headers.
         action: The action of each new submission in the action log.
         description: The new description of the model, or None to keep it.
+        method_display_name: The new display name of the method, given with the update or that
+            of the new submissions, or None to keep the method's.
         model: The model as planned, or None if the update creates it.
+        old_method_display_name: The display name of the method as planned.
         replaced: Split -> the active submission that a new one replaces.
         replaces_all_files: Whether the new submissions replace all files of the model, e.g.
             those of an ensemble, whose files are made of the same members.
@@ -298,7 +332,9 @@ class ModelUpdate:
     new_submissions: tuple[NewSubmission, ...]
     action: AddingActionKind
     description: str | None
+    method_display_name: str | None
     model: Model | None
+    old_method_display_name: str | None
     replaced: T.Mapping[str, Submission]
     replaces_all_files: bool
     deleted: T.Mapping[str, Submission]
@@ -323,7 +359,8 @@ class ModelUpdate:
     @property
     def confirmations(self) -> list[str]:
         """The changes that the user confirms before the update is applied: replaced and deleted
-        files, a restored model, and a description that replaces another one."""
+        files, a restored model, and a description or a method display name that replaces
+        another one."""
         def describe(submission: Submission) -> str:
             return (f"file #{submission.id} of {self.label}, uploaded"
                     f" {submission.uploaded_at:%Y-%m-%d %H:%M} UTC by {submission.submitter}")
@@ -342,7 +379,24 @@ class ModelUpdate:
                 and self.description != self.model.description):
             items.append(f"Changes the description of {self.label} from"
                          f" {self.model.description!r} to {self.description!r}.")
+        if (self.old_method_display_name is not None and self.method_display_name is not None
+                and self.method_display_name != self.old_method_display_name):
+            items.append(f"Changes the display name of the method {self.method_name!r} on"
+                         f" {self.dataset} from {self.old_method_display_name!r} to"
+                         f" {self.method_display_name!r}.")
         return items
+
+
+def _get_method_display_name(headers: T.Iterable[ie.PredictionHeader]) -> str | None:
+    """Returns the method display name of the headers that have one, None if none has.
+
+    Raises:
+        ValueError: If they have different ones.
+    """
+    names = {n for h in headers if (n := h.model.method_display_name) is not None}
+    if len(names) > 1:
+        raise ValueError(f"The files have different method display names: {sorted(names)}.")
+    return next(iter(names), None)
 
 
 def discard_model_update(update: ModelUpdate) -> None:
@@ -376,7 +430,8 @@ def _from_optional_time(text: str | None) -> datetime | None:
 def _to_model(row: sqlite3.Row, id_column: str = "id",
               deleted_at_column: str = "deleted_at") -> Model:
     return Model(id=row[id_column], dataset=row["dataset"], method_name=row["method_name"],
-                 seed=row["seed"], description=row["description"],
+                 method_display_name=row["method_display_name"], seed=row["seed"],
+                 description=row["description"],
                  created_at=datetime.fromisoformat(row["created_at"]),
                  deleted_at=_from_optional_time(row[deleted_at_column]))
 
@@ -422,7 +477,7 @@ def check_seed_storable(seed: int | None) -> None:
 
 
 def _get_model(connection: sqlite3.Connection, model_id: int) -> Model:
-    row = connection.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
+    row = connection.execute(f"{_MODEL_QUERY} WHERE m.id = ?", (model_id,)).fetchone()
     if row is None:
         raise LookupError(f"There is no model #{model_id}.")
     return _to_model(row)
@@ -431,7 +486,7 @@ def _get_model(connection: sqlite3.Connection, model_id: int) -> Model:
 def _find_model(connection: sqlite3.Connection, dataset: str, method_name: str,
                 seed: int | None) -> Model | None:
     row = connection.execute(
-        "SELECT * FROM models WHERE dataset = ? AND method_name = ? AND seed IS ?",
+        f"{_MODEL_QUERY} WHERE m.dataset = ? AND m.method_name = ? AND m.seed IS ?",
         (dataset, method_name, seed)).fetchone()
     return None if row is None else _to_model(row)
 
@@ -493,6 +548,39 @@ def _set_description(connection: sqlite3.Connection, model: Model, description: 
                            (description, model.id))
         _log_action(connection, actor, "edit_description", model.id, None,
                     {"old_description": model.description, "description": description})
+
+
+def _read_method_display_name(connection: sqlite3.Connection, dataset: str,
+                              method_name: str) -> str | None:
+    row = connection.execute(
+        "SELECT display_name FROM methods WHERE dataset = ? AND method_name = ?",
+        (dataset, method_name)).fetchone()
+    return None if row is None else row["display_name"]
+
+
+def _set_method_display_name(connection: sqlite3.Connection, model: Model,
+                             display_name: str | None, actor: str,
+                             details: T.Mapping[str, T.Any]) -> None:
+    """Sets or, for None, clears the display name of the method of a model, if it differs, and
+    logs it on the model.
+
+    Args:
+        details: More details of the action, e.g. the action that it is part of ('by').
+    """
+    if display_name == model.method_display_name:
+        return
+    if display_name is None:
+        connection.execute("DELETE FROM methods WHERE dataset = ? AND method_name = ?",
+                           (model.dataset, model.method_name))
+    else:
+        connection.execute(
+            "INSERT INTO methods (dataset, method_name, display_name) VALUES (?, ?, ?)"
+            " ON CONFLICT (dataset, method_name)"
+            " DO UPDATE SET display_name = excluded.display_name",
+            (model.dataset, model.method_name, display_name))
+    _log_action(connection, actor, "edit_method_display_name", model.id, None,
+                {"old_display_name": model.method_display_name, "display_name": display_name,
+                 **details})
 
 
 def _replace_active_submission(connection: sqlite3.Connection, model: Model, split: str,
@@ -647,9 +735,9 @@ class ModelArchive:
 
     def list_models(self, *, include_deleted: bool = False) -> list[Model]:
         """Lists the models, newest first."""
-        where = "" if include_deleted else "WHERE deleted_at IS NULL"
+        where = "" if include_deleted else "WHERE m.deleted_at IS NULL"
         with connect(self.database_path) as connection:
-            rows = connection.execute(f"SELECT * FROM models {where} ORDER BY id DESC")
+            rows = connection.execute(f"{_MODEL_QUERY} {where} ORDER BY m.id DESC")
             return [_to_model(row) for row in rows]
 
     def get_model(self, model_id: int) -> Model:
@@ -699,28 +787,52 @@ class ModelArchive:
 
     # Model updates ################################################################################
 
+    def get_inherited_method_display_name(
+            self, headers: T.Sequence[ie.PredictionHeader]) -> str | None:
+        """Returns the method display name that an update with files of these headers sets when
+        none is given (see `plan_model_update`): that of the headers, or else the method's.
+
+        Args:
+            headers: Of one method on a dataset, e.g. those of an upload.
+
+        Raises:
+            ValueError: If there are no headers, or they have different method display names.
+        """
+        if not headers:
+            raise ValueError("At least one header is required.")
+        if (display_name := _get_method_display_name(headers)) is not None:
+            return display_name
+        with connect(self.database_path) as connection:
+            return _read_method_display_name(connection, headers[0].dataset,
+                                             headers[0].model.method_name)
+
     def plan_model_update(self, new_submissions: T.Sequence[NewSubmission], *,
                           action: AddingActionKind, description: str | None,
+                          method_display_name: str | None = None,
                           replaces_all_files: bool = False,
                           source_submissions: T.Sequence[Submission] = ()) -> ModelUpdate:
         """Plans storing new submissions of one model, the model of their headers.
 
-        The update creates the model if it does not exist, restores it if it is deleted, and
-        replaces the active submissions of the same splits. It is tried and rolled back, so that
+        The update creates the model if it does not exist, restores it if it is deleted,
+        replaces the active submissions of the same splits, and sets the method display name of
+        the new submissions, if they have one. It is tried and rolled back, so that
         a refused update is refused before the user confirms it (`ModelUpdate.confirmations`).
 
         Args:
             description: The new description of the model, or None to keep it ('' for a new
                 model).
+            method_display_name: The new display name of the method, which is stripped, or None
+                to take it from the headers. The files keep the display names of their headers.
             replaces_all_files: Whether the new submissions replace all files of the model, so
                 that the active submissions of other splits are deleted, e.g. for an ensemble,
                 whose files are made of the same members.
             source_submissions: See `ModelUpdate.source_submissions`.
 
         Raises:
-            ValueError: If there are no new submissions, they are of several models or have a
-                split twice, a seed does not fit SQLite's INTEGER, or the update is refused
-                (see `apply_model_update`).
+            ValueError: If there are no new submissions, they are of several models, have a
+                split twice, `method_display_name` is blank, or it is None and they have
+                different method display names, a seed does not fit SQLite's INTEGER, or the
+                update is refused (see `apply_model_update`).
         """
         if not new_submissions:
             raise ValueError("At least one new submission is required.")
@@ -732,15 +844,23 @@ class ModelArchive:
         splits = [h.split for h in headers]
         if len(set(splits)) < len(splits):
             raise ValueError(f"The files have a split twice: {splits}.")
+        if method_display_name is None:
+            method_display_name = _get_method_display_name(headers)
+        elif not (method_display_name := method_display_name.strip()):
+            raise ValueError("The method display name must not be blank.")
         check_seed_storable(first.model.seed)
         with connect(self.database_path) as connection:
             model = _find_model(connection, first.dataset, first.model.method_name,
                                 first.model.seed)
             active = {} if model is None else {
                 s.split: s for s in _list_active_submissions(connection, model.id)}
+            old_method_display_name = _read_method_display_name(connection, first.dataset,
+                                                                first.model.method_name)
         update = ModelUpdate(
             new_submissions=tuple(new_submissions), action=action, description=description,
-            model=model, replaced={s: active[s] for s in splits if s in active},
+            method_display_name=method_display_name, model=model,
+            old_method_display_name=old_method_display_name,
+            replaced={s: active[s] for s in splits if s in active},
             replaces_all_files=replaces_all_files,
             deleted=({s: a for s, a in active.items() if s not in splits} if replaces_all_files
                      else {}),
@@ -755,8 +875,8 @@ class ModelArchive:
         """Stores the new submissions of an update, moved from their `file_path`, and logs the
         actions: the action of each new submission (`ModelUpdate.action`), with the id of the
         submission that it replaces ('replaced_submission_id'), the deletion of the submissions
-        of other splits, and the restoration of the model and the change of its description, if
-        any.
+        of other splits, and the restoration of the model and the changes of its description and
+        method display name, if any.
 
         Either all are stored or none. Files that are not stored stay at their `file_path`.
 
@@ -764,8 +884,9 @@ class ModelArchive:
             The new submissions, in the order of `update.new_submissions`.
 
         Raises:
-            ValueError: If `submitter` is empty, the model, the active submission of a split, or
-                a source submission has changed since the update was planned, the active
+            ValueError: If `submitter` is empty, the model, its method display name, the active
+                submission of a split, or a source submission has changed since the update was
+                planned, the active
                 submissions of the model would differ (see `_check_model_invariant`), or the
                 models of the method could not be averaged (see `_check_method_invariant`).
         """
@@ -783,6 +904,7 @@ class ModelArchive:
             with begin_write(self.database_path) as connection:
                 _check_sources_in_use(connection, update.source_submissions)
                 model = self._update_model(connection, update, actor)
+                self._update_method_display_name(connection, model, update, actor)
                 submission_ids = []
                 for new, file_sha256 in zip(update.new_submissions, file_sha256s, strict=True):
                     submission_id = self._insert_submission(connection, model, new, file_sha256,
@@ -832,6 +954,22 @@ class ModelArchive:
         if description is not None:
             _set_description(connection, model, description, actor)
         return _get_model(connection, model.id)
+
+    @staticmethod
+    def _update_method_display_name(connection: sqlite3.Connection, model: Model,
+                                    update: ModelUpdate, actor: str) -> None:
+        """Checks that the method display name is as planned, and sets the one of the new
+        submissions, if any.
+
+        Raises:
+            ValueError: If the method display name has changed since the update was planned.
+        """
+        if model.method_display_name != update.old_method_display_name:
+            raise ValueError(f"The display name of the method {model.method_name!r} has changed"
+                             f" since the files were checked, e.g. by another user. Try again.")
+        if (display_name := update.method_display_name) is not None:
+            _set_method_display_name(connection, model, display_name, actor,
+                                     {"by": update.action})
 
     @staticmethod
     def _insert_submission(connection: sqlite3.Connection, model: Model, new: NewSubmission,
@@ -942,4 +1080,25 @@ class ModelArchive:
             if description == model.description:
                 raise ValueError("The description is unchanged.")
             _set_description(connection, model, description, actor)
+            return _get_model(connection, model_id)
+
+    def set_method_display_name(self, model_id: int, display_name: str | None, *,
+                                actor: str) -> Model:
+        """Changes the display name of the method of a model, which all models of the method on
+        its dataset share, and logs it on the model.
+
+        Args:
+            display_name: The new display name, None or blank to clear it.
+
+        Raises:
+            LookupError: If there is no such model.
+            ValueError: If `actor` is empty, or the display name is unchanged.
+        """
+        actor = _check_actor(actor)
+        display_name = (display_name or "").strip() or None
+        with begin_write(self.database_path) as connection:
+            model = _get_model(connection, model_id)
+            if display_name == model.method_display_name:
+                raise ValueError("The display name is unchanged.")
+            _set_method_display_name(connection, model, display_name, actor, {})
             return _get_model(connection, model_id)

@@ -28,6 +28,7 @@ from ..components.native_controls import (
     create_native_checkbox,
     create_native_input,
     create_native_select,
+    set_native_input_placeholder,
     set_status,
 )
 from ..components.page_frame import create_page_frame, create_write_permission_panel
@@ -47,9 +48,10 @@ from ..uploads import (
     MAX_UPLOAD_NUM_BYTES,
     MAX_UPLOAD_SIZE_TEXT,
     apply_upload,
-    parse_description,
+    parse_optional_text,
     parse_seed,
     plan_upload,
+    read_upload_headers,
 )
 
 #: Uploaded files that are not stored are removed after this time, e.g. those of a closed page
@@ -101,8 +103,10 @@ def _make_method_row_html(group: MethodGroup, num_columns: int) -> str:
         if info.early_stopping_splits:
             splits += f", early stopping on {format_splits(info.early_stopping_splits)}"
         splits = f' <span class="muted">· {html.escape(splits)}</span>'
+    method_name = ("" if group.shown_method_name == group.method_name
+                   else f' <span class="muted">({html.escape(group.method_name)})</span>')
     return (f'<tr class="method-row"><td colspan="{num_columns}">'
-            f"<b>{html.escape(group.method_name)}</b>{splits}</td></tr>")
+            f"<b>{html.escape(group.shown_method_name)}</b>{method_name}{splits}</td></tr>")
 
 
 def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Sequence[str]) -> str:
@@ -124,7 +128,7 @@ def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Seque
             deleted = " (deleted)" if model.is_deleted else ""
             rows.append(
                 f'<tr class="{"deleted" if model.is_deleted else ""}">'
-                f"<td>{make_model_link_html(model.id, model.label)}{deleted}</td>"
+                f"<td>{make_model_link_html(model.id, model.shown_label)}{deleted}</td>"
                 f"{''.join(_make_submission_cell_html(summary, s) for s in split_names)}"
                 f"{_make_summary_cells_html(summary)}</tr>")
     return make_table_html_from_header(header_html, rows)
@@ -164,7 +168,16 @@ class _UploadFormState:
     upload_path: Path | None = None
     file_name: str = ""
     description: str = ""
+    method_display_name: str = ""
     seed_text: str = ""
+
+
+def _make_method_display_name_placeholder(archive: ModelArchive, upload_path: Path,
+                                          file_name: str) -> str:
+    """Makes the placeholder of the method display name input for an upload, with the display
+    name that a blank input keeps (`ModelArchive.get_inherited_method_display_name`)."""
+    headers = read_upload_headers(upload_path, file_name=file_name)
+    return f"blank: {archive.get_inherited_method_display_name(headers) or 'none'}"
 
 
 def _create_upload_form(archive: ModelArchive,
@@ -187,10 +200,26 @@ def _create_upload_form(archive: ModelArchive,
             form.upload_path.unlink(missing_ok=True)
             form.upload_path = None
 
-    def on_upload_status_changed(status: dict) -> None:
+    async def show_inherited_method_display_name(upload_path: Path, upload_id: int,
+                                                 file_name: str) -> None:
+        """Shows the method display name that a blank input keeps as the input's placeholder.
+        It shows none if the headers cannot be read, e.g. of an invalid file, since Add then
+        reports why."""
+        client = ui.context.client
+        try:
+            placeholder = await run.io_bound(_make_method_display_name_placeholder, archive,
+                                             upload_path, file_name)
+        except (OSError, ValueError):  # Also irap_evaluation.PredictionFormatError.
+            return
+        # None if the server is stopping.
+        if placeholder is not None and form.upload_id == upload_id and not client.is_deleted:
+            set_native_input_placeholder(display_name_input, placeholder)
+
+    async def on_upload_status_changed(status: dict) -> None:
         if status["status"] == "uploading":
             remove_pending_upload()
             form.upload_id = status["upload_id"]
+            set_native_input_placeholder(display_name_input, "")
             set_status(status_label, f"Uploading {status['file_name']}…")
             return
         upload_path = (archive.get_upload_path(status["upload_name"])
@@ -202,6 +231,8 @@ def _create_upload_form(archive: ModelArchive,
             form.upload_path, form.file_name = upload_path, status["file_name"]
             set_status(status_label, f"{form.file_name} is uploaded. Click Add to check and"
                                      f" store it.")
+            await show_inherited_method_display_name(upload_path, form.upload_id,
+                                                     form.file_name)
         else:
             set_status(status_label, f"The upload failed: {status.get('message', status)}",
                        is_error=True)
@@ -246,7 +277,9 @@ def _create_upload_form(archive: ModelArchive,
         try:
             submissions = await _check_and_store(archive, dataset_contexts, upload_path,
                                                  file_name=file_name, seed=seed,
-                                                 description=form.description, actor=actor)
+                                                 description=form.description,
+                                                 method_display_name=form.method_display_name,
+                                                 actor=actor)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             give_back_upload()
             if not client.is_deleted:
@@ -284,10 +317,13 @@ def _create_upload_form(archive: ModelArchive,
         with ui.element("div").classes("form-row"):
             create_file_upload_input("File", UPLOAD_PATH, ".parquet,.zip",
                                      on_upload_status_changed)
-            create_native_input("Description", "", lambda v: setattr(form, "description", v),
-                                placeholder="blank: keep the model's", size=40)
+            display_name_input = create_native_input(
+                "Method display name", "", lambda v: setattr(form, "method_display_name", v),
+                size=30)
             create_native_input("Seed", "", lambda v: setattr(form, "seed_text", v),
                                 placeholder="from the file", size=10)
+            create_native_input("Description", "", lambda v: setattr(form, "description", v),
+                                placeholder="blank: keep the model's", size=40)
             add_button = create_native_button("Add", on_add_clicked)
         status_label = ui.label().classes("muted")
 
@@ -295,10 +331,11 @@ def _create_upload_form(archive: ModelArchive,
 async def _check_and_store(archive: ModelArchive,
                            dataset_contexts: T.Mapping[str, DatasetContext], upload_path: Path, *,
                            file_name: str, seed: int | None, description: str,
-                           actor: str) -> list[Submission]:
+                           method_display_name: str, actor: str) -> list[Submission]:
     """Plans an upload, asks the user to confirm its changes, if any, and applies it.
 
     Args:
+        description, method_display_name: As entered, blank to keep the stored one.
         actor: The name of the signed-in account.
 
     Returns:
@@ -311,7 +348,8 @@ async def _check_and_store(archive: ModelArchive,
     client = ui.context.client
     planned = await run.io_bound(plan_upload, archive, dataset_contexts, upload_path,
                                  file_name=file_name, seed=seed,
-                                 description=parse_description(description))
+                                 description=parse_optional_text(description),
+                                 method_display_name=parse_optional_text(method_display_name))
     if planned is None:  # The server is stopping.
         return []
     update = planned.update

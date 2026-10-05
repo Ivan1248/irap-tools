@@ -114,6 +114,14 @@ def create_native_input(label: str, value: str, on_change: T.Callable[[str], Non
     return element
 
 
+def set_native_input_placeholder(element: ui.element, placeholder: str) -> None:
+    """Sets the placeholder of an input of `create_native_input`, e.g. to show the value that a
+    blank input stands for. The element is rendered again only if the placeholder changes."""
+    if element.props.get("placeholder") != placeholder:
+        element.props["placeholder"] = placeholder
+        element.update()
+
+
 def create_native_checkbox(label: str, value: bool,
                            on_change: T.Callable[[bool], None]) -> ui.element:
     with ui.element("label").classes("flex items-center gap-1"):

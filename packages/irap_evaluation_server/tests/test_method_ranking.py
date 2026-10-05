@@ -36,9 +36,11 @@ from irap_evaluation_server.scoring import (
 _TIME = datetime(2026, 10, 3, tzinfo=timezone.utc)
 
 
-def make_model_row(model_id, method_name="m", seed=None, deleted_at=None):
-    return Model(id=model_id, dataset="vietnam", method_name=method_name, seed=seed,
-                 description="", created_at=_TIME, deleted_at=deleted_at)
+def make_model_row(model_id, method_name="m", seed=None, deleted_at=None,
+                   method_display_name=None):
+    return Model(id=model_id, dataset="vietnam", method_name=method_name,
+                 method_display_name=method_display_name, seed=seed, description="",
+                 created_at=_TIME, deleted_at=deleted_at)
 
 
 def make_submission(submission_id, method_name="m", seed=None, deleted_at=None,
@@ -82,6 +84,19 @@ def test_sort_method_scores():
     assert [r.method_name for r in sort_method_scores(rows, "amF1")] == ["b", "e", "a", "c", "d"]
     # Lower is better, infinite is worst.
     assert [r.method_name for r in sort_method_scores(rows, "aNLL")] == ["a", "b", "c", "d", "e"]
+
+
+def test_ties_are_sorted_by_shown_method_name():
+    def make_row(method_name, method_display_name):
+        row = make_method_scores(method_name, {"amF1": 0.5})
+        [model] = row.models
+        submission = dc.replace(model.submission, model=make_model_row(
+            1, method_name, method_display_name=method_display_name))
+        return dc.replace(row, models=(dc.replace(model, submission=submission),))
+
+    rows = [make_row("a", "z"), make_row("b", None)]
+    assert [r.shown_method_name for r in rows] == ["z", "b"]
+    assert [r.method_name for r in sort_method_scores(rows, "amF1")] == ["b", "a"]
 
 
 def test_rank_methods_means_over_models():

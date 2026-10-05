@@ -12,7 +12,7 @@ An web app that keeps an archive of model predictions, scores them, and compares
 | Action log | `/actions` | All changes, with the name of the user. |
 | Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins. |
 
-Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete and restore models, edit descriptions and create ensembles. The action log shows the account name.
+Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete and restore models, edit descriptions and method display names, and create ensembles. The action log shows the account name.
 
 ## Installation and start
 
@@ -68,7 +68,7 @@ Users register and sign in with the links in the top bar. An account has one of 
 | Permission | Can |
 |---|---|
 | view | View, like visitors without an account. |
-| write | Also upload, replace and delete files, delete and restore models, edit descriptions and create ensembles. |
+| write | Also upload, replace and delete files, delete and restore models, edit descriptions and method display names, and create ensembles. |
 | admin | Also download the per-class scores of [protected splits](#protected-splits), and change the permissions of the accounts and remove them, on the Accounts page. |
 
 The first account to register is an admin. Later accounts can view until an admin gives them more. The app keeps at least one admin: it refuses to remove the last admin or to take away its admin permission.
@@ -159,6 +159,8 @@ Back up `/srv/irap-eval/data`, and keep the backups private.
 
 A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). It has at most one active file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
 
+A method on a dataset can have a display name, which the pages show instead of the method name. The Method filter of the Scores page and the member filter of the Ensemble page match the shown name. An upload sets the display name of its method, entered in the upload form or from a file header's `method_display_name`, and the Model page edits it for all models of the method. Files, URLs, download names and the action log keep the method name.
+
 ### Uploads
 
 A file is refused if:
@@ -175,7 +177,8 @@ Files of unlabeled splits are accepted but not scored.
 - The Seed field replaces the seed in the header, e.g. to add another model of a method. The action log records the original seed.
 - A file of a split that the model already has replaces the active file, which is [deleted](#deletion).
 - A blank description keeps the model's description.
-- The user confirms replaced files, a restored deleted model, and a replaced description before anything is stored. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
+- A method display name entered with the upload replaces the method's, without changing the files. A blank one takes the display name from the files, and files without one keep the method's. The files of one upload must then not have different display names. When a file is uploaded, the field's placeholder shows the display name that a blank one gives.
+- The user confirms replaced files, a restored deleted model, and a replaced description or method display name before anything is stored. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
 
 A `.zip` archive uploads the files of one model on several splits at once. Every member must be a `.parquet` prediction file (others are refused, not skipped), of the same model, output kind, context offsets, and training and early stopping splits (`archive.MODEL_FILE_FIELDS`), and of distinct splits. Their header `details` may differ. Either all files are stored, each as its own submission, or none. An archive that replaces all active files of a model may change their output kind, context offsets, and training and early stopping splits.
 
@@ -221,14 +224,15 @@ The page keeps the 8 most recently used files in memory. Reading and aligning a 
 
 The Ensemble page creates the weighted mean of the distributions of stored models of a dataset, as `irap-eval ensemble` does (`irap_evaluation.ensemble_predictions`). A hard prediction counts as a one-hot distribution.
 
-- The ensemble is a model with the given method name and seed. It gets a file for each split where every member has an active file, and these replace all files of an existing model of that name, so that all its files are of the same members.
-- Its training splits are the union of its members', and its early stopping splits are its members' that are not training splits (`irap_evaluation.make_ensemble_model`).
+- The ensemble is a model with the given method name, display name and seed. A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
+- It gets a file for each split where every member has an active file, and these replace all files of an existing model of that name, so that all its files are of the same members.
+- Its training splits are the union of its members', and its early stopping splits are its members' that are not training splits (`irap_evaluation.make_ensemble_model_info`).
 - Members with different context offsets predict different segments. "Only the segments that every member predicts" keeps their common segments.
 - Its files are checked, confirmed and scored like uploads, and the action log records the members and weights. If a member's file changes before the ensemble is stored, the ensemble is refused and can be created again.
 
 ## Coding tables
 
-The Model page downloads the active files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
+The Model page downloads the active files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the shown method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
 
 ## Development
 

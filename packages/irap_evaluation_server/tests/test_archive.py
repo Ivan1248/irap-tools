@@ -94,6 +94,77 @@ def test_description_change_needs_confirmation(archive, dataset_contexts):
         archive.set_model_description(first.model.id, "third", actor="Bo")
 
 
+def test_files_set_the_method_display_name(archive, dataset_contexts):
+    first = add_model(archive, dataset_contexts, with_model(
+        make_model(dataset_contexts, model_seed=1), method_display_name=" Model M "))
+    assert (first.model.method_display_name, first.label, first.shown_label) == (
+        "Model M", "m/seed1", "Model M/seed1")
+    [action] = [a for a in archive.list_actions() if a.action == "edit_method_display_name"]
+    assert action.details == {"old_display_name": None, "display_name": "Model M", "by": "upload"}
+    # A file without one keeps it, and the models of the method share it.
+    second = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
+    assert second.model.method_display_name == "Model M"
+    other = add_model(archive, dataset_contexts, make_model(dataset_contexts, name="other"))
+    assert other.model.method_display_name is None
+
+    planned = plan(archive, dataset_contexts, with_model(
+        make_model(dataset_contexts, model_seed=3), method_display_name="M"))
+    assert any("Changes the display name of the method 'm' on vietnam from 'Model M' to 'M'" in c
+               for c in planned.update.confirmations)
+    apply_upload(archive, planned, submitter="Al")
+    assert {m.label: m.method_display_name for m in archive.list_models()} == {
+        "m/seed1": "M", "m/seed2": "M", "m/seed3": "M", "other": None}
+
+
+def test_an_entered_method_display_name_replaces_the_files(archive, dataset_contexts):
+    predictions = with_model(make_model(dataset_contexts), method_display_name="From file")
+    [first] = apply_upload(archive, plan(archive, dataset_contexts, predictions,
+                                         method_display_name=" Entered "), submitter="Al")
+    assert first.model.method_display_name == "Entered"
+    stored = ie.read_predictions(archive.get_predictions_path(first.id))
+    assert stored.header.model.method_display_name == "From file"
+    with pytest.raises(ValueError, match="must not be blank"):
+        plan(archive, dataset_contexts, predictions, method_display_name=" ")
+
+
+def test_inherited_method_display_name(archive, dataset_contexts):
+    predictions = make_model(dataset_contexts)
+    named = with_model(predictions, method_display_name="From file").header
+    assert archive.get_inherited_method_display_name([predictions.header]) is None
+    first = add_model(archive, dataset_contexts, predictions)
+    archive.set_method_display_name(first.model.id, "Stored", actor="Bo")
+    assert archive.get_inherited_method_display_name([predictions.header]) == "Stored"
+    assert archive.get_inherited_method_display_name([predictions.header, named]) == "From file"
+    with pytest.raises(ValueError, match="different method display names"):
+        archive.get_inherited_method_display_name(
+            [named, with_model(predictions, method_display_name="Other").header])
+
+
+def test_set_method_display_name(archive, dataset_contexts):
+    first = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
+    second = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
+    edited = archive.set_method_display_name(first.model.id, " Model M ", actor="Bo")
+    assert (edited.method_display_name, edited.shown_label) == ("Model M", "Model M/seed1")
+    assert archive.get_submission(second.id).shown_label == "Model M/seed2"
+    with pytest.raises(ValueError, match="unchanged"):
+        archive.set_method_display_name(second.model.id, "Model M", actor="Bo")
+    cleared = archive.set_method_display_name(second.model.id, " ", actor="Bo")
+    assert (cleared.method_display_name, cleared.shown_label) == (None, "m/seed2")
+    assert [(a.model_id, a.details) for a in archive.list_actions()
+            if a.action == "edit_method_display_name"] == [
+        (second.model.id, {"old_display_name": "Model M", "display_name": None}),
+        (first.model.id, {"old_display_name": None, "display_name": "Model M"})]
+
+
+def test_a_display_name_change_after_the_planning_is_refused(archive, dataset_contexts):
+    first = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
+    # A new model of the method.
+    planned = plan(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
+    archive.set_method_display_name(first.model.id, "M", actor="Bo")
+    with pytest.raises(ValueError, match="display name of the method 'm' has changed"):
+        apply_upload(archive, planned, submitter="Al")
+
+
 def test_seed_override_adds_another_model(archive, dataset_contexts):
     first = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
     planned = plan(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1), seed=2)
@@ -251,7 +322,8 @@ def test_actions_need_an_actor(archive, dataset_contexts):
     submission = add_model(archive, dataset_contexts, make_model(dataset_contexts))
     for change in (lambda: archive.delete_submission(submission.id, actor=""),
                    lambda: archive.set_model_deleted(submission.model.id, True, actor=""),
-                   lambda: archive.set_model_description(submission.model.id, "x", actor="")):
+                   lambda: archive.set_model_description(submission.model.id, "x", actor=""),
+                   lambda: archive.set_method_display_name(submission.model.id, "x", actor="")):
         with pytest.raises(ValueError, match="actor of an action"):
             change()
     with pytest.raises(LookupError):
@@ -297,6 +369,11 @@ def test_updates_are_of_one_model(archive, two_split_contexts):
     with pytest.raises(ValueError, match="a split twice"):
         archive.plan_model_update([make_new(predictions)] * 2, action="upload",
                                   description=None)
+    with pytest.raises(ValueError, match="different method display names"):
+        archive.plan_model_update(
+            [make_new(with_model(predictions, method_display_name="A")),
+             make_new(with_model(with_split(predictions, OTHER_SPLIT), method_display_name="B"))],
+            action="upload", description=None)
 
 
 @pytest.mark.parametrize("model_seed, seed", [(2**63, None), (None, 2**63)])

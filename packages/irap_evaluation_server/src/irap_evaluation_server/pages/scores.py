@@ -172,7 +172,8 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
         with ui.element("div").classes("form-row"):
             if view.evaluation_set == ie.REFERENCE_SET_NAME:
                 create_native_select("Compare with",
-                                     {"": "–", **{n: n for n in name_to_comparable}},
+                                     {"": "–", **{n: r.shown_method_name
+                                                  for n, r in name_to_comparable.items()}},
                                      view.reference_method,
                                      lambda v: on_view_changed(reference_method=v))
             if view.shows_trained_methods or any(
@@ -185,7 +186,7 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
             ui.label(f"{view.reference_method} cannot be compared, since it has no scores on"
                      f" this split or its models cannot be combined.").classes("error")
         elif reference is not None and reference.method_name not in matching_method_names:
-            ui.label(f"{reference.method_name} is shown as the reference, although the filter"
+            ui.label(f"{reference.shown_method_name} is shown as the reference, although the filter"
                      f" excludes it.").classes("muted")
         reference_method = "" if reference is None else reference.method_name
         shown, num_hidden = select_shown_methods(
@@ -215,8 +216,8 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
         ui.label(make_interval_note(worker.settings, is_mean_over_models=True)).classes(
             "muted")
         if reference is not None:
-            ui.label(make_comparison_note(worker.settings, reference.method_name, shown)).classes(
-                "muted")
+            ui.label(make_comparison_note(worker.settings, reference.shown_method_name, shown)
+                     ).classes("muted")
         for error in comparison_errors:
             ui.label(error).classes("error")
         if view.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME:
@@ -246,9 +247,14 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
         elif not subset.selected:
             ui.label("Select at least one attribute.").classes("error")
         else:
+            # The filter matches the shown method names.
+            name_to_shown = {m.submission.model.method_name: m.submission.model.shown_method_name
+                             for m in models}
             try:
-                matching_method_names = select_matching_names(
-                    view.method_pattern, {m.submission.model.method_name for m in models})
+                matching_shown_names = select_matching_names(view.method_pattern,
+                                                             set(name_to_shown.values()))
+                matching_method_names = {n for n, s in name_to_shown.items()
+                                         if s in matching_shown_names}
             except ValueError as e:
                 ui.label(str(e)).classes("error")
         if matching_method_names is None:
@@ -261,7 +267,7 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
                                                       s.id in current, s.id in pending_ids))]
         if unlisted:
             ui.label("Unscored files").classes("section-title")
-            ui.html("".join(f"<div>{make_model_link_html(s.model.id, s.label, s.split)}"
+            ui.html("".join(f"<div>{make_model_link_html(s.model.id, s.shown_label, s.split)}"
                             f": {html.escape(reason)}</div>"
                             for s, reason in unlisted), sanitize=False)
         refresh_timer.watch([*(lambda i=i: worker.is_scoring_pending(i) for i in pending_ids),
@@ -316,8 +322,8 @@ def _request_results(requester: WorkRequester, rows: T.Sequence[MethodScores],
             key_to_request["comparison", row.method_name] = make_comparison_request(
                 row.models, reference.models, attributes, settings)
         except ValueError as e:
-            comparison_errors.append(f"{row.method_name} cannot be compared with"
-                                     f" {reference.method_name}: {e}")
+            comparison_errors.append(f"{row.shown_method_name} cannot be compared with"
+                                     f" {reference.shown_method_name}: {e}")
     key_to_state = requester.update(key_to_request)
 
     def select_states(kind: str) -> dict[str, ResultState]:

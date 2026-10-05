@@ -92,7 +92,7 @@ def export_model_coding_table(archive: ModelArchive,
     Args:
         splits: The splits of the active files, in the order of the file name.
         file_format: One of `CODING_TABLE_FORMATS`.
-        coder_name: '' for the method name.
+        coder_name: '' for the shown method name (`archive.Model.shown_method_name`).
         coding_date: See `parse_coding_date`.
 
     Raises:
@@ -117,7 +117,7 @@ def export_model_coding_table(archive: ModelArchive,
     submissions = [split_to_active[s] for s in dict.fromkeys(splits)]
     file_name = to_file_name(f"{model.label}.{'+'.join(s.split for s in submissions)}"
                              f".coding_table.{file_format}")
-    coder_name = coder_name or model.method_name
+    coder_name = coder_name or model.shown_method_name
     if file_format == "csv" and coder_name.startswith(_FORMULA_PREFIXES):
         raise ValueError(f"The coder name {coder_name!r} starts with {coder_name[0]!r}, which"
                          f" spreadsheet programs read as a formula. Enter another coder name.")

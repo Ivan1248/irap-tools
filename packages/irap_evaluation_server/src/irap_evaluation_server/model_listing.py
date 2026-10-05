@@ -81,6 +81,11 @@ class MethodGroup:
         return max(m.updated_at for m in self.models)
 
     @property
+    def shown_method_name(self) -> str:
+        """`archive.Model.shown_method_name`, which the models of a method share."""
+        return self.models[0].model.shown_method_name
+
+    @property
     def model_info(self) -> ie.ModelInfo | None:
         """The `irap_evaluation.ModelInfo` of a model of the method that is not deleted, or None
         if all are deleted. Its training and early stopping splits are those of all such models."""
@@ -91,7 +96,7 @@ class MethodGroup:
 def summarize_models_by_method(models: T.Iterable[Model],
                                submissions: T.Iterable[Submission]) -> list[MethodGroup]:
     """Summarizes models and groups them by method, the latest updated method first, and methods
-    updated at the same time by name.
+    updated at the same time by shown name.
 
     Args:
         models: E.g. the models of a dataset.
@@ -108,5 +113,5 @@ def summarize_models_by_method(models: T.Iterable[Model],
     groups = sorted((MethodGroup(name, tuple(sorted(summaries, key=lambda m: (
                          m.model.seed is not None, m.model.seed or 0))))
                      for name, summaries in method_to_summaries.items()),
-                    key=lambda g: g.method_name)
+                    key=lambda g: (g.shown_method_name, g.method_name))
     return sorted(groups, key=lambda g: g.updated_at, reverse=True)  # Stable: ties by name.

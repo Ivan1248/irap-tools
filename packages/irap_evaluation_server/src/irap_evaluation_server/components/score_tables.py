@@ -273,14 +273,15 @@ def _make_difference_htmls(rows: T.Sequence[MethodScores],
 
 def _make_method_label(row: MethodScores, comparisons: ReferenceComparisons | None,
                        split: str) -> str:
-    """Makes the method name, marked if it is the reference method or used the split of the
+    """Makes the shown method name, marked if it is the reference method or used the split of the
     scores (`method_ranking.describe_split_use`)."""
     marks = []
     if comparisons is not None and row.method_name == comparisons.reference.method_name:
         marks.append("reference")
     if split_use := describe_split_use(get_method_split_use(row, split), split):
         marks.append(split_use)
-    return f"{row.method_name} ({', '.join(marks)})" if marks else row.method_name
+    name = row.shown_method_name
+    return f"{name} ({', '.join(marks)})" if marks else name
 
 
 # Tables ###########################################################################################

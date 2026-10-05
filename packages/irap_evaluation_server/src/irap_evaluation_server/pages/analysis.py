@@ -197,25 +197,25 @@ def _get_ranking_average(scored_model: ScoredModel,
 
 
 def _make_model_label(scored_model: ScoredModel, attributes: T.Sequence[str]) -> str:
-    """Makes the option text of a model: its label, its score and a mark if it used the split
-    (`method_ranking.describe_split_use`)."""
+    """Makes the option text of a model: its shown label, its score and a mark if it used the
+    split (`method_ranking.describe_split_use`)."""
     submission = scored_model.submission
     average = _get_ranking_average(scored_model, attributes)
     score = ("" if average is None
              else f" · {_RANKING_METRIC} {format_optional_metric_value(average, 3)}")
     mark = describe_split_use(submission.model_info.get_split_use(submission.split),
                               submission.split)
-    return f"{submission.label}{score}{f' · {mark}' if mark else ''}"
+    return f"{submission.shown_label}{score}{f' · {mark}' if mark else ''}"
 
 
 def _group_model_options(models: T.Sequence[ScoredModel],
                          attributes: T.Sequence[str]) -> dict[str, dict[str, str]]:
-    """Groups the options of a grouped select by method: method name -> model id -> option text.
-    The groups are in the order of their first model, so for models sorted best first, the
+    """Groups the options of a grouped select by method: shown method name -> model id -> option
+    text. The groups are in the order of their first model, so for models sorted best first, the
     method of the best model is first."""
     groups: dict[str, dict[str, str]] = {}
     for model in models:
-        groups.setdefault(model.submission.model.method_name, {})[
+        groups.setdefault(model.submission.model.shown_method_name, {})[
             str(model.submission.model.id)] = _make_model_label(model, attributes)
     return groups
 
@@ -410,7 +410,7 @@ class _AnalysisPage:
                 "" if self.model_b is None else str(self.model_b.model_id),
                 self._on_compared_model_changed, ungrouped={"": "–"})
         links = ", ".join(
-            f"{role}: {make_model_link_html(m.model_id, s.label, s.split)}"
+            f"{role}: {make_model_link_html(m.model_id, s.shown_label, s.split)}"
             for role, m in (("A", self.model_a), ("B", self.model_b)) if m is not None
             for s in [m.scored.submission])
         ui.html(f'<span class="muted">{links}. Grouped by method, best {_RANKING_METRIC} over'
@@ -601,7 +601,7 @@ class _AnalysisPage:
                                               self.evaluation_set)
         except (OSError, ValueError) as e:  # Also irap_evaluation.PredictionFormatError.
             if not self.client.is_deleted:
-                ui.notify(f"The predictions of {scored_model.submission.label} cannot be"
+                ui.notify(f"The predictions of {scored_model.submission.shown_label} cannot be"
                           f" read: {e}", type="negative")
             return None
         if self.client.is_deleted or change_number != self.num_model_changes[role]:

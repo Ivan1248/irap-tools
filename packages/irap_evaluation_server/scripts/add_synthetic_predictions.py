@@ -46,13 +46,15 @@ class SyntheticMethod:
     #: Probability of an invalid cell (hard models only).
     invalid_rate: float = 0.0
     output_kind: ie.OutputKind = "probs"
+    display_name: str | None = None
 
 
 SYNTHETIC_METHODS = (
-    SyntheticMethod("strong-probs", label_strength=3.0, sequence_difficulty_std_dev=0.4),
+    SyntheticMethod("strong-probs", label_strength=3.0, sequence_difficulty_std_dev=0.4,
+                    display_name="Strong (probabilities)"),
     SyntheticMethod("weak-probs", label_strength=1.6, sequence_difficulty_std_dev=0.6),
     SyntheticMethod("vlm-hard", label_strength=2.2, sequence_difficulty_std_dev=0.6,
-                    invalid_rate=0.05, output_kind="hard"),
+                    invalid_rate=0.05, output_kind="hard", display_name="VLM (hard answers)"),
 )
 
 
@@ -107,7 +109,8 @@ def make_synthetic_predictions(method: SyntheticMethod, metadata: IRAPMetadata, 
     header = ie.PredictionHeader(
         dataset=DATASET, split=split, context_offsets=CONTEXT_OFFSETS,
         model=ie.ModelInfo(method.name, training_splits=("train",), early_stopping_splits=(),
-                           seed=model_seed, details={"synthetic": True}))
+                           seed=model_seed, method_display_name=method.display_name,
+                           details={"synthetic": True}))
     codes = vocabulary.attribute_to_irap_codes
     logits = {attr: compute_synthetic_logits(method, label_matrix[:, i], log_priors[attr],
                                              sequence_multipliers, rng)
@@ -149,7 +152,8 @@ def main():
     members = [EnsembleMember(s.model, 1.0) for s in submissions
                if s.model.method_name == "strong-probs" and s.split == "val"]
     plan = plan_ensemble(submissions, DATASET, members, LABELED_SPLITS)
-    update = prepare_ensemble(archive, context, plan, method_name="ensemble1", seed=None,
+    update = prepare_ensemble(archive, context, plan, method_name=None,
+                              method_display_name="Strong ensemble", seed=None,
                               intersect_segments=False,
                               description="Ensemble of strong-probs seeds 1-3.")
     created = archive.apply_model_update(update, submitter=SUBMITTER)

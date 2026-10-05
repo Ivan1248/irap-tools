@@ -531,6 +531,13 @@ class MethodScores:
     def num_models(self) -> int:
         return len(self.models)
 
+    @property
+    def shown_method_name(self) -> str:
+        """The shown method name of the models (`archive.Model.shown_method_name`), which is the
+        same for the models of a method, or `method_name` if there are no models."""
+        return (self.models[0].submission.model.shown_method_name if self.models
+                else self.method_name)
+
 
 def select_scored_models(submissions: T.Iterable[Submission],
                          submission_id_to_scoring: T.Mapping[int, SubmissionScoring],

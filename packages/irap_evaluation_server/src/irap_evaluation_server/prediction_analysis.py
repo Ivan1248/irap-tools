@@ -247,7 +247,7 @@ def get_context_segment_ids(metadata: IRAPMetadata, segment_id: str,
 class ModelPrediction:
     """
     Attributes:
-        label: The label of the model (`archive.Model.label`).
+        label: The shown label of the model (`archive.Model.shown_label`).
         probs: (K,) float32 distribution in the class order of the evaluation set, None if the
             prediction is invalid.
     """
@@ -304,7 +304,7 @@ def get_segment_detail(metadata: IRAPMetadata, aligned_seq: T.Sequence[AlignedPr
         irap_codes=evaluation_set.vocabulary.get_irap_codes(attribute),
         label_index=None if label_index == IGNORE_LABEL_INDEX else label_index,
         model_predictions=tuple(
-            ModelPrediction(aligned.submission.label,
+            ModelPrediction(aligned.submission.shown_label,
                             aligned.predictions.probs[attribute][segment_index]
                             if aligned.predictions.is_valid[attribute][segment_index] else None)
             for aligned in aligned_seq),

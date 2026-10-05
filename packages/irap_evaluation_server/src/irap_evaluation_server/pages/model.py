@@ -173,9 +173,10 @@ class _ModelPage:
             }
             if model.is_deleted:
                 rows["Deleted"] = format_utc_time(model.deleted_at)
-            if not self.can_write:  # Otherwise it is edited below.
+            if not self.can_write:  # Otherwise they are edited below.
+                rows["Method display name"] = model.method_display_name or "–"
                 rows["Description"] = model.description or "–"
-            ui.label(f"Model {model.label}{' (deleted)' if model.is_deleted else ''}"
+            ui.label(f"Model {model.shown_label}{' (deleted)' if model.is_deleted else ''}"
                      ).classes("section-title")
             with ui.element("div").classes("key-values"):
                 for key, value in rows.items():
@@ -189,15 +190,27 @@ class _ModelPage:
             await self.run_change(lambda actor: self.archive.set_model_description(
                 self.model_id, description, actor=actor), status_label)
 
+        async def on_display_name_saved(display_name: str) -> None:
+            await self.run_change(lambda actor: self.archive.set_method_display_name(
+                self.model_id, display_name, actor=actor), status_label)
+
         async def on_deletion_clicked(is_deleted: bool) -> None:
             await self.run_change(lambda actor: self.archive.set_model_deleted(
                 self.model_id, is_deleted, actor=actor), status_label)
 
         description = {"text": self.snapshot.model.description}
+        display_name = {"text": self.snapshot.model.method_display_name or ""}
         with ui.element("section").classes("panel"):
             show_details()
             # Not refreshed with the details, so that a refresh does not undo an edit.
             if self.can_write:
+                with ui.element("div").classes("form-row items-end"):
+                    create_native_input("Method display name (for all models of the method)",
+                                        display_name["text"],
+                                        lambda text: display_name.update(text=text),
+                                        placeholder="none", size=40)
+                    create_native_button("Save display name",
+                                         lambda: on_display_name_saved(display_name["text"]))
                 with ui.element("div").classes("form-row items-end"):
                     create_native_input("Description", description["text"],
                                         lambda text: description.update(text=text), size=60)
@@ -412,7 +425,7 @@ class _ModelPage:
                 ui.label("The model has no active files.").classes("muted")
                 return
             form.update(split_to_is_chosen=dict.fromkeys(active_splits, True),
-                        coder=model.method_name, date=parse_coding_date(""))
+                        coder=model.shown_method_name, date=parse_coding_date(""))
             with ui.element("div").classes("form-row items-end"):
                 for split in active_splits:
                     create_native_checkbox(
