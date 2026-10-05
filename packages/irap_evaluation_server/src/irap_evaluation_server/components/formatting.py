@@ -20,7 +20,7 @@ _ACTION_DETAIL_LABELS = {"file_name": "File", "archive_member": "File in the arc
                          "members": "Members", "intersect_segments": "Only common segments",
                          "old_description": "Old description", "description": "Description",
                          "old_display_name": "Old display name", "display_name": "Display name",
-                         "by": "Part of"}
+                         "split": "Split", "by": "Part of"}
 
 
 def format_utc_time(time: datetime) -> str:
@@ -47,6 +47,14 @@ def make_model_link_html(model_id: int, text: str, split: str = "",
     return f'<a href="{path}">{html.escape(text)}</a>'
 
 
+def make_truncated_name_html(name: str, content_html: str | None = None) -> str:
+    """Makes a `truncated-name` (`styles.css`) of the escaped name, or of `content_html`, e.g. a
+    link with the name as its text, with the name as its tooltip."""
+    escaped_name = html.escape(name)
+    content_html = escaped_name if content_html is None else content_html
+    return f'<div class="truncated-name" title="{escaped_name}">{content_html}</div>'
+
+
 def make_code_spans_html(text: str) -> str:
     """Escapes `text` and puts each span between backticks in `<code>`, e.g. a file name in a
     note.
@@ -61,10 +69,28 @@ def make_code_spans_html(text: str) -> str:
                    for i, p in enumerate(parts))
 
 
-def make_table_html(header_cells: T.Sequence[str], rows: T.Sequence[str]) -> str:
-    """Makes a `data-table` (`styles.css`) of escaped header texts and `<tr>` rows."""
+def make_table_html(header_cells: T.Sequence[str], rows: T.Sequence[str],
+                    number_headers: T.Collection[str] = ()) -> str:
+    """Makes a `data-table` (`styles.css`) of escaped header texts and `<tr>` rows.
+
+    Args:
+        number_headers: The headers of the columns of `number` cells, which are right-aligned like
+            the cells.
+
+    Raises:
+        ValueError: If a header in `number_headers` is not in `header_cells`.
+    """
+    if unknown := set(number_headers) - set(header_cells):
+        raise ValueError(f"Number headers not in the header: {sorted(unknown)}.")
     return make_table_html_from_header(
-        "".join(f"<th>{html.escape(cell)}</th>" for cell in header_cells), rows)
+        "".join(make_header_cell_html(c, c in number_headers) for c in header_cells), rows)
+
+
+def make_header_cell_html(text: str, is_number: bool = False) -> str:
+    """Makes a `<th>` of an escaped text, right-aligned like the cells if it is the header of
+    `number` cells."""
+    class_attribute = ' class="number"' if is_number else ""
+    return f"<th{class_attribute}>{html.escape(text)}</th>"
 
 
 def make_table_html_from_header(header_html: str, rows: T.Sequence[str]) -> str:
@@ -97,8 +123,8 @@ def _make_action_details_html(details: T.Mapping[str, T.Any]) -> str:
 
 
 #: The text of each `archive.ActionKind` in the action log.
-_ACTION_TEXTS = {"upload": "upload", "ensemble": "ensemble", "delete": "delete file",
-                 "delete_model": "delete model", "restore_model": "restore model",
+_ACTION_TEXTS = {"upload": "upload", "ensemble": "ensemble", "replace": "replace file",
+                 "delete": "delete file", "delete_model": "delete model",
                  "edit_description": "edit description",
                  "edit_method_display_name": "edit method display name"}
 
@@ -108,15 +134,18 @@ def make_action_table_html(entries: T.Sequence[ActionLogEntry],
     """Makes the table of actions, with links to their models.
 
     Args:
-        model_id_to_model: Has the model of each action.
+        model_id_to_model: Has the models that are not deleted, e.g. all of them.
     """
     def make_row(entry: ActionLogEntry) -> str:
-        model = model_id_to_model[entry.model_id]
+        model = model_id_to_model.get(entry.model_id)
+        model_html = (make_truncated_name_html(f"{entry.model_label} (deleted)") if model is None
+                      else make_truncated_name_html(
+                          model.shown_label, make_model_link_html(model.id, model.shown_label)))
         submission = "" if entry.submission_id is None else f"#{entry.submission_id}"
         return (f"<tr><td>{format_utc_time(entry.time)}</td><td>{html.escape(entry.actor)}</td>"
-                f"<td>{_ACTION_TEXTS[entry.action]}</td>"
-                f"<td>{make_model_link_html(model.id, model.shown_label)}</td>"
-                f"<td>{submission}</td><td>{_make_action_details_html(entry.details)}</td></tr>")
+                f"<td>{_ACTION_TEXTS[entry.action]}</td><td>{model_html}</td>"
+                f'<td>{submission}</td><td class="breaks-anywhere">'
+                f"{_make_action_details_html(entry.details)}</td></tr>")
 
     return make_table_html(["Time", "Who", "Action", "Model", "File", "Details"],
                            [make_row(e) for e in entries])

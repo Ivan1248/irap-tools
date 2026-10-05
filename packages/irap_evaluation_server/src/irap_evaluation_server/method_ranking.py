@@ -8,7 +8,6 @@ import typing as T
 import irap_evaluation as ie
 from irap_evaluation.metrics import IRAP_MAIN_METRIC, parse_metric_name
 
-from .archive import Submission
 from .scoring import (
     MethodScores,
     ScoredModel,
@@ -185,9 +184,9 @@ def select_shown_methods(rows: T.Iterable[MethodScores],
     return shown, num_hidden
 
 
-def get_unscored_reason(submission: Submission, scoring: SubmissionScoring | None,
-                        is_current: bool, is_pending: bool) -> str | None:
-    """Explains why a submission has no current scores. Returns None if it has them.
+def get_unscored_reason(scoring: SubmissionScoring | None, is_current: bool,
+                        is_pending: bool) -> str | None:
+    """Explains why an active submission has no current scores. Returns None if it has them.
 
     Args:
         scoring: Its stored scoring, or None.
@@ -196,12 +195,10 @@ def get_unscored_reason(submission: Submission, scoring: SubmissionScoring | Non
     """
     if is_pending:
         return "Scoring…"
-    if submission.is_in_use and scoring is not None and scoring.status == "error":
+    if scoring is not None and scoring.status == "error":
         return f"{scoring.message} It is scored again when the server restarts."
     if scoring is None or not is_current:  # An 'error' scoring is not current.
-        return ("Deleted files and the files of deleted models are not scored."
-                if not submission.is_in_use
-                else "No scores for the current settings and metadata.")
+        return "No scores for the current settings and metadata."
     if scoring.status == "failed":
         return scoring.message
     return None

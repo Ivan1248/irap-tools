@@ -15,7 +15,8 @@ def get_utc_now() -> datetime:
 
 @contextlib.contextmanager
 def connect(database_path: Path) -> T.Iterator[sqlite3.Connection]:
-    """Opens a connection in autocommit mode, so that transactions are explicit (`begin_write`).
+    """Opens a connection in autocommit mode, so that transactions are explicit (`begin_write`),
+    with foreign keys enforced, e.g. so that deleting a submission deletes its cached scores.
 
     Each operation opens its own connection, so that the database can be used from several
     threads.
@@ -23,6 +24,7 @@ def connect(database_path: Path) -> T.Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(database_path, isolation_level=None)
     connection.row_factory = sqlite3.Row
     try:
+        connection.execute("PRAGMA foreign_keys = ON")
         yield connection
     finally:
         connection.close()

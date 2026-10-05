@@ -68,7 +68,7 @@ def test_uploads_are_checked(archive, dataset_contexts):
         **predictions.attribute_to_irap_codes, "Curvature": (1, 3)})
     with pytest.raises(ie.PredictionFormatError, match="Curvature"):
         plan(wrong_codes)
-    assert archive.list_models(include_deleted=True) == []
+    assert archive.list_models() == []
 
 
 def test_remove_uploads(archive):
@@ -198,7 +198,7 @@ def test_archive_contents_are_checked(archive, two_split_contexts, tmp_path,
                          make_member_name_to_contents(two_split_contexts), tmp_path)
     with pytest.raises(ValueError, match=message):
         plan_upload(archive, two_split_contexts, path, file_name="m.zip")
-    assert archive.list_models(include_deleted=True) == []
+    assert archive.list_models() == []
     assert list(archive.uploads_dir.iterdir()) == [path]
 
 

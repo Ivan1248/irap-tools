@@ -12,7 +12,7 @@ import numpy as np
 
 from ..prediction_analysis import SegmentDetail
 from .deck_map import OUTCOME_COLORS
-from .formatting import make_table_html
+from .formatting import make_table_html, make_truncated_name_html
 from .score_tables import format_optional_metric_value
 
 #: The most classes whose matrix cells show their counts. Larger matrices show them only as
@@ -86,7 +86,8 @@ def make_class_table_html(class_report: T.Mapping[str, T.Any],
         rows.append(f"<tr><td>{html.escape(_format_class(code, name))}</td>"
                     f'<td class="number">{class_report["support"][k]}</td>{cells}'
                     f'<td class="number">{int(confusion_matrix[k, -1])}</td></tr>')
-    return make_table_html(["Class", "Support", "P", "R", "F1", "Invalid"], rows)
+    number_headers = ["Support", "P", "R", "F1", "Invalid"]
+    return make_table_html(["Class", *number_headers], rows, number_headers)
 
 
 def make_segment_list_html(segment_indices: T.Sequence[int], segment_ids: T.Sequence[str],
@@ -105,7 +106,8 @@ def make_segment_list_html(segment_indices: T.Sequence[int], segment_ids: T.Sequ
 
 
 def _make_probability_table_html(detail: SegmentDetail) -> str:
-    header = "".join(f"<th>{html.escape(p.label)}</th>" for p in detail.model_predictions)
+    header = "".join(f"<th>{make_truncated_name_html(p.label)}</th>"
+                     for p in detail.model_predictions)
     rows = []
     for k, (code, name) in enumerate(zip(detail.irap_codes, detail.class_names, strict=True)):
         cells = []

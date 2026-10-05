@@ -27,7 +27,7 @@ Permission = T.Literal["view", "write", "admin"]
 PERMISSIONS: tuple[Permission, ...] = T.get_args(Permission)
 PERMISSION_DESCRIPTIONS: T.Mapping[Permission, str] = {
     "view": "Can view, like visitors without an account.",
-    "write": "Can also upload, replace and delete files, delete and restore models, edit"
+    "write": "Can also upload, replace and delete files, delete models, edit"
              " descriptions and create ensembles.",
     "admin": "Can also download the per-class scores of the splits that are not analysed, e.g."
              " test, and change the permissions of the accounts and remove them.",

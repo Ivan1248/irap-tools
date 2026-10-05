@@ -27,9 +27,9 @@ class ModelSummary:
     @classmethod
     def from_submissions(cls, model: Model, submissions: T.Iterable[Submission]) -> T.Self:
         """Args:
-            submissions: Submissions of the model, also deleted ones, which are left out.
+            submissions: Submissions of the model, also replaced ones, which are left out.
         """
-        return cls(model, {s.split: s for s in submissions if not s.is_deleted})
+        return cls(model, {s.split: s for s in submissions if s.is_active})
 
     @property
     def submissions(self) -> list[Submission]:
@@ -87,10 +87,10 @@ class MethodGroup:
 
     @property
     def model_info(self) -> ie.ModelInfo | None:
-        """The `irap_evaluation.ModelInfo` of a model of the method that is not deleted, or None
-        if all are deleted. Its training and early stopping splits are those of all such models."""
-        return next((m.model_info for m in self.models
-                     if m.model_info is not None and not m.model.is_deleted), None)
+        """The `irap_evaluation.ModelInfo` of a model of the method, whose training and early
+        stopping splits are those of all its models, or None if none has an active
+        submission."""
+        return next((m.model_info for m in self.models if m.model_info is not None), None)
 
 
 def summarize_models_by_method(models: T.Iterable[Model],
@@ -100,8 +100,8 @@ def summarize_models_by_method(models: T.Iterable[Model],
 
     Args:
         models: E.g. the models of a dataset.
-        submissions: Submissions, also deleted ones, e.g. all of the dataset. Those of other
-            models and the deleted ones are left out.
+        submissions: Submissions, also replaced ones, e.g. all of the dataset. Those of other
+            models and the replaced ones are left out.
     """
     model_id_to_submissions: dict[int, list[Submission]] = {}
     for s in submissions:

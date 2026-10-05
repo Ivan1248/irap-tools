@@ -263,7 +263,7 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
             show_methods(models, subset, matching_method_names)
 
         unlisted = [(s, reason) for s in submissions
-                    if (reason := get_unscored_reason(s, submission_id_to_scoring.get(s.id),
+                    if (reason := get_unscored_reason(submission_id_to_scoring.get(s.id),
                                                       s.id in current, s.id in pending_ids))]
         if unlisted:
             ui.label("Unscored files").classes("section-title")

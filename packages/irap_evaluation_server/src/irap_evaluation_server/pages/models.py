@@ -6,26 +6,27 @@ import html
 import typing as T
 from pathlib import Path
 
+import irap_evaluation as ie
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
-from irap_evaluation.reports.evaluation_report import to_valid_file_name
 from nicegui import app, run, ui
 
 from ..accounts import can_write
-from ..archive import ModelArchive, Submission
+from ..archive import ModelArchive, Submission, get_download_file_name
 from ..components.account_sessions import AccountSessions
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import (
     format_splits,
     format_utc_time,
     make_code_spans_html,
+    make_header_cell_html,
     make_model_link_html,
     make_table_html_from_header,
+    make_truncated_name_html,
 )
 from ..components.native_controls import (
     create_file_upload_input,
     create_native_button,
-    create_native_checkbox,
     create_native_input,
     create_native_select,
     set_native_input_placeholder,
@@ -41,7 +42,6 @@ from ..components.routes import (
     make_query_path,
 )
 from ..datasets import DatasetContext
-from ..method_ranking import describe_split_use
 from ..model_listing import MethodGroup, ModelSummary, summarize_models_by_method
 from ..scoring_worker import ScoringWorker
 from ..uploads import (
@@ -62,15 +62,17 @@ _UPLOAD_FORM_TITLE = "Upload predictions"
 
 #: The columns of the models table after the split columns.
 _SUMMARY_COLUMNS = ("Output", "Segments", "Attributes", "Description", "Updated")
-
-
-def get_download_file_name(submission: Submission) -> str:
-    return to_valid_file_name(f"{submission.label}.{submission.split}.predictions.parquet")
+_SUMMARY_NUMBER_COLUMNS = ("Segments", "Attributes")
+#: The mark of what a model used a split for, in the column of the split, which the header names
+#: (`method_ranking.describe_split_use` for marks without it).
+_SPLIT_USE_MARKS: dict[ie.SplitUse, str] = {"training": "training", "early_stopping": "early stop",
+                                            "unknown": "unknown", "held_out": ""}
 
 
 def _make_submission_cell_html(summary: ModelSummary, split: str) -> str:
     """Makes the cell of a split: a link to the model page with the scores of its active
-    submission, the submission details in the title, and a mark if the model used the split."""
+    submission, the submission details in the title, and a mark if the model used the split, with
+    the explanation in its title."""
     submission = summary.split_to_submission.get(split)
     if submission is None:
         return '<td class="mark"></td>'
@@ -78,8 +80,11 @@ def _make_submission_cell_html(summary: ModelSummary, split: str) -> str:
              f" {submission.submitter}, {submission.num_segments} segments,"
              f" {submission.num_attributes} attributes")
     link = make_model_link_html(summary.model.id, "✓", split)
-    mark = describe_split_use(submission.model_info.get_split_use(split), split)
-    mark_html = f'<div class="interval">{html.escape(mark)}</div>' if mark else ""
+    split_use = submission.model_info.get_split_use(split)
+    explanation = ie.explain_split_use(split_use, split)
+    mark_html = ("" if explanation is None else
+                 f'<div class="interval" title="{html.escape(explanation)}">'
+                 f"{_SPLIT_USE_MARKS[split_use]}</div>")
     return f'<td class="mark" title="{html.escape(title)}">{link}{mark_html}</td>'
 
 
@@ -105,7 +110,8 @@ def _make_method_row_html(group: MethodGroup, num_columns: int) -> str:
         splits = f' <span class="muted">· {html.escape(splits)}</span>'
     method_name = ("" if group.shown_method_name == group.method_name
                    else f' <span class="muted">({html.escape(group.method_name)})</span>')
-    return (f'<tr class="method-row"><td colspan="{num_columns}">'
+    # The internal method name can be long without spaces. Wrapped to not widen the columns.
+    return (f'<tr class="method-row"><td colspan="{num_columns}" class="breaks-anywhere">'
             f"<b>{html.escape(group.shown_method_name)}</b>{method_name}{splits}</td></tr>")
 
 
@@ -118,17 +124,17 @@ def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Seque
     """
     header_html = "".join([
         "<th>Model</th>", *(f'<th class="mark">{html.escape(s)}</th>' for s in split_names),
-        *(f"<th>{html.escape(c)}</th>" for c in _SUMMARY_COLUMNS)])
+        *(make_header_cell_html(c, c in _SUMMARY_NUMBER_COLUMNS) for c in _SUMMARY_COLUMNS)])
     num_columns = 1 + len(split_names) + len(_SUMMARY_COLUMNS)
     rows = []
     for group in groups:
         rows.append(_make_method_row_html(group, num_columns))
         for summary in group.models:
             model = summary.model
-            deleted = " (deleted)" if model.is_deleted else ""
+            label_html = make_truncated_name_html(
+                model.shown_label, make_model_link_html(model.id, model.shown_label))
             rows.append(
-                f'<tr class="{"deleted" if model.is_deleted else ""}">'
-                f"<td>{make_model_link_html(model.id, model.shown_label)}{deleted}</td>"
+                f"<tr><td>{label_html}</td>"
                 f"{''.join(_make_submission_cell_html(summary, s) for s in split_names)}"
                 f"{_make_summary_cells_html(summary)}</tr>")
     return make_table_html_from_header(header_html, rows)
@@ -299,7 +305,7 @@ def _create_upload_form(archive: ModelArchive,
             if not client.is_deleted:
                 set_status(status_label, f"{file_name} is not stored.")
             return
-        await run.io_bound(worker.update_model_submissions, submissions[0].model.id)
+        await run.io_bound(worker.update_model_submissions, submissions[0].model)
         if not client.is_deleted:
             ui.navigate.to(get_model_path(submissions[0].model.id, submissions[0].split))
 
@@ -311,8 +317,8 @@ def _create_upload_form(archive: ModelArchive,
             "A `.predictions.parquet` file in the `irap_evaluation` format, whose header gives"
             " the dataset, split, method, seed and training splits, or a `.zip` archive with"
             " one such file per split of one model, stored only if all are accepted. A file"
-            " of a split that the model already has replaces its active file, which is deleted"
-            " but can still be downloaded."),
+            " of a split that the model already has replaces its active file, which is kept as"
+            " a replaced file."),
             sanitize=False).classes("muted")
         with ui.element("div").classes("form-row"):
             create_file_upload_input("File", UPLOAD_PATH, ".parquet,.zip",
@@ -396,26 +402,25 @@ def register_models_pages(archive: ModelArchive,
         return RedirectResponse(SCORES_PATH)
 
     @ui.page(MODELS_PATH, title="Models · iRAP evaluation")
-    def models_page(dataset: str = "", deleted: bool = False) -> None:
+    def models_page(dataset: str = "") -> None:
         account = sessions.get_account()
         if dataset and dataset not in dataset_contexts:
             with create_page_frame(MODELS_PATH, account):
                 ui.label(f"Unknown dataset {dataset!r}. Datasets:"
                          f" {', '.join(dataset_contexts)}.").classes("error")
             return
-        filters = {"dataset": dataset, "deleted": deleted}
 
-        def on_filter_changed(key: str, value: str | bool) -> None:
-            filters[key] = value
-            ui.navigate.history.replace(make_query_path(
-                MODELS_PATH, {k: "1" if v is True else v for k, v in filters.items()}))
+        def on_dataset_changed(value: str) -> None:
+            nonlocal dataset
+            dataset = value
+            ui.navigate.history.replace(make_query_path(MODELS_PATH, {"dataset": dataset}))
             show_tables.refresh()
 
         @ui.refreshable
         def show_tables() -> None:
-            models = archive.list_models(include_deleted=filters["deleted"])
-            submissions = archive.list_submissions(include_deleted_models=filters["deleted"])
-            datasets = [filters["dataset"]] if filters["dataset"] else list(dataset_contexts)
+            models = archive.list_models()
+            submissions = archive.list_submissions()
+            datasets = [dataset] if dataset else list(dataset_contexts)
             shown_datasets = [d for d in datasets if any(m.dataset == d for m in models)]
             if not shown_datasets:
                 ui.label("No models.").classes("muted")
@@ -437,10 +442,8 @@ def register_models_pages(archive: ModelArchive,
                 ui.label("Models").classes("section-title")
                 with ui.element("div").classes("form-row"):
                     create_native_select("Dataset", {"": "All", **{n: n for n in dataset_contexts}},
-                                         filters["dataset"],
-                                         lambda v: on_filter_changed("dataset", v))
-                    create_native_checkbox("Show deleted", filters["deleted"],
-                                           lambda v: on_filter_changed("deleted", v))
+                                         dataset, on_dataset_changed)
                 ui.label("A ✓ opens the Model page with the scores of the split's active file."
-                         " Hover over it for the file details.").classes("muted")
+                         " Hover over it for the file details. Below it: whether the model used"
+                         " the split for training or early stopping.").classes("muted")
                 show_tables()

@@ -8,7 +8,7 @@ SCORES_PATH = "/scores"
 ANALYSIS_PATH = "/analysis"
 #: With the query parameter `dataset`.
 ENSEMBLE_PATH = "/ensemble"
-#: With the query parameters `dataset` and `deleted` ('1' to show deleted models).
+#: With the query parameter `dataset`.
 MODELS_PATH = "/models"
 #: With the query parameters `split` (of the scores) and an attribute subset
 #: (`ATTRIBUTE_PARAMETER`).
@@ -26,6 +26,8 @@ REGISTER_ENDPOINT_PATH = "/api/register"
 SIGN_OUT_ENDPOINT_PATH = "/api/sign-out"
 UPLOAD_PATH = "/api/uploads"
 PREDICTIONS_DOWNLOAD_PATH = "/api/submissions/{submission_id}/predictions.parquet"
+#: The active files of a model (`ModelArchive.write_model_predictions_zip`).
+MODEL_PREDICTIONS_DOWNLOAD_PATH = "/api/models/{model_id}/predictions.zip"
 SCORES_DOWNLOAD_PATH = "/api/submissions/{submission_id}/scores/{evaluation_set}.json"
 SEGMENT_IMAGE_PATH = "/api/datasets/{dataset}/images/{segment_id}"
 #: The static files of the map libraries (`map_libraries`).
@@ -76,6 +78,10 @@ def get_segment_image_path(dataset: str, segment_id: str) -> str:
 
 def get_download_path(submission_id: int) -> str:
     return PREDICTIONS_DOWNLOAD_PATH.format(submission_id=submission_id)
+
+
+def get_model_download_path(model_id: int) -> str:
+    return MODEL_PREDICTIONS_DOWNLOAD_PATH.format(model_id=model_id)
 
 
 def get_scores_download_path(submission_id: int, evaluation_set: str) -> str:

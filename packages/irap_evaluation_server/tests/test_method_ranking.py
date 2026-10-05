@@ -36,20 +36,20 @@ from irap_evaluation_server.scoring import (
 _TIME = datetime(2026, 10, 3, tzinfo=timezone.utc)
 
 
-def make_model_row(model_id, method_name="m", seed=None, deleted_at=None,
-                   method_display_name=None):
+def make_model_row(model_id, method_name="m", seed=None, method_display_name=None):
     return Model(id=model_id, dataset="vietnam", method_name=method_name,
                  method_display_name=method_display_name, seed=seed, description="",
-                 created_at=_TIME, deleted_at=deleted_at)
+                 created_at=_TIME)
 
 
-def make_submission(submission_id, method_name="m", seed=None, deleted_at=None,
+def make_submission(submission_id, method_name="m", seed=None, replaced_at=None,
                     training_splits=(), model=None, split="val", num_attributes=2):
     return Submission(
         id=submission_id, model=model or make_model_row(submission_id, method_name, seed),
         split=split, file_sha256="0" * 64, output_kind="probs", context_offsets=(0,),
         training_splits=training_splits, early_stopping_splits=(), num_segments=10,
-        num_attributes=num_attributes, submitter="Bo", uploaded_at=_TIME, deleted_at=deleted_at)
+        num_attributes=num_attributes, submitter="Bo", uploaded_at=_TIME,
+        replaced_at=replaced_at)
 
 
 def make_scored_model(submission_id, attribute_to_value, method_name="m",
@@ -158,7 +158,7 @@ def test_summarize_models_by_method():
               make_model_row(3, "b"), make_model_row(4, "c")]
     submissions = [make_submission(10, model=models[0], split="val", num_attributes=3),
                    make_submission(11, model=models[0], split="test", num_attributes=5),
-                   make_submission(12, model=models[0], split="val", deleted_at=_TIME),
+                   make_submission(12, model=models[0], split="val", replaced_at=_TIME),
                    make_submission(13, model=models[1]),
                    make_submission(14, model=models[2], training_splits=None)]
     later = dc.replace(submissions[4], uploaded_at=_TIME.replace(year=2027))
@@ -177,20 +177,16 @@ def test_summarize_models_by_method():
 
 
 def test_get_unscored_reason():
-    submission = make_submission(1)
     scoring = SubmissionScoring(submission_id=1, status="scored", message="", notes=(),
                                 settings_fingerprint="s", evaluation_sets_fingerprint="e",
                                 scored_at=_TIME)
-    assert get_unscored_reason(submission, scoring, is_current=True, is_pending=False) is None
-    assert get_unscored_reason(submission, scoring, True, is_pending=True) == "Scoring…"
-    assert "current settings" in get_unscored_reason(submission, None, False, False)
-    deleted = make_submission(1, deleted_at=_TIME)
-    assert get_unscored_reason(deleted, None, False, False).startswith("Deleted files")
+    assert get_unscored_reason(scoring, is_current=True, is_pending=False) is None
+    assert get_unscored_reason(scoring, True, is_pending=True) == "Scoring…"
+    assert "current settings" in get_unscored_reason(None, False, False)
     failed = dc.replace(scoring, status="failed", message="No predictions for 3 segments.")
-    assert get_unscored_reason(submission, failed, True, False) == failed.message
+    assert get_unscored_reason(failed, True, False) == failed.message
     error = dc.replace(scoring, status="error", message="Unexpected error.")
-    assert "scored again" in get_unscored_reason(submission, error, False, False)
-    assert get_unscored_reason(deleted, error, False, False).startswith("Deleted files")
+    assert "scored again" in get_unscored_reason(error, False, False)
 
 
 def test_attribute_subset():

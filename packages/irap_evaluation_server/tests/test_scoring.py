@@ -1,6 +1,7 @@
 import dataclasses as dc
 import json
 import math
+import sqlite3
 
 import irap_evaluation as ie
 import numpy as np
@@ -159,22 +160,47 @@ def test_models_that_cannot_be_combined(archive, dataset_contexts, worker):
     assert "differ in metrics" in method_scores.error
 
 
-def test_deletion_updates_the_method_intervals(archive, dataset_contexts, worker):
+def test_deletion_deletes_the_cached_values(archive, dataset_contexts, store, worker):
     submissions = [add_model(archive, dataset_contexts, make_model(dataset_contexts, "m", seed))
-                   for seed in (1, 2)]
+                   for seed in (1, 2, 3)]
     models = score_and_get_models(worker, [s.id for s in submissions])
     attributes = models[0].scores.attributes
-    assert worker.get_result(make_interval_request(models, attributes, worker.settings))
+    [deleted_model, *remaining] = sorted(models, key=lambda m: m.submission.id)
+    deleted = deleted_model.submission
+    method_request = make_interval_request(models, attributes, worker.settings)
+    kept_request = make_interval_request(remaining[:1], attributes, worker.settings)
+    assert store.get_result(method_request) and store.get_result(kept_request)
 
-    archive.set_model_deleted(submissions[0].model.id, True, actor="Bo")
-    [remaining] = score_and_get_models(worker, [submissions[0].id])
-    assert remaining.submission.id == submissions[1].id
-    assert worker.get_result(make_interval_request([remaining], attributes, worker.settings))
+    archive.delete_model(deleted.model.id, actor="Bo")
+    assert store.get_scoring(deleted.id) is None
+    assert store.get_score_report(deleted.id, "reference") is None
+    assert store.get_result(method_request) is None
+    assert store.get_result(kept_request) is not None
 
-    # A restored model is not scored again, since its scoring is current.
-    archive.set_model_deleted(submissions[0].model.id, False, actor="Bo")
-    worker.update_submissions([archive.get_submission(submissions[0].id)])
-    assert not worker.is_scoring_pending(submissions[0].id)
+    # The intervals of the remaining models of the method are computed in advance.
+    remaining_request = make_interval_request(remaining, attributes, worker.settings)
+    assert store.get_result(remaining_request) is None
+    worker.update_model_submissions(deleted.model)
+    worker.run_pending()
+    assert store.get_result(remaining_request) is not None
+
+
+def test_values_of_deleted_submissions_are_not_stored(archive, dataset_contexts, store, worker):
+    submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
+    [model] = score_and_get_models(worker, [submission.id])
+    scoring = store.get_scoring(submission.id)
+    request = make_interval_request([model], model.scores.attributes, worker.settings)
+    cached = worker.get_result(request)
+    archive.delete_model(submission.model.id, actor="Bo")
+
+    # E.g. values computed while the submission was deleted.
+    with pytest.raises(sqlite3.IntegrityError):
+        store.set_scoring(scoring, {s.evaluation_set: {} for s in scoring.evaluation_set_scores})
+    with pytest.raises(sqlite3.IntegrityError):
+        store.set_result(request, cached)
+    assert store.get_scoring(submission.id) is None and store.get_result(request) is None
+    worker._score(submission.id)  # Queued before the deletion.
+    assert store.get_scoring(submission.id) is None
 
 
 def test_a_current_scoring_is_not_scored_again(archive, dataset_contexts, store, worker,

@@ -4,11 +4,12 @@ log.
 A model (`Model`) is one model of a method on a dataset, e.g. one trained network, identified by
 its dataset, method name and seed. Its submissions (`Submission`) are its prediction files, at most
 one active one per split. A submission of a split that the model already has replaces the active
-one, which is deleted. Deleted submissions are kept, e.g. for download, but cannot be restored,
-only uploaded again. Deleted models are kept and can be restored. Deleting the last active
-submission of a model deletes the model, and an upload restores it, so a model that is not deleted
-has an active submission. Each action records who did it, the name of an account that can write
-(`accounts`).
+one, which is kept as a replaced submission, e.g. for download. Deletion is permanent: deleting a
+submission removes its row, its file and its cached scores (`scoring.ScoreStore`), and deleting a
+model removes it with all its submissions. The last active submission of a model is deleted only
+with the model, so each model has an active submission. The action log keeps the actions on
+deleted models and submissions. Each action records who did it, the name of an account that can
+write (`accounts`).
 
 A method on a dataset can have a display name, which the pages show instead of the method name.
 An update sets it, given with the update or from the files that have one
@@ -18,9 +19,11 @@ The data directory holds:
 
 - `archive.sqlite3`: the index of the models and submissions, the method display names, and the
   action log (and the score cache of `scoring.ScoreStore`),
-- `submissions/<id>/predictions.parquet`: the stored files, which are not modified,
+- `submissions/<id>/predictions.parquet`: the stored files, which are not modified until they are
+  deleted,
 - `uploads/`: files that are not stored yet: uploaded files and .zip archives, the files
-  extracted from archives or rewritten with another seed, and ensembles.
+  extracted from archives or rewritten with another seed, ensembles, and the .zip archives of
+  downloads while they are sent.
 """
 
 import dataclasses as dc
@@ -29,14 +32,17 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import time
 import typing as T
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
 import irap_evaluation as ie
+from irap_evaluation.reports.evaluation_report import to_valid_file_name
 
 from .database import begin_write, connect, get_utc_now, initialize_schema
 
@@ -45,7 +51,7 @@ from .database import begin_write, connect, get_utc_now, initialize_schema
 AddingActionKind = T.Literal["upload", "ensemble"]
 ADDING_ACTION_KINDS: tuple[str, ...] = T.get_args(AddingActionKind)
 ActionKind = AddingActionKind | T.Literal[
-    "delete", "delete_model", "restore_model", "edit_description", "edit_method_display_name"]
+    "replace", "delete", "delete_model", "edit_description", "edit_method_display_name"]
 
 #: The version of the database schema (`PRAGMA user_version`). A database of another version is
 #: refused, since there is no migration.
@@ -60,15 +66,16 @@ ARCHIVE_SUFFIX = ".zip"
 _UPLOAD_NAME_PATTERN = re.compile(
     rf"[0-9a-f]{{32}}({re.escape(PREDICTIONS_SUFFIX)}|{re.escape(ARCHIVE_SUFFIX)})")
 
+#: AUTOINCREMENT ids of models and submissions are not reused after a deletion, so that the
+#: action log, the details of ensembles and old links do not refer to new ones.
 _SCHEMA = """
 CREATE TABLE models (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     dataset TEXT NOT NULL,
     method_name TEXT NOT NULL,
     seed INTEGER,
     description TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    deleted_at TEXT
+    created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX model_identity ON models (dataset, method_name, COALESCE(seed, 'none'));
 -- The methods with a display name.
@@ -79,7 +86,7 @@ CREATE TABLE methods (
     PRIMARY KEY (dataset, method_name)
 );
 CREATE TABLE submissions (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     model_id INTEGER NOT NULL REFERENCES models (id),
     split TEXT NOT NULL,
     file_sha256 TEXT NOT NULL,
@@ -91,16 +98,18 @@ CREATE TABLE submissions (
     num_attributes INTEGER NOT NULL,
     submitter TEXT NOT NULL,
     uploaded_at TEXT NOT NULL,
-    deleted_at TEXT
+    replaced_at TEXT
 );
-CREATE UNIQUE INDEX active_submission ON submissions (model_id, split) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX active_submission ON submissions (model_id, split) WHERE replaced_at IS NULL;
+-- Without foreign keys, since the actions outlive deleted models and submissions.
 CREATE TABLE actions (
     id INTEGER PRIMARY KEY,
     time TEXT NOT NULL,
     actor TEXT NOT NULL,
     action TEXT NOT NULL,
-    model_id INTEGER NOT NULL REFERENCES models (id),
-    submission_id INTEGER REFERENCES submissions (id),
+    model_id INTEGER NOT NULL,
+    model_label TEXT NOT NULL,
+    submission_id INTEGER,
     details TEXT NOT NULL
 );
 """
@@ -109,7 +118,7 @@ _METHOD_JOIN = ("LEFT JOIN methods d ON d.dataset = m.dataset"
                 " AND d.method_name = m.method_name")
 _MODEL_QUERY = f"SELECT m.*, d.display_name AS method_display_name FROM models m {_METHOD_JOIN}"
 _SUBMISSION_QUERY = ("SELECT s.*, m.dataset, m.method_name, m.seed, m.description, m.created_at,"
-                     " m.deleted_at AS model_deleted_at, d.display_name AS method_display_name"
+                     " d.display_name AS method_display_name"
                      f" FROM submissions s JOIN models m ON m.id = s.model_id {_METHOD_JOIN}")
 
 
@@ -121,7 +130,6 @@ class Model:
         method_display_name: The display name of the method on the dataset, or None.
         description: Free text about the model, e.g. how it was trained.
         created_at: The time of its first submission, in UTC.
-        deleted_at: The time of the deletion, in UTC, or None if it is not deleted.
     """
 
     id: int
@@ -131,11 +139,6 @@ class Model:
     seed: int | None
     description: str
     created_at: datetime
-    deleted_at: datetime | None
-
-    @property
-    def is_deleted(self) -> bool:
-        return self.deleted_at is not None
 
     @property
     def label(self) -> str:
@@ -164,8 +167,8 @@ class Submission:
         training_splits, early_stopping_splits: See `irap_evaluation.ModelInfo`.
         submitter: The account name of the writer who uploaded it.
         uploaded_at: The time of the upload, in UTC.
-        deleted_at: The time of the deletion or replacement, in UTC, or None if it is the active
-            file of its split.
+        replaced_at: The time of the replacement, in UTC, or None if it is the active file of its
+            split, which is scored and shown.
     """
 
     id: int
@@ -180,11 +183,11 @@ class Submission:
     num_attributes: int
     submitter: str
     uploaded_at: datetime
-    deleted_at: datetime | None
+    replaced_at: datetime | None
 
     @property
-    def is_deleted(self) -> bool:
-        return self.deleted_at is not None
+    def is_active(self) -> bool:
+        return self.replaced_at is None
 
     @property
     def dataset(self) -> str:
@@ -205,12 +208,6 @@ class Submission:
                             training_splits=self.training_splits,
                             early_stopping_splits=self.early_stopping_splits, seed=self.model.seed)
 
-    @property
-    def is_in_use(self) -> bool:
-        """Whether it is the active file of its split and its model is not deleted, so that it
-        is scored and shown."""
-        return not self.is_deleted and not self.model.is_deleted
-
 
 @dc.dataclass(frozen=True)
 class ActionLogEntry:
@@ -219,8 +216,10 @@ class ActionLogEntry:
     Attributes:
         time: In UTC.
         actor: The account name of the writer who did it.
-        model_id: The model that it is on.
-        submission_id: The submission that it is on, None for an action on the model.
+        model_id: The model that it is on, which may have been deleted.
+        model_label: The `Model.label` of the model, e.g. for a deleted one.
+        submission_id: The submission that it is on, which may have been deleted, None for an
+            action on the model.
         details: JSON-compatible details, e.g. the name of an uploaded file.
     """
 
@@ -229,6 +228,7 @@ class ActionLogEntry:
     actor: str
     action: ActionKind
     model_id: int
+    model_label: str
     submission_id: int | None
     details: T.Mapping[str, T.Any]
 
@@ -300,6 +300,10 @@ def get_differing_model_fields(files: T.Iterable[Submission | NewSubmission]) ->
     return [name for name, get in MODEL_FILE_FIELDS.items() if len({get(f) for f in files}) > 1]
 
 
+def get_download_file_name(submission: Submission) -> str:
+    return to_valid_file_name(f"{submission.label}.{submission.split}.predictions.parquet")
+
+
 def describe_model_fields(file: Submission | NewSubmission, names: T.Iterable[str]) -> str:
     """Formats the values of some `MODEL_FILE_FIELDS` of a file, e.g. those that differ."""
     return ", ".join(f"{name} {MODEL_FILE_FIELDS[name](file)}" for name in names)
@@ -323,8 +327,8 @@ class ModelUpdate:
         replaced: Split -> the active submission that a new one replaces.
         replaces_all_files: Whether the new submissions replace all files of the model, e.g.
             those of an ensemble, whose files are made of the same members.
-        deleted: Split -> an active submission of another split, which the update deletes if it
-            replaces all files of the model.
+        replaced_other_splits: Split -> an active submission of another split, which the update
+            replaces if it replaces all files of the model.
         source_submissions: The submissions that the new ones are made of, e.g. the members of
             an ensemble, which must still be active when the update is applied.
     """
@@ -337,7 +341,7 @@ class ModelUpdate:
     old_method_display_name: str | None
     replaced: T.Mapping[str, Submission]
     replaces_all_files: bool
-    deleted: T.Mapping[str, Submission]
+    replaced_other_splits: T.Mapping[str, Submission]
     source_submissions: tuple[Submission, ...]
 
     @property
@@ -358,23 +362,20 @@ class ModelUpdate:
 
     @property
     def confirmations(self) -> list[str]:
-        """The changes that the user confirms before the update is applied: replaced and deleted
-        files, a restored model, and a description or a method display name that replaces
-        another one."""
+        """The changes that the user confirms before the update is applied: replaced files, and a
+        description or a method display name that replaces another one."""
         def describe(submission: Submission) -> str:
             return (f"file #{submission.id} of {self.label}, uploaded"
                     f" {submission.uploaded_at:%Y-%m-%d %H:%M} UTC by {submission.submitter}")
 
+        kept = ("It is kept as a replaced file, which can be downloaded or deleted, but only an"
+                " upload makes it active again.")
         items = []
-        if self.model is not None and self.model.is_deleted:
-            items.append(f"Restores the deleted model {self.label}.")
         for split, submission in self.replaced.items():
-            items.append(f"Replaces the {split} {describe(submission)}. It can still be"
-                         f" downloaded, but only an upload restores it.")
-        for split, submission in self.deleted.items():
-            items.append(f"Deletes the {split} {describe(submission)}, since the new files"
-                         f" replace all files of the model. It can still be downloaded, but only"
-                         f" an upload restores it.")
+            items.append(f"Replaces the {split} {describe(submission)}. {kept}")
+        for split, submission in self.replaced_other_splits.items():
+            items.append(f"Replaces the {split} {describe(submission)}, since the new files"
+                         f" replace all files of the model. {kept}")
         if (self.model is not None and self.description is not None and self.model.description
                 and self.description != self.model.description):
             items.append(f"Changes the description of {self.label} from"
@@ -427,18 +428,16 @@ def _from_optional_time(text: str | None) -> datetime | None:
     return None if text is None else datetime.fromisoformat(text)
 
 
-def _to_model(row: sqlite3.Row, id_column: str = "id",
-              deleted_at_column: str = "deleted_at") -> Model:
+def _to_model(row: sqlite3.Row, id_column: str = "id") -> Model:
     return Model(id=row[id_column], dataset=row["dataset"], method_name=row["method_name"],
                  method_display_name=row["method_display_name"], seed=row["seed"],
                  description=row["description"],
-                 created_at=datetime.fromisoformat(row["created_at"]),
-                 deleted_at=_from_optional_time(row[deleted_at_column]))
+                 created_at=datetime.fromisoformat(row["created_at"]))
 
 
 def _to_submission(row: sqlite3.Row) -> Submission:
     """Converts a row of `_SUBMISSION_QUERY`."""
-    model = _to_model(row, id_column="model_id", deleted_at_column="model_deleted_at")
+    model = _to_model(row, id_column="model_id")
     return Submission(
         id=row["id"], model=model, split=row["split"],
         file_sha256=row["file_sha256"], output_kind=row["output_kind"],
@@ -447,13 +446,14 @@ def _to_submission(row: sqlite3.Row) -> Submission:
         early_stopping_splits=tuple(json.loads(row["early_stopping_splits"])),
         num_segments=row["num_segments"], num_attributes=row["num_attributes"],
         submitter=row["submitter"], uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
-        deleted_at=_from_optional_time(row["deleted_at"]))
+        replaced_at=_from_optional_time(row["replaced_at"]))
 
 
 def _to_action_log_entry(row: sqlite3.Row) -> ActionLogEntry:
     return ActionLogEntry(id=row["id"], time=datetime.fromisoformat(row["time"]),
                           actor=row["actor"], action=row["action"], model_id=row["model_id"],
-                          submission_id=row["submission_id"], details=json.loads(row["details"]))
+                          model_label=row["model_label"], submission_id=row["submission_id"],
+                          details=json.loads(row["details"]))
 
 
 def _check_actor(actor: str) -> str:
@@ -506,38 +506,38 @@ def _list_submissions(connection: sqlite3.Connection, where: str,
 
 
 def _list_active_submissions(connection: sqlite3.Connection, model_id: int) -> list[Submission]:
-    return _list_submissions(connection, "s.model_id = ? AND s.deleted_at IS NULL", (model_id,))
+    return _list_submissions(connection, "s.model_id = ? AND s.replaced_at IS NULL", (model_id,))
 
 
 def _get_active_submission(connection: sqlite3.Connection, model_id: int,
                            split: str) -> Submission | None:
     submissions = _list_submissions(connection,
-                                    "s.model_id = ? AND s.split = ? AND s.deleted_at IS NULL",
+                                    "s.model_id = ? AND s.split = ? AND s.replaced_at IS NULL",
                                     (model_id, split))
     return submissions[0] if submissions else None  # At most one (index `active_submission`).
 
 
-def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind, model_id: int,
+def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind, model: Model,
                 submission_id: int | None, details: T.Mapping[str, T.Any]) -> None:
     connection.execute(
-        "INSERT INTO actions (time, actor, action, model_id, submission_id, details)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (get_utc_now().isoformat(), actor, action, model_id, submission_id,
+        "INSERT INTO actions (time, actor, action, model_id, model_label, submission_id, details)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (get_utc_now().isoformat(), actor, action, model.id, model.label, submission_id,
          json.dumps(details)))
 
 
-def _mark_submission_deleted(connection: sqlite3.Connection, submission_id: int) -> None:
-    connection.execute("UPDATE submissions SET deleted_at = ? WHERE id = ?",
+def _mark_submission_replaced(connection: sqlite3.Connection, submission_id: int) -> None:
+    connection.execute("UPDATE submissions SET replaced_at = ? WHERE id = ?",
                        (get_utc_now().isoformat(), submission_id))
 
 
-def _set_model_deleted(connection: sqlite3.Connection, model_id: int, is_deleted: bool,
-                       actor: str, details: T.Mapping[str, T.Any]) -> None:
-    """Deletes or restores a model and logs it."""
-    connection.execute("UPDATE models SET deleted_at = ? WHERE id = ?",
-                       (get_utc_now().isoformat() if is_deleted else None, model_id))
-    _log_action(connection, actor, "delete_model" if is_deleted else "restore_model", model_id,
-                None, details)
+def _delete_submission_row(connection: sqlite3.Connection, submission: Submission, actor: str,
+                           details: T.Mapping[str, T.Any]) -> None:
+    """Deletes a submission from the index, which also deletes its cached scores (see
+    `scoring`), and logs it."""
+    connection.execute("DELETE FROM submissions WHERE id = ?", (submission.id,))
+    _log_action(connection, actor, "delete", submission.model, submission.id,
+                {"split": submission.split, **details})
 
 
 def _set_description(connection: sqlite3.Connection, model: Model, description: str,
@@ -546,7 +546,7 @@ def _set_description(connection: sqlite3.Connection, model: Model, description: 
     if description != model.description:
         connection.execute("UPDATE models SET description = ? WHERE id = ?",
                            (description, model.id))
-        _log_action(connection, actor, "edit_description", model.id, None,
+        _log_action(connection, actor, "edit_description", model, None,
                     {"old_description": model.description, "description": description})
 
 
@@ -578,14 +578,14 @@ def _set_method_display_name(connection: sqlite3.Connection, model: Model,
             " ON CONFLICT (dataset, method_name)"
             " DO UPDATE SET display_name = excluded.display_name",
             (model.dataset, model.method_name, display_name))
-    _log_action(connection, actor, "edit_method_display_name", model.id, None,
+    _log_action(connection, actor, "edit_method_display_name", model, None,
                 {"old_display_name": model.method_display_name, "display_name": display_name,
                  **details})
 
 
 def _replace_active_submission(connection: sqlite3.Connection, model: Model, split: str,
                                expected_id: int | None) -> int | None:
-    """Deletes the active submission of a split, which a new one replaces.
+    """Marks the active submission of a split as replaced, by a new one.
 
     Args:
         expected_id: The id of the active submission that the user expects, None for none.
@@ -603,7 +603,7 @@ def _replace_active_submission(connection: sqlite3.Connection, model: Model, spl
         raise ValueError(f"The {split} file of {model.label} has changed, e.g. by another user."
                          f" Try again.")
     if active_id is not None:
-        _mark_submission_deleted(connection, active_id)
+        _mark_submission_replaced(connection, active_id)
     return active_id
 
 
@@ -627,16 +627,15 @@ def _check_model_invariant(connection: sqlite3.Connection, model_id: int) -> Non
 
 def _check_method_invariant(connection: sqlite3.Connection, dataset: str,
                             method_name: str) -> None:
-    """Checks that the models of a method that are not deleted can be averaged
-    (`irap_evaluation.check_method_models`). Each of these models has an active submission,
-    which gives its splits.
+    """Checks that the models of a method can be averaged (`irap_evaluation.check_method_models`).
+    Each model has an active submission, which gives its splits.
 
     Raises:
         ValueError: If they cannot.
     """
     submissions = _list_submissions(
-        connection, "m.dataset = ? AND m.method_name = ? AND m.deleted_at IS NULL"
-                    " AND s.deleted_at IS NULL", (dataset, method_name))
+        connection, "m.dataset = ? AND m.method_name = ? AND s.replaced_at IS NULL",
+        (dataset, method_name))
     model_id_to_info = {s.model.id: s.model_info for s in submissions}  # Equal per model.
     try:
         ie.check_method_models(model_id_to_info.values())
@@ -646,18 +645,18 @@ def _check_method_invariant(connection: sqlite3.Connection, dataset: str,
         raise ValueError(f"{e} Models of {method_name!r} on {dataset}: {labels}.") from e
 
 
-def _check_sources_in_use(connection: sqlite3.Connection,
+def _check_sources_active(connection: sqlite3.Connection,
                           sources: T.Iterable[Submission]) -> None:
-    """Checks that the submissions that new ones are made of are still in use
+    """Checks that the submissions that new ones are made of are still active
     (`ModelUpdate.source_submissions`).
 
     Raises:
         ValueError: If one is not.
     """
     for source in sources:
-        if not _get_submission(connection, source.id).is_in_use:
+        if not _list_submissions(connection, "s.id = ? AND s.replaced_at IS NULL", (source.id,)):
             raise ValueError(f"The {source.split} file #{source.id} of {source.label}, which the"
-                             f" new files are made of, or its model has been deleted, e.g. by"
+                             f" new files are made of, has been replaced or deleted, e.g. by"
                              f" another user. Try again.")
 
 
@@ -675,7 +674,7 @@ class ModelArchive:
     def __init__(self, data_dir: str | Path):
         self.data_dir = Path(data_dir)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "submissions").mkdir(exist_ok=True)
+        self.submissions_dir.mkdir(exist_ok=True)
         initialize_schema(self.database_path, _SCHEMA, SCHEMA_VERSION, "archive")
 
     @property
@@ -686,8 +685,22 @@ class ModelArchive:
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"
 
+    @property
+    def submissions_dir(self) -> Path:
+        return self.data_dir / "submissions"
+
     def get_predictions_path(self, submission_id: int) -> Path:
-        return self.data_dir / "submissions" / str(submission_id) / "predictions.parquet"
+        return self.submissions_dir / str(submission_id) / "predictions.parquet"
+
+    def _remove_submission_dirs(self, submissions: T.Iterable[Submission]) -> None:
+        """Removes the files of deleted submissions, after the deletion is committed.
+
+        Raises:
+            OSError: If a directory cannot be removed, e.g. because its file is being read on
+                Windows. The directory then stays, which is harmless, since ids are not reused.
+        """
+        for submission in submissions:
+            shutil.rmtree(self.get_predictions_path(submission.id).parent)
 
     # Uploads ######################################################################################
 
@@ -733,44 +746,35 @@ class ModelArchive:
 
     # Reading ######################################################################################
 
-    def list_models(self, *, include_deleted: bool = False) -> list[Model]:
+    def list_models(self) -> list[Model]:
         """Lists the models, newest first."""
-        where = "" if include_deleted else "WHERE m.deleted_at IS NULL"
         with connect(self.database_path) as connection:
-            rows = connection.execute(f"{_MODEL_QUERY} {where} ORDER BY m.id DESC")
+            rows = connection.execute(f"{_MODEL_QUERY} ORDER BY m.id DESC")
             return [_to_model(row) for row in rows]
 
     def get_model(self, model_id: int) -> Model:
-        """Returns the model with this id, also if it is deleted.
-
+        """
         Raises:
-            LookupError: If there is no such model.
+            LookupError: If there is no such model, e.g. since it has been deleted.
         """
         with connect(self.database_path) as connection:
             return _get_model(connection, model_id)
 
-    def list_submissions(self, *, include_deleted_models: bool = False) -> list[Submission]:
-        """Lists the active submission of each split of each model, newest first.
-
-        Args:
-            include_deleted_models: Whether to include those of deleted models, which are not
-                `Submission.is_in_use`.
-        """
-        where = ("s.deleted_at IS NULL" if include_deleted_models
-                 else "s.deleted_at IS NULL AND m.deleted_at IS NULL")
+    def list_submissions(self) -> list[Submission]:
+        """Lists the active submission of each split of each model, newest first."""
         with connect(self.database_path) as connection:
-            return _list_submissions(connection, where)
+            return _list_submissions(connection, "s.replaced_at IS NULL")
 
     def list_model_submissions(self, model_id: int) -> list[Submission]:
-        """Lists the submissions of a model, also the deleted ones, newest first."""
+        """Lists the submissions of a model, also the replaced ones, newest first."""
         with connect(self.database_path) as connection:
             return _list_submissions(connection, "s.model_id = ?", (model_id,))
 
     def get_submission(self, submission_id: int) -> Submission:
-        """Returns the submission with this id, also if it is deleted.
+        """Returns the submission with this id, also if it is replaced.
 
         Raises:
-            LookupError: If there is no such submission.
+            LookupError: If there is no such submission, e.g. since it has been deleted.
         """
         with connect(self.database_path) as connection:
             return _get_submission(connection, submission_id)
@@ -813,8 +817,8 @@ class ModelArchive:
                           source_submissions: T.Sequence[Submission] = ()) -> ModelUpdate:
         """Plans storing new submissions of one model, the model of their headers.
 
-        The update creates the model if it does not exist, restores it if it is deleted,
-        replaces the active submissions of the same splits, and sets the method display name of
+        The update creates the model if it does not exist, e.g. after it was deleted, replaces
+        the active submissions of the same splits, and sets the method display name of
         the new submissions, if they have one. It is tried and rolled back, so that
         a refused update is refused before the user confirms it (`ModelUpdate.confirmations`).
 
@@ -824,7 +828,7 @@ class ModelArchive:
             method_display_name: The new display name of the method, which is stripped, or None
                 to take it from the headers. The files keep the display names of their headers.
             replaces_all_files: Whether the new submissions replace all files of the model, so
-                that the active submissions of other splits are deleted, e.g. for an ensemble,
+                that the active submissions of other splits are replaced, e.g. for an ensemble,
                 whose files are made of the same members.
             source_submissions: See `ModelUpdate.source_submissions`.
 
@@ -862,8 +866,8 @@ class ModelArchive:
             old_method_display_name=old_method_display_name,
             replaced={s: active[s] for s in splits if s in active},
             replaces_all_files=replaces_all_files,
-            deleted=({s: a for s, a in active.items() if s not in splits} if replaces_all_files
-                     else {}),
+            replaced_other_splits=({s: a for s, a in active.items() if s not in splits}
+                                   if replaces_all_files else {}),
             source_submissions=tuple(source_submissions))
         try:
             self._apply(update, actor="dry run", is_dry_run=True)
@@ -874,9 +878,9 @@ class ModelArchive:
     def apply_model_update(self, update: ModelUpdate, *, submitter: str) -> list[Submission]:
         """Stores the new submissions of an update, moved from their `file_path`, and logs the
         actions: the action of each new submission (`ModelUpdate.action`), with the id of the
-        submission that it replaces ('replaced_submission_id'), the deletion of the submissions
-        of other splits, and the restoration of the model and the changes of its description and
-        method display name, if any.
+        submission that it replaces ('replaced_submission_id'), the replacement of the
+        submissions of other splits (`ModelUpdate.replaced_other_splits`), and the changes of the
+        description and the method display name, if any.
 
         Either all are stored or none. Files that are not stored stay at their `file_path`.
 
@@ -902,7 +906,7 @@ class ModelArchive:
         moved_paths: list[tuple[Path, Path]] = []  # (target, source)
         try:
             with begin_write(self.database_path) as connection:
-                _check_sources_in_use(connection, update.source_submissions)
+                _check_sources_active(connection, update.source_submissions)
                 model = self._update_model(connection, update, actor)
                 self._update_method_display_name(connection, model, update, actor)
                 submission_ids = []
@@ -911,7 +915,7 @@ class ModelArchive:
                                                             update, actor)
                     submission_ids.append(submission_id)
                 if update.replaces_all_files:
-                    self._delete_other_splits(connection, model, update, actor)
+                    self._replace_other_splits(connection, model, update, actor)
                 _check_model_invariant(connection, model.id)
                 _check_method_invariant(connection, model.dataset, model.method_name)
                 if is_dry_run:
@@ -932,7 +936,7 @@ class ModelArchive:
 
     @staticmethod
     def _update_model(connection: sqlite3.Connection, update: ModelUpdate, actor: str) -> Model:
-        """Checks that the model is as planned, and creates, restores or describes it.
+        """Checks that the model is as planned, and creates or describes it.
 
         Raises:
             ValueError: If the model has changed since the update was planned.
@@ -949,8 +953,6 @@ class ModelArchive:
                 (update.dataset, update.method_name, update.seed, description or "",
                  get_utc_now().isoformat()))
             return _get_model(connection, cursor.lastrowid)
-        if model.is_deleted:
-            _set_model_deleted(connection, model.id, False, actor, {})
         if description is not None:
             _set_description(connection, model, description, actor)
         return _get_model(connection, model.id)
@@ -996,14 +998,14 @@ class ModelArchive:
         details = {**new.details, "notes": list(new.notes)}
         if replaced_id is not None:
             details["replaced_submission_id"] = replaced_id
-        _log_action(connection, actor, update.action, model.id, cursor.lastrowid, details)
+        _log_action(connection, actor, update.action, model, cursor.lastrowid, details)
         return cursor.lastrowid
 
     @staticmethod
-    def _delete_other_splits(connection: sqlite3.Connection, model: Model, update: ModelUpdate,
-                             actor: str) -> None:
-        """Deletes the active submissions of the splits without a new submission, as planned
-        (`ModelUpdate.deleted`), and logs it.
+    def _replace_other_splits(connection: sqlite3.Connection, model: Model, update: ModelUpdate,
+                              actor: str) -> None:
+        """Marks the active submissions of the splits without a new submission as replaced, as
+        planned (`ModelUpdate.replaced_other_splits`), and logs it.
 
         Raises:
             ValueError: If they have changed since the update was planned.
@@ -1011,60 +1013,74 @@ class ModelArchive:
         new_splits = {new.split for new in update.new_submissions}
         others = {s.split: s.id for s in _list_active_submissions(connection, model.id)
                   if s.split not in new_splits}
-        if others != {split: s.id for split, s in update.deleted.items()}:
+        if others != {split: s.id for split, s in update.replaced_other_splits.items()}:
             raise ValueError(f"The files of {model.label} have changed since the new files were"
                              f" made, e.g. by another user. Try again.")
         for submission_id in others.values():
-            _mark_submission_deleted(connection, submission_id)
-            _log_action(connection, actor, "delete", model.id, submission_id,
+            _mark_submission_replaced(connection, submission_id)
+            _log_action(connection, actor, "replace", model, submission_id,
                         {"by": update.action})
 
     # Other changes ################################################################################
 
     def delete_submission(self, submission_id: int, *, actor: str) -> Submission:
-        """Deletes the active submission of a split and logs it. If it is the last active
-        submission of a model that is not deleted, the model is deleted, too.
+        """Deletes an active or replaced submission permanently, with its file and cached
+        scores, and logs it. Returns it as it was.
 
         Raises:
-            LookupError: If there is no such submission.
-            ValueError: If `actor` is empty, or the submission is already deleted, e.g. after
-                another user replaced it.
+            LookupError: If there is no such submission, e.g. since another user deleted it.
+            ValueError: If `actor` is empty, or it is the last active submission of its model,
+                which is deleted with `delete_model` instead.
         """
         actor = _check_actor(actor)
         with begin_write(self.database_path) as connection:
             submission = _get_submission(connection, submission_id)
-            if submission.is_deleted:
-                raise ValueError(f"File #{submission_id} is already deleted or replaced, e.g. by"
-                                 f" another user.")
-            model = submission.model
-            _mark_submission_deleted(connection, submission_id)
-            _log_action(connection, actor, "delete", model.id, submission_id, {})
-            if not model.is_deleted and not _list_active_submissions(connection, model.id):
-                _set_model_deleted(connection, model.id, True, actor, {"by": "delete"})
-            return _get_submission(connection, submission_id)
+            if [s.id for s in _list_active_submissions(connection, submission.model.id)] == [
+                    submission_id]:
+                raise ValueError(f"File #{submission_id} is the last active file of"
+                                 f" {submission.label}. Delete the model instead.")
+            _delete_submission_row(connection, submission, actor, {})
+        self._remove_submission_dirs([submission])
+        return submission
 
-    def set_model_deleted(self, model_id: int, is_deleted: bool, *, actor: str) -> Model:
-        """Deletes or restores a model and logs it. Its submissions are not changed.
+    def delete_model(self, model_id: int, *, actor: str) -> list[Submission]:
+        """Deletes a model permanently, with all its submissions, their files and cached scores,
+        and logs it. Also deletes the display name of its method if no other model of the method
+        on the dataset remains. Returns the deleted submissions.
 
         Raises:
-            LookupError: If there is no such model.
-            ValueError: If `actor` is empty, the model is already in that state, it is to be
-                restored but has no active submission, or the models of its method could not be
-                averaged after it is restored (see `_check_method_invariant`).
+            LookupError: If there is no such model, e.g. since another user deleted it.
+            ValueError: If `actor` is empty.
         """
         actor = _check_actor(actor)
         with begin_write(self.database_path) as connection:
             model = _get_model(connection, model_id)
-            if model.is_deleted == is_deleted:
-                raise ValueError(f"The model {model.label} is already"
-                                 f" {'deleted' if is_deleted else 'not deleted'}.")
-            if not is_deleted and not _list_active_submissions(connection, model_id):
-                raise ValueError(f"The model {model.label} has no active files. Upload a file,"
-                                 f" which restores it.")
-            _set_model_deleted(connection, model_id, is_deleted, actor, {})
-            if not is_deleted:
-                _check_method_invariant(connection, model.dataset, model.method_name)
-            return _get_model(connection, model_id)
+            submissions = _list_submissions(connection, "s.model_id = ?", (model_id,))
+            for submission in submissions:
+                _delete_submission_row(connection, submission, actor, {"by": "delete_model"})
+            connection.execute("DELETE FROM models WHERE id = ?", (model_id,))
+            connection.execute(
+                "DELETE FROM methods WHERE dataset = ? AND method_name = ? AND NOT EXISTS"
+                " (SELECT 1 FROM models WHERE dataset = ? AND method_name = ?)",
+                (model.dataset, model.method_name, model.dataset, model.method_name))
+            _log_action(connection, actor, "delete_model", model, None, {})
+        self._remove_submission_dirs(submissions)
+        return submissions
+
+    def write_model_predictions_zip(self, model_id: int, target: T.BinaryIO) -> None:
+        """Writes a .zip archive of the active files of a model, which an upload accepts as the
+        files of one model.
+
+        Raises:
+            LookupError: If there is no such model.
+        """
+        with connect(self.database_path) as connection:
+            _get_model(connection, model_id)
+            submissions = _list_active_submissions(connection, model_id)
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_STORED) as zip_file:
+            for submission in sorted(submissions, key=lambda s: s.split):
+                zip_file.write(self.get_predictions_path(submission.id),
+                               get_download_file_name(submission))
 
     def set_model_description(self, model_id: int, description: str, *, actor: str) -> Model:
         """Changes the description of a model and logs it.

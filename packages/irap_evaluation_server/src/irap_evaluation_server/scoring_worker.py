@@ -13,7 +13,7 @@ import logging
 import threading
 import typing as T
 
-from .archive import ModelArchive, Submission
+from .archive import Model, ModelArchive, Submission
 from .database import get_utc_now
 from .datasets import EVALUATION_SET_NAMES, DatasetContext
 from .scoring import (
@@ -202,10 +202,13 @@ class ScoringWorker:
         return self._is_task_pending(("score", submission_id))
 
     def _score(self, submission_id: int) -> None:
-        submission = self.archive.get_submission(submission_id)
+        try:
+            submission = self.archive.get_submission(submission_id)
+        except LookupError:  # Deleted since it was queued.
+            return
         context = self._get_context(submission)
         # Current if it was queued again while it was being scored.
-        if (not submission.is_in_use or context is None
+        if (not submission.is_active or context is None
                 or self.is_scoring_current(submission, self.store.get_scoring(submission_id))):
             return
         try:
@@ -214,34 +217,38 @@ class ScoringWorker:
             _logger.exception("Scoring submission #%d failed.", submission_id)
             scoring, reports = make_unscored_scoring(
                 submission_id, "error", _format_unexpected_error(e), self.settings), {}
+        # Raises `sqlite3.IntegrityError` if the submission was deleted meanwhile.
         self.store.set_scoring(scoring, reports)
         self._enqueue_default_intervals(submission.dataset, submission.split,
                                         submission.model.method_name)
 
     def update_submissions(self, submissions: T.Collection[Submission]) -> None:
-        """Queues the work that follows when submissions come into or go out of use
-        (`Submission.is_in_use`), e.g. when they are added, replaced or deleted, or their model
-        is deleted or restored: the scoring of those in use whose scoring is not current, and the
+        """Queues the work that follows when submissions become active or replaced, e.g. when
+        they are added: the scoring of the active ones whose scoring is not current, and the
         default intervals of their methods.
 
         Args:
             submissions: As they are in the archive after the change.
         """
-        current = self.get_current_scorings([s for s in submissions if s.is_in_use])
+        current = self.get_current_scorings([s for s in submissions if s.is_active])
         for submission in submissions:
             if self._get_context(submission) is None:
                 continue
-            if submission.is_in_use and submission.id not in current:
+            if submission.is_active and submission.id not in current:
                 self._enqueue(("score", submission.id), TaskPriority.SCORING,
                               lambda i=submission.id: self._score(i))
             else:  # Scoring queues them otherwise.
                 self._enqueue_default_intervals(submission.dataset, submission.split,
                                                 submission.model.method_name)
 
-    def update_model_submissions(self, model_id: int) -> None:
-        """Calls `update_submissions` with all submissions of a model, e.g. after an upload
-        replaced some of them, or the model was deleted or restored."""
-        self.update_submissions(self.archive.list_model_submissions(model_id))
+    def update_model_submissions(self, model: Model) -> None:
+        """Calls `update_submissions` with all submissions of a model after a change, e.g. an
+        upload that replaced some of them, and queues the default intervals of its method on
+        every split, also those of deleted submissions or a deleted model."""
+        self.update_submissions(self.archive.list_model_submissions(model.id))
+        if (context := self.dataset_contexts.get(model.dataset)) is not None:
+            for split in context.split_names:
+                self._enqueue_default_intervals(model.dataset, split, model.method_name)
 
     def update_all_submissions(self) -> None:
         """Calls `update_submissions` with every active submission, e.g. at the start of the
@@ -272,6 +279,7 @@ class ScoringWorker:
             self._request_key_to_error[request.key] = CachedResult(
                 value=None, message=_format_unexpected_error(e), computed_at=get_utc_now())
             return
+        # Raises `sqlite3.IntegrityError` if a submission was deleted meanwhile.
         self.store.set_result(request, cached)
 
     def request(self, request: WorkRequest[V],

@@ -19,7 +19,8 @@ SPLITS = (SPLIT, OTHER_SPLIT)
 
 @pytest.fixture
 def submissions(archive, two_split_contexts):
-    """Models a/seed1 and b on both splits, c only on `SPLIT`, and a deleted model d."""
+    """Models a/seed1 and b on both splits, c only on `SPLIT`, and a deleted model d, whose
+    `Model` the tests use as a member."""
     added = {}
     for name, seed, splits in [("a", 1, SPLITS), ("b", None, SPLITS), ("c", None, (SPLIT,)),
                                ("d", None, SPLITS)]:
@@ -27,7 +28,7 @@ def submissions(archive, two_split_contexts):
         for split in splits:
             added[(name, split)] = add_model(archive, two_split_contexts,
                                              with_split(predictions, split))
-    archive.set_model_deleted(added[("d", SPLIT)].model.id, True, actor="Bo")
+    archive.delete_model(added[("d", SPLIT)].model.id, actor="Bo")
     return added
 
 
@@ -36,8 +37,7 @@ def member(submissions, name, weight=1.0):
 
 
 def test_member_models_and_plan(archive, submissions):
-    members = list_member_models(archive.list_submissions(include_deleted_models=True),
-                                 "vietnam", SPLITS)
+    members = list_member_models(archive.list_submissions(), "vietnam", SPLITS)
     assert [(m.model.label, m.splits) for m in members] == [
         ("a/seed1", SPLITS), ("b", SPLITS), ("c", (SPLIT,))]
 
@@ -118,21 +118,23 @@ def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts
         _prepare(archive, two_split_contexts, submissions, "ab"), submitter="Bo")
     # c has no file of OTHER_SPLIT, so the ensemble of a and c has only SPLIT.
     update = _prepare(archive, two_split_contexts, submissions, "ac")
-    assert (list(update.replaced), list(update.deleted)) == ([SPLIT], [OTHER_SPLIT])
-    assert any(f"Deletes the {OTHER_SPLIT} file #{second.id}" in c for c in update.confirmations)
+    assert (list(update.replaced), list(update.replaced_other_splits)) == ([SPLIT], [OTHER_SPLIT])
+    assert any(f"Replaces the {OTHER_SPLIT} file #{second.id}" in c for c in update.confirmations)
     [third] = archive.apply_model_update(update, submitter="Bo")
     assert archive.list_submissions() == [third, *archive.list_submissions()[1:]]
-    assert [s.split for s in archive.list_model_submissions(third.model.id) if s.is_in_use] == [
+    assert [s.split for s in archive.list_model_submissions(third.model.id) if s.is_active] == [
         SPLIT]
-    assert archive.get_submission(second.id).is_deleted
-    assert archive.list_actions(model_id=third.model.id)[0].details == {"by": "ensemble"}
+    assert not archive.get_submission(second.id).is_active
+    action = archive.list_actions(model_id=third.model.id)[0]
+    assert (action.action, action.submission_id, action.details) == (
+        "replace", second.id, {"by": "ensemble"})
 
 
 def test_an_ensemble_is_refused_if_a_member_changes(archive, two_split_contexts, submissions):
     update = _prepare(archive, two_split_contexts, submissions, "ab")
     archive.delete_submission(submissions[("b", OTHER_SPLIT)].id, actor="Al")
     with pytest.raises(ValueError, match=f"{OTHER_SPLIT} file #.* of b, which the new files are"
-                                         f" made of, or its model has been deleted"):
+                                         f" made of, has been replaced or deleted"):
         archive.apply_model_update(update, submitter="Bo")
     discard_model_update(update)
 

@@ -35,16 +35,16 @@ class MemberModel:
 
 def list_member_models(submissions: T.Iterable[Submission], dataset: str,
                        split_names: T.Sequence[str]) -> list[MemberModel]:
-    """Lists the models of a dataset that have submissions in use (`Submission.is_in_use`),
-    sorted by shown label.
+    """Lists the models of a dataset that have active submissions, sorted by shown label.
 
     Args:
+        submissions: The active submissions (`ModelArchive.list_submissions`).
         split_names: The splits of the dataset, which give the order of `MemberModel.splits`.
     """
     model_id_to_model: dict[int, Model] = {}
     model_id_to_splits: dict[int, set[str]] = {}
     for s in submissions:
-        if s.dataset == dataset and s.is_in_use:
+        if s.dataset == dataset:
             model_id_to_model[s.model.id] = s.model
             model_id_to_splits.setdefault(s.model.id, set()).add(s.split)
     members = [MemberModel(model, tuple(s for s in split_names if s in model_id_to_splits[i]))
@@ -82,8 +82,7 @@ def plan_ensemble(submissions: T.Iterable[Submission], dataset: str,
                   split_names: T.Sequence[str]) -> EnsemblePlan:
     """
     Args:
-        submissions: E.g. all active submissions. Those that are not in use
-            (`Submission.is_in_use`) are left out.
+        submissions: The active submissions (`ModelArchive.list_submissions`).
         split_names: The splits of the dataset, in the order of the plan.
 
     Raises:
@@ -98,7 +97,7 @@ def plan_ensemble(submissions: T.Iterable[Submission], dataset: str,
                if not (math.isfinite(m.weight) and m.weight > 0)]:
         raise ValueError(f"The weights of {', '.join(bad)} must be positive and finite.")
     split_and_model_to_submission = {(s.split, s.model.id): s for s in submissions
-                                     if s.dataset == dataset and s.is_in_use}
+                                     if s.dataset == dataset}
     split_to_submissions, split_to_missing = {}, {}
     for split in split_names:
         found = [split_and_model_to_submission.get((split, m.model.id)) for m in members]

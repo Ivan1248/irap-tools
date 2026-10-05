@@ -216,7 +216,7 @@ def _create_ensemble_form(archive: ModelArchive,
             if not client.is_deleted:
                 set_creating(False)
         if created:
-            await run.io_bound(worker.update_model_submissions, created[0].model.id)
+            await run.io_bound(worker.update_model_submissions, created[0].model)
         if client.is_deleted:
             return
         if not created:  # Cancelled, or the server is stopping.

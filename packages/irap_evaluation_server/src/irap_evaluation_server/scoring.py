@@ -42,9 +42,11 @@ V = T.TypeVar("V")
 #: 'error': an unexpected error, e.g. a missing file. It is scored again at the next start.
 ScoringStatus = T.Literal["scored", "failed", "error"]
 
+#: The cached values of a submission are deleted with it: its scorings and scores by the foreign
+#: keys, and the results of requests of it (`result_submissions`) by the trigger.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS submission_scorings (
-    submission_id INTEGER PRIMARY KEY REFERENCES submissions (id),
+    submission_id INTEGER PRIMARY KEY REFERENCES submissions (id) ON DELETE CASCADE,
     status TEXT NOT NULL,
     message TEXT NOT NULL,
     notes TEXT NOT NULL,
@@ -53,7 +55,7 @@ CREATE TABLE IF NOT EXISTS submission_scorings (
     scored_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS submission_scores (
-    submission_id INTEGER NOT NULL REFERENCES submissions (id),
+    submission_id INTEGER NOT NULL REFERENCES submissions (id) ON DELETE CASCADE,
     evaluation_set TEXT NOT NULL,
     context_offsets TEXT NOT NULL,
     evaluation_set_fingerprint TEXT NOT NULL,
@@ -70,6 +72,17 @@ CREATE TABLE IF NOT EXISTS result_cache (
     message TEXT NOT NULL,
     computed_at TEXT NOT NULL
 );
+-- The submissions that each result is of (`WorkRequest.submission_ids`).
+CREATE TABLE IF NOT EXISTS result_submissions (
+    key TEXT NOT NULL REFERENCES result_cache (key) ON DELETE CASCADE,
+    submission_id INTEGER NOT NULL REFERENCES submissions (id),
+    PRIMARY KEY (key, submission_id)
+);
+CREATE INDEX IF NOT EXISTS result_submission ON result_submissions (submission_id);
+CREATE TRIGGER IF NOT EXISTS delete_submission_results AFTER DELETE ON submissions BEGIN
+    DELETE FROM result_cache
+    WHERE key IN (SELECT key FROM result_submissions WHERE submission_id = OLD.id);
+END;
 """
 
 
@@ -250,7 +263,7 @@ class WorkRequest(T.Protocol[V]):
 
     @property
     def submission_ids(self) -> tuple[int, ...]:
-        """The submissions that the result is of, for log messages."""
+        """The submissions that the result is of, whose deletion deletes the cached result."""
         ...
 
     def compute(self, archive: ModelArchive,
@@ -356,6 +369,9 @@ class ScoreStore:
         Args:
             reports: Evaluation set name -> its `evaluation_report.to_json_dict` document, for
                 each of `scoring.evaluation_set_scores`.
+
+        Raises:
+            sqlite3.IntegrityError: If the submission has been deleted, e.g. while it was scored.
         """
         if set(reports) != {s.evaluation_set for s in scoring.evaluation_set_scores}:
             raise ValueError("Each evaluation set of the scores needs a report.")
@@ -403,13 +419,21 @@ class ScoreStore:
             message=row["message"], computed_at=datetime.fromisoformat(row["computed_at"]))
 
     def set_result(self, request: WorkRequest[V], cached: CachedResult[V]) -> None:
+        """
+        Raises:
+            sqlite3.IntegrityError: If a submission of the request has been deleted.
+        """
+        key = request.key
         with begin_write(self.database_path) as connection:
+            # A replaced row's `result_submissions` are deleted with it, and inserted again.
             connection.execute(
                 "INSERT OR REPLACE INTO result_cache (key, value, message, computed_at)"
                 " VALUES (?, ?, ?, ?)",
-                (request.key,
-                 None if cached.value is None else request.value_to_json(cached.value),
+                (key, None if cached.value is None else request.value_to_json(cached.value),
                  cached.message, cached.computed_at.isoformat()))
+            connection.executemany(
+                "INSERT INTO result_submissions (key, submission_id) VALUES (?, ?)",
+                [(key, i) for i in set(request.submission_ids)])
 
 
 def remove_class_scores(report: T.Mapping[str, T.Any]) -> dict[str, T.Any]:
@@ -673,6 +697,7 @@ class IntervalRequest:
 
         Raises:
             ValueError: If the request is out of date: other settings, files or evaluation set.
+            LookupError: If a submission has been deleted.
         """
         if self.settings_fingerprint != settings.fingerprint:
             raise ValueError("The request is of other scoring settings.")

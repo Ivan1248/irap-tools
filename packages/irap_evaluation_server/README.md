@@ -6,13 +6,13 @@ An web app that keeps an archive of model predictions, scores them, and compares
 |---|---|---|
 | Scores | `/scores` (start page) | The methods of a dataset split ranked by an attribute average, or one per-attribute metric, with intervals and differences from a reference method. |
 | Models | `/models` | The models of each dataset by method, with the active file of each split, and the upload form. |
-| Model | `/models/<id>` | A model's files, also the deleted ones, its scores, the coding-table export and its actions. |
+| Model | `/models/<id>` | A model's files, also the replaced ones, its scores, the coding-table export and its actions. |
 | Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
 | Ensemble | `/ensemble` | Creates an ensemble of stored models. |
 | Action log | `/actions` | All changes, with the name of the user. |
 | Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins. |
 
-Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete and restore models, edit descriptions and method display names, and create ensembles. The action log shows the account name.
+Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles. The action log shows the account name.
 
 ## Installation and start
 
@@ -53,7 +53,7 @@ The image paths in the metadata (`segment_id_to_data_paths_rel.json`) are relati
 The data directory holds:
 
 - `archive.sqlite3`: the index of models and files, the action log and the score cache,
-- `submissions/<id>/predictions.parquet`: the stored files,
+- `submissions/<id>/predictions.parquet`: the stored files, removed when they are [deleted](#deletion),
 - `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
 - `vendor/`: the map libraries,
 - `accounts.sqlite3`: the [accounts](#accounts),
@@ -68,7 +68,7 @@ Users register and sign in with the links in the top bar. An account has one of 
 | Permission | Can |
 |---|---|
 | view | View, like visitors without an account. |
-| write | Also upload, replace and delete files, delete and restore models, edit descriptions and method display names, and create ensembles. |
+| write | Also upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles. |
 | admin | Also download the per-class scores of [protected splits](#protected-splits), and change the permissions of the accounts and remove them, on the Accounts page. |
 
 The first account to register is an admin. Later accounts can view until an admin gives them more. The app keeps at least one admin: it refuses to remove the last admin or to take away its admin permission.
@@ -175,20 +175,18 @@ A file is refused if:
 Files of unlabeled splits are accepted but not scored.
 
 - The Seed field replaces the seed in the header, e.g. to add another model of a method. The action log records the original seed.
-- A file of a split that the model already has replaces the active file, which is [deleted](#deletion).
+- A file of a split that the model already has replaces the active file, which is kept as a replaced file. It can be downloaded or [deleted](#deletion), and only an upload makes it active again.
 - A blank description keeps the model's description.
 - A method display name entered with the upload replaces the method's, without changing the files. A blank one takes the display name from the files, and files without one keep the method's. The files of one upload must then not have different display names. When a file is uploaded, the field's placeholder shows the display name that a blank one gives.
-- The user confirms replaced files, a restored deleted model, and a replaced description or method display name before anything is stored. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
+- The user confirms replaced files, and a replaced description or method display name before anything is stored. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
 
 A `.zip` archive uploads the files of one model on several splits at once. Every member must be a `.parquet` prediction file (others are refused, not skipped), of the same model, output kind, context offsets, and training and early stopping splits (`archive.MODEL_FILE_FIELDS`), and of distinct splits. Their header `details` may differ. Either all files are stored, each as its own submission, or none. An archive that replaces all active files of a model may change their output kind, context offsets, and training and early stopping splits.
 
 ### Deletion
 
-The Model page deletes one active file, after a confirmation. If another user has replaced or deleted that file in the meantime, the deletion is refused. A deleted file is kept and can be downloaded, but it cannot be restored, only uploaded again.
+Deletion is permanent. The Model page deletes an active or a replaced file, or the whole model with all its files, after a confirmation. A deleted file is removed with its scores and the cached intervals computed from it, and it cannot be restored, only uploaded again. The last active file of a model is deleted only with the model, so every model has an active file. Deleting the last model of a method also removes the method's display name. The action log keeps the actions on deleted models and files, and their ids are not reused.
 
-Deleting a model's last active file deletes the model. A model without active files is restored only by an upload, so every model that is not deleted has an active file.
-
-A deleted model is left out of the Scores, Analysis and Ensemble pages, and the Models page shows it only with "Show deleted". Its files are kept unchanged, so it can be restored.
+To keep a copy, the Model page downloads the active files of a model, e.g. an ensemble, as one `.zip` archive (`/api/models/<id>/predictions.zip`), which can be uploaded again.
 
 ## Scoring
 
@@ -196,7 +194,7 @@ A background thread scores each new active file on its evaluation sets, with the
 
 The database caches the attribute averages and per-attribute values, from which the means over models are computed, also over any subset of attributes. Intervals and comparisons need per-sequence statistics, which are too large to cache, so the thread recomputes them from the files when a page asks for them, and caches the results.
 
-Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the files of a method's models change. At start, the server rescores the active files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason. Deleted files and the files of deleted models are not scored.
+Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the files of a method's models change. At start, the server rescores the active files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason. Replaced files are not scored.
 
 ## Scores
 

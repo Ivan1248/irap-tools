@@ -16,7 +16,7 @@ def register_action_log_page(archive: ModelArchive, sessions: AccountSessions) -
                 ui.element("section").classes("panel"):
             ui.label("Action log").classes("section-title")
             if actions := archive.list_actions():
-                models = {m.id: m for m in archive.list_models(include_deleted=True)}
+                models = {m.id: m for m in archive.list_models()}
                 ui.html(make_action_table_html(actions, models), sanitize=False).classes("w-full")
             else:
                 ui.label("No actions.").classes("muted")

@@ -1,5 +1,5 @@
 """The Model page: a model's details, files, scores, coding-table export and actions, and the
-endpoint for downloading the scores of a submission."""
+endpoints for downloading the files of a model and the scores of a submission."""
 
 import asyncio
 import dataclasses as dc
@@ -10,12 +10,20 @@ import urllib.parse
 
 import irap_evaluation as ie
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from irap_evaluation.reports.evaluation_report import to_valid_file_name
 from nicegui import app, run, ui
+from starlette.background import BackgroundTask
 
 from ..accounts import can_write, is_admin
-from ..archive import ADDING_ACTION_KINDS, ActionLogEntry, Model, ModelArchive, Submission
+from ..archive import (
+    ADDING_ACTION_KINDS,
+    ARCHIVE_SUFFIX,
+    ActionLogEntry,
+    Model,
+    ModelArchive,
+    Submission,
+)
 from ..coding_table_export import (
     CODING_TABLE_FORMATS,
     export_model_coding_table,
@@ -48,11 +56,14 @@ from ..components.refresh_timer import RefreshTimer
 from ..components.routes import (
     ATTRIBUTE_PARAMETER,
     MODEL_PATH,
+    MODEL_PREDICTIONS_DOWNLOAD_PATH,
     MODELS_PATH,
     SCORES_DOWNLOAD_PATH,
     get_download_path,
+    get_model_download_path,
     get_model_path,
     get_scores_download_path,
+    make_query_path,
 )
 from ..components.score_tables import make_interval_note, make_model_scores_html
 from ..components.work_requests import WorkRequester
@@ -86,7 +97,8 @@ def _can_see_class_scores(config: DatasetConfig, split: str, is_admin: bool) -> 
 
 @dc.dataclass(frozen=True)
 class _ModelSnapshot:
-    """A model with its submissions in all states and its actions, as the panels show them."""
+    """A model with its active and replaced submissions and its actions, as the panels show
+    them."""
 
     model: Model
     submissions: list[Submission]
@@ -138,14 +150,20 @@ class _ModelPage:
     async def run_change(self, change: T.Callable[[str], T.Any], status_label: ui.label) -> None:
         """Runs a change of the model (`run_change_in_thread`), rescores what it affects and shows
         the model as it is then, also after a refused change, e.g. of a model that another user
-        has changed.
+        has changed. Goes to the Models page if the model has been deleted.
 
         Args:
             change: Gets the actor (`get_actor`).
         """
+        model = self.snapshot.model
         if await run_change_in_thread(change, self.get_actor, status_label):
-            await run.io_bound(self.worker.update_model_submissions, self.model_id)
-        snapshot = await run.io_bound(_ModelSnapshot.load, self.archive, self.model_id)
+            await run.io_bound(self.worker.update_model_submissions, model)
+        try:
+            snapshot = await run.io_bound(_ModelSnapshot.load, self.archive, self.model_id)
+        except LookupError:  # Deleted by the change or by another user.
+            if not self.client.is_deleted:
+                ui.navigate.to(make_query_path(MODELS_PATH, {"dataset": model.dataset}))
+            return
         if snapshot is None or self.client.is_deleted:  # None if the server is stopping.
             return
         self.snapshot = snapshot
@@ -171,20 +189,16 @@ class _ModelPage:
                                     else format_context_offsets(summary.context_offsets)),
                 "Created": format_utc_time(model.created_at),
             }
-            if model.is_deleted:
-                rows["Deleted"] = format_utc_time(model.deleted_at)
             if not self.can_write:  # Otherwise they are edited below.
                 rows["Method display name"] = model.method_display_name or "–"
                 rows["Description"] = model.description or "–"
-            ui.label(f"Model {model.shown_label}{' (deleted)' if model.is_deleted else ''}"
-                     ).classes("section-title")
+            ui.label(f"Model {model.shown_label}").classes("section-title")
             with ui.element("div").classes("key-values"):
                 for key, value in rows.items():
                     ui.label(key).classes("key")
                     ui.label(value)
             if self.can_write:
-                create_native_button("Restore model" if model.is_deleted else "Delete model",
-                                     lambda: on_deletion_clicked(not model.is_deleted))
+                create_native_button("Delete model", on_delete_model_clicked)
 
         async def on_description_saved(description: str) -> None:
             await self.run_change(lambda actor: self.archive.set_model_description(
@@ -194,9 +208,14 @@ class _ModelPage:
             await self.run_change(lambda actor: self.archive.set_method_display_name(
                 self.model_id, display_name, actor=actor), status_label)
 
-        async def on_deletion_clicked(is_deleted: bool) -> None:
-            await self.run_change(lambda actor: self.archive.set_model_deleted(
-                self.model_id, is_deleted, actor=actor), status_label)
+        async def on_delete_model_clicked() -> None:
+            label = self.snapshot.model.label
+            changes = [f"Permanently deletes the model {label} with all its files, active and"
+                       f" replaced, and their scores. To keep a copy, first download the active"
+                       f" files (.zip) under Files, which can be uploaded again."]
+            if await confirm_changes(f"Delete model {label}", changes, "Delete"):
+                await self.run_change(lambda actor: self.archive.delete_model(
+                    self.model_id, actor=actor), status_label)
 
         description = {"text": self.snapshot.model.description}
         display_name = {"text": self.snapshot.model.method_display_name or ""}
@@ -222,7 +241,8 @@ class _ModelPage:
     # Files ########################################################################################
 
     def create_files(self) -> None:
-        def make_row(submission: Submission, actions: T.Sequence[ActionLogEntry]) -> str:
+        def make_row(submission: Submission, actions: T.Sequence[ActionLogEntry],
+                     can_delete: bool) -> str:
             notes = [note for a in actions if a.submission_id == submission.id
                      and a.action in ADDING_ACTION_KINDS for note in a.details["notes"]]
             ensemble = next((a for a in actions if a.submission_id == submission.id
@@ -231,12 +251,12 @@ class _ModelPage:
             if ensemble is not None:
                 details += (f"<div>Ensemble of"
                             f" {make_ensemble_members_html(ensemble.details['members'])}</div>")
-            delete_button = ("" if submission.is_deleted or not self.can_write else
+            delete_button = ("" if not can_delete else
                              f' <button class="native-control" type="button"'
                              f' data-delete-id="{submission.id}">Delete</button>')
-            return (f'<tr class="{"deleted" if submission.is_deleted else ""}">'
+            return (f'<tr class="{"" if submission.is_active else "replaced"}">'
                     f"<td>{html.escape(submission.split)}</td><td>#{submission.id}</td>"
-                    f"<td>{'deleted' if submission.is_deleted else 'active'}</td>"
+                    f"<td>{'active' if submission.is_active else 'replaced'}</td>"
                     f'<td class="number">{submission.num_segments}</td>'
                     f'<td class="number">{submission.num_attributes}</td>'
                     f"<td>{html.escape(submission.submitter)}</td>"
@@ -248,15 +268,23 @@ class _ModelPage:
         @ui.refreshable
         def show_files() -> None:
             submissions, actions = self.snapshot.submissions, self.snapshot.actions
+            # The last active file is deleted with the model (`ModelArchive.delete_submission`).
+            active = self.snapshot.summary.submissions
+            last_active_id = active[0].id if len(active) == 1 else None
             ui.label("Files").classes("section-title")
             ui.label("Only the active file of each split is scored. A new file of a split"
-                     " replaces the active one, which is deleted. Deleted files can be downloaded"
-                     " and uploaded again.").classes("muted")
+                     " replaces the active one, which is kept as a replaced file. Deleting a file"
+                     " removes it permanently. The last active file is deleted with the model."
+                     ).classes("muted")
+            ui.html(f'<a href="{get_model_download_path(self.model_id)}">Download the active'
+                    f" files (.zip)</a>, which can be uploaded again as the files of this model.",
+                    sanitize=False)
             ui.html(make_table_html(
                 ["Split", "#", "State", "Segments", "Attributes", "Submitter",
                  "Upload time", "", "Notes"],
-                [make_row(s, actions)
-                 for s in sorted(submissions, key=lambda s: (s.split, -s.id))]),
+                [make_row(s, actions, self.can_write and s.id != last_active_id)
+                 for s in sorted(submissions, key=lambda s: (s.split, -s.id))],
+                number_headers=["Segments", "Attributes"]),
                 sanitize=False).classes("w-full overflow-x-auto").on(
                 "click", lambda e: on_delete_clicked(int(e.args)),
                 js_handler="(e) => { const button = e.target.closest('[data-delete-id]');"
@@ -264,23 +292,19 @@ class _ModelPage:
 
         async def on_delete_clicked(submission_id: int) -> None:
             # From the shown files, so that only files of this model are deleted.
-            # `ModelArchive.delete_submission` refuses a file that was deleted meanwhile.
             submission = next((s for s in self.snapshot.submissions if s.id == submission_id),
                               None)
             if submission is None:  # E.g. from a crafted event.
                 set_status(status_label, f"File #{submission_id} is not a file of this model.",
                            is_error=True)
                 return
-            changes = [f"Deletes the {submission.split} file #{submission.id} of"
-                       f" {submission.label}, so that the model has no {submission.split} scores."
-                       f" It can still be downloaded, but only an upload restores it."]
-            if submission.is_in_use and len(self.snapshot.summary.submissions) == 1:
-                changes.append(f"Deletes the model {submission.label}, since it has no other"
-                               f" active file. An upload of a file restores it.")
+            no_scores = (f", so that the model has no {submission.split} scores"
+                         if submission.is_active else "")
+            changes = [f"Permanently deletes the {submission.split} file #{submission.id} of"
+                       f" {submission.label}{no_scores}. To keep a copy, download it first."]
             if await confirm_changes(f"Delete file #{submission.id}", changes, "Delete"):
-                await self.run_change(
-                    lambda actor: self.archive.delete_submission(submission.id, actor=actor),
-                    status_label)
+                await self.run_change(lambda actor: self.archive.delete_submission(
+                    submission.id, actor=actor), status_label)
 
         with ui.element("section").classes("panel"):
             show_files()
@@ -347,13 +371,12 @@ class _ModelPage:
         worker = self.worker
         scoring = worker.store.get_scoring(submission.id)
         is_pending = worker.is_scoring_pending(submission.id)
-        reason = get_unscored_reason(submission, scoring,
-                                     worker.is_scoring_current(submission, scoring), is_pending)
+        reason = get_unscored_reason(scoring, worker.is_scoring_current(submission, scoring),
+                                     is_pending)
         refresh_timer.watch([lambda: worker.is_scoring_pending(submission.id)]
                             if is_pending else [])
         if reason is not None:
-            ui.label(reason).classes("muted" if is_pending or not submission.is_in_use
-                                     else "error")
+            ui.label(reason).classes("muted" if is_pending else "error")
             return
         models = [ScoredModel(submission, s) for s in scoring.evaluation_set_scores]
         subset = attribute_filter.set_options(collect_scored_attributes(models))
@@ -364,14 +387,10 @@ class _ModelPage:
         if not subset.selected:
             ui.label("Select at least one attribute.").classes("error")
             return
-        if not submission.is_in_use:
-            ui.label("Deleted models are left out of the Scores and Analysis pages."
-                     ).classes("muted")
         split_use = submission.model_info.get_split_use(submission.split)
         if (explanation := ie.explain_split_use(split_use, submission.split)) is not None:
             ui.label(explanation).classes("error" if split_use == "training" else "muted")
-        is_analysed = (submission.is_in_use
-                       and not context.config.is_protected_split(submission.split))
+        is_analysed = not context.config.is_protected_split(submission.split)
         can_see_class_scores = _can_see_class_scores(context.config, submission.split,
                                                      self.is_admin)
         set_to_scores = {m.scores.evaluation_set: compute_method_scores(
@@ -487,6 +506,23 @@ def register_model_page(archive: ModelArchive,
     # One coding table at a time, since anyone can make one, and it can take tens of seconds in
     # the threads of `run.io_bound`, which changes and sign-ins also use.
     coding_table_lock = asyncio.Lock()
+
+    @app.get(MODEL_PREDICTIONS_DOWNLOAD_PATH)
+    def download_model_predictions(model_id: int) -> FileResponse:
+        try:
+            model = archive.get_model(model_id)
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        # Removed after it is sent, or by `remove_uploads` if the download is cut off.
+        path = archive.make_upload_path(ARCHIVE_SUFFIX)
+        try:
+            with path.open("wb") as file:
+                archive.write_model_predictions_zip(model_id, file)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return FileResponse(path, filename=to_valid_file_name(f"{model.label}.predictions.zip"),
+                            media_type="application/zip", background=BackgroundTask(path.unlink))
 
     @app.get(SCORES_DOWNLOAD_PATH)
     def download_scores(submission_id: int, evaluation_set: str) -> JSONResponse:

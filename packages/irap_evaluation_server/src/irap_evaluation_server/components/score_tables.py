@@ -28,6 +28,7 @@ from .formatting import (
     make_model_link_html,
     make_table_html,
     make_table_html_from_header,
+    make_truncated_name_html,
 )
 
 V = T.TypeVar("V")
@@ -271,17 +272,19 @@ def _make_difference_htmls(rows: T.Sequence[MethodScores],
     return [make_html(r) for r in rows]
 
 
-def _make_method_label(row: MethodScores, comparisons: ReferenceComparisons | None,
-                       split: str) -> str:
-    """Makes the shown method name, marked if it is the reference method or used the split of the
+def _make_method_label_html(row: MethodScores, comparisons: ReferenceComparisons | None,
+                            split: str) -> str:
+    """Makes the shown method name, cut off with a tooltip if it is long (`truncated-name` in
+    `styles.css`), and below it, whether it is the reference method or used the split of the
     scores (`method_ranking.describe_split_use`)."""
     marks = []
     if comparisons is not None and row.method_name == comparisons.reference.method_name:
         marks.append("reference")
     if split_use := describe_split_use(get_method_split_use(row, split), split):
         marks.append(split_use)
-    name = row.shown_method_name
-    return f"{name} ({', '.join(marks)})" if marks else name
+    marks_html = (f'<div class="muted">({html.escape(", ".join(marks))})</div>' if marks
+                  else "")
+    return make_truncated_name_html(row.shown_method_name) + marks_html
 
 
 # Tables ###########################################################################################
@@ -328,7 +331,7 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
         comparisons: The comparisons with a reference method, or None.
     """
     metric_headers = "".join(
-        f'<th class="sortable{" sorted" if n == sort_metric else ""}" data-sort="{n}"'
+        f'<th class="number sortable{" sorted" if n == sort_metric else ""}" data-sort="{n}"'
         f' title="Sort by {n}, best first">{n}{" ▾" if n == sort_metric else ""}</th>'
         for n in RANKING_METRIC_NAMES)
     header = f"<th>Method</th><th>Models</th>{metric_headers}<th>Notes</th>"
@@ -346,8 +349,8 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
                      f"{html.escape(row.error or '')}</td>")
         else:
             cells = "".join(metric_cells)
-        method_label = _make_method_label(row, comparisons, split)
-        html_rows.append(f"<tr><td>{html.escape(method_label)}</td>"
+        method_label_html = _make_method_label_html(row, comparisons, split)
+        html_rows.append(f"<tr><td>{method_label_html}</td>"
                          f"<td>{_make_model_links_html(row, split, attributes_query)}</td>{cells}"
                          f"<td>{_make_notes_html(row, is_model_compatible_view)}</td></tr>")
     footnote = (f'<div class="muted">* {SINGLE_MODEL_NOTE}</div>'
@@ -378,8 +381,9 @@ def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
             _make_difference_htmls(rows, comparisons, select_value, metric_name),
             notes=["not predicted" if attribute in r.missing_attributes else "" for r in rows])
         html_rows.append(f"<tr><td>{html.escape(attribute)}</td>{''.join(cells)}</tr>")
-    method_labels = [_make_method_label(r, comparisons, split) for r in rows]
-    return (make_table_html(["Attribute", *method_labels], html_rows)
+    method_headers = "".join(
+        f'<th class="number">{_make_method_label_html(r, comparisons, split)}</th>' for r in rows)
+    return (make_table_html_from_header(f"<th>Attribute</th>{method_headers}", html_rows)
             + _make_highlight_note_html("the other methods in its row", has_best_or_tied=True))
 
 
@@ -414,8 +418,9 @@ def make_model_scores_html(scores: MethodScores, state: ResultState) -> str:
                        f"{' (not predicted)' if is_missing else ''}")
         attribute_rows.append(f"<tr><td>{html.escape(attribute)}</td>{cells}"
                               f'<td class="number">{num_invalid}</td></tr>')
-    attribute_header = ["Attribute", *IRAP_ATTRIBUTE_METRIC_NAMES, "Invalid cells"]
-    return (f'<div class="score-tables">'
-            f'{make_table_html(["Average", "Value"], average_rows)}'
-            f"{make_table_html(attribute_header, attribute_rows)}</div>"
+    average_table = make_table_html(["Average", "Value"], average_rows, number_headers=["Value"])
+    number_headers = [*IRAP_ATTRIBUTE_METRIC_NAMES, "Invalid cells"]
+    attribute_table = make_table_html(["Attribute", *number_headers], attribute_rows,
+                                      number_headers)
+    return (f'<div class="score-tables">{average_table}{attribute_table}</div>'
             f"{_make_highlight_note_html('the other attributes', has_best_or_tied=False)}")
