@@ -34,7 +34,7 @@ PERMISSION_DESCRIPTIONS: T.Mapping[Permission, str] = {
 }
 
 DATABASE_FILE_NAME = "accounts.sqlite3"
-MIN_PASSWORD_LENGTH = 12
+MIN_PASSWORD_LENGTH = 8
 MAX_ACCOUNT_NAME_LENGTH = 64
 #: The version of the database schema (`PRAGMA user_version`).
 SCHEMA_VERSION = 1
