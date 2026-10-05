@@ -45,6 +45,10 @@ def test_evaluate_ensemble_compare_export(metadata_dir, metadata, tmp_path, caps
     ensemble_path = str(tmp_path / "ens.predictions.parquet")
     assert main(["ensemble", *paths, "--name", "ens", "-o", ensemble_path]) == 0
     assert read_predictions(ensemble_path).header.context_offsets is None
+    default_path = str(tmp_path / "default.predictions.parquet")
+    assert main(["ensemble", *paths, "--display-name", "Ensemble", "-o", default_path]) == 0
+    model = read_predictions(default_path).header.model
+    assert (model.method_name, model.method_display_name) == ("a+b", "Ensemble")
 
     out = tmp_path / "results"
     assert main(["evaluate", str(metadata_dir), *paths, ensemble_path, "--out", str(out),

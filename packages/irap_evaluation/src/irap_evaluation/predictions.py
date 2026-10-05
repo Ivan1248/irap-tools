@@ -80,9 +80,10 @@ class ModelInfo:
     split names are stored sorted, so their order does not matter.
 
     Attributes:
-        method_name: A short name that identifies the method in reports. The models with the same
-            method name are models of one method, e.g. trained with different seeds, whose spread
-            the bootstrap includes (see `bootstrap`).
+        method_name: Identifies the method, e.g. in file names and reports. It may be long, e.g.
+            if it encodes the training configuration. The models with the same method name are
+            models of one method, e.g. trained with different seeds, whose spread the bootstrap
+            includes (see `bootstrap`).
         training_splits: The splits of the dataset whose segments (images or labels) were used to
             fit the model, () for none, e.g. for a zero-shot model, or None if unknown. Other
             training data belongs in `details`.
@@ -90,22 +91,31 @@ class ModelInfo:
             selection, () for none.
         seed: Identifies the model among the models of the method, e.g. the training seed, or None
             for a method with a single model.
+        method_display_name: A human-readable name of the method, shown instead of the method
+            name (`shown_method_name`), or None. It is stored stripped. It does not identify the
+            method, so it is not compared, and the models of a method may have different ones.
         details: JSON-compatible free-form details, e.g. the checkpoint, the code commit
             (conventionally under 'commit') or the training configuration. They describe how the
             predictions were made, not which model made them, so they are not compared.
 
     Raises:
-        PredictionFormatError: If a split field has duplicates or is not a sequence of strings, or
-            a split is both a training and an early stopping split.
+        PredictionFormatError: If a split field has duplicates or is not a sequence of strings, a
+            split is both a training and an early stopping split, or the method display name is
+            blank.
     """
 
     method_name: str
     training_splits: tuple[str, ...] | None
     early_stopping_splits: tuple[str, ...]
     seed: int | None = None
+    method_display_name: str | None = dc.field(default=None, compare=False)
     details: T.Mapping[str, T.Any] | None = dc.field(default=None, compare=False)
 
     def __post_init__(self):
+        if self.method_display_name is not None:
+            if not (display_name := self.method_display_name.strip()):
+                raise PredictionFormatError("The method display name must not be blank.")
+            object.__setattr__(self, "method_display_name", display_name)
         training = (None if self.training_splits is None
                     else _to_split_names(self.training_splits, "The training splits"))
         early_stopping = _to_split_names(self.early_stopping_splits, "The early stopping splits")
@@ -119,6 +129,11 @@ class ModelInfo:
     def label(self) -> str:
         return format_model_label(self.method_name, self.seed)
 
+    @property
+    def shown_method_name(self) -> str:
+        """The method display name, or the method name if there is none."""
+        return self.method_display_name or self.method_name
+
     def get_split_use(self, split: str) -> SplitUse:
         """Returns what the model used the segments of `split` for. Other training data in
         `details` is not considered."""
@@ -131,7 +146,8 @@ class ModelInfo:
     def to_json_dict(self) -> dict[str, T.Any]:
         """The JSON object of the model in the header of a prediction file
         (`docs/prediction_format.md`), also used for the members of an ensemble."""
-        return {"method_name": self.method_name, "seed": self.seed,
+        return {"method_name": self.method_name, "method_display_name": self.method_display_name,
+                "seed": self.seed,
                 "training_splits": (None if self.training_splits is None
                                     else list(self.training_splits)),
                 "early_stopping_splits": list(self.early_stopping_splits),

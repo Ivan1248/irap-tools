@@ -60,6 +60,7 @@ def _from_model_json_dict(d: T.Any) -> ModelInfo:
         PredictionFormatError: If it is malformed.
     """
     if not (isinstance(d, dict) and isinstance(d.get("method_name"), str)
+            and isinstance(d.get("method_display_name"), (str, type(None)))
             and (d.get("seed") is None or _is_int(d["seed"]))
             and "training_splits" in d
             and (d["training_splits"] is None or _is_string_list(d["training_splits"]))
@@ -68,10 +69,11 @@ def _from_model_json_dict(d: T.Any) -> ModelInfo:
         raise PredictionFormatError(
             "'model' must be an object with a string 'method_name', 'training_splits' (an array"
             " of split names, or null if unknown), 'early_stopping_splits' (an array of split"
-            " names), an optional integer 'seed' and an optional object 'details'.")
+            " names), an optional string 'method_display_name', an optional integer 'seed' and"
+            " an optional object 'details'.")
     return ModelInfo(method_name=d["method_name"], training_splits=d["training_splits"],
                      early_stopping_splits=d["early_stopping_splits"], seed=d.get("seed"),
-                     details=d.get("details"))
+                     method_display_name=d.get("method_display_name"), details=d.get("details"))
 
 
 def _from_header_json_dict(d: T.Any) -> tuple[PredictionHeader, dict[str, list]]:
@@ -107,6 +109,23 @@ def _from_header_json_dict(d: T.Any) -> tuple[PredictionHeader, dict[str, list]]
     header = PredictionHeader(dataset=d["dataset"], split=d["split"], model=model,
                               context_offsets=offsets)
     return header, attribute_to_irap_codes
+
+
+def _parse_header_metadata(
+        metadata: T.Mapping[bytes, bytes]) -> tuple[PredictionHeader, dict[str, list]]:
+    """Parses the header in the key-value metadata of a table or a Parquet file (see
+    `_from_header_json_dict`).
+
+    Raises:
+        PredictionFormatError: If there is no header, or it does not match the format.
+    """
+    if HEADER_METADATA_KEY not in metadata:
+        raise PredictionFormatError(f"The table has no {HEADER_METADATA_KEY.decode()!r} header.")
+    try:
+        header_json = json.loads(metadata[HEADER_METADATA_KEY].decode("utf-8"))
+    except ValueError as e:
+        raise PredictionFormatError(f"The header is not UTF-8 JSON: {e}") from e
+    return _from_header_json_dict(header_json)
 
 
 # Columns ##########################################################################################
@@ -197,13 +216,7 @@ def from_arrow_table(table: pa.Table,
         PredictionFormatError: If the header or a column does not match the format.
     """
     metadata = (table.schema.metadata if metadata is None else metadata) or {}
-    if HEADER_METADATA_KEY not in metadata:
-        raise PredictionFormatError(f"The table has no {HEADER_METADATA_KEY.decode()!r} header.")
-    try:
-        header_json = json.loads(metadata[HEADER_METADATA_KEY].decode("utf-8"))
-    except ValueError as e:
-        raise PredictionFormatError(f"The header is not UTF-8 JSON: {e}") from e
-    header, attribute_to_irap_codes = _from_header_json_dict(header_json)
+    header, attribute_to_irap_codes = _parse_header_metadata(metadata)
     expected_columns = [SEGMENT_ID_COLUMN, *attribute_to_irap_codes]
     if missing := [c for c in expected_columns if c not in table.column_names]:
         raise PredictionFormatError(f"The table has no columns {missing}.")
@@ -252,3 +265,18 @@ def read_predictions(path: str | Path) -> Predictions:
     # of some writers, e.g. Polars.
     with pq.ParquetFile(path) as file:
         return from_arrow_table(file.read(), file.metadata.metadata)
+
+
+def read_prediction_header(source: str | Path | T.BinaryIO) -> PredictionHeader:
+    """Reads the header of a prediction file without its columns, e.g. to show the model of a
+    file before it is read. The attributes and the columns are not checked, so `read_predictions`
+    may still refuse the file.
+
+    Args:
+        source: A path or a seekable binary file, e.g. a member of a .zip archive.
+
+    Raises:
+        PredictionFormatError: If the header does not match the format.
+    """
+    with pq.ParquetFile(source) as file:
+        return _parse_header_metadata(file.metadata.metadata or {})[0]

@@ -13,6 +13,7 @@ Parquet file
       context_offsets?: list[int] | None
       model:
         method_name: str
+        method_display_name?: str | None
         training_splits: list[str] | None
         early_stopping_splits: list[str]
         seed?: int | None
@@ -26,7 +27,7 @@ Parquet file
 
 Header types are Python types of the parsed JSON. `?` marks optional fields. Column types are Arrow types.
 
-`irap_evaluation.prediction_io` reads and writes the format (`read_predictions`, `write_predictions`), represented in memory by `irap_evaluation.predictions.Predictions`.
+`irap_evaluation.prediction_io` reads and writes the format (`read_predictions`, `write_predictions`, and `read_prediction_header` for the header alone), represented in memory by `irap_evaluation.predictions.Predictions`.
 
 ## Columns
 
@@ -63,7 +64,8 @@ Along with `dataset` and `split`, `context_offsets` defines the model's [evaluat
 
 | Field | Type | Content |
 |---|---|---|
-| `method_name` | `str` | Short name identifying the method in reports. Files with the same method name are models of one method. |
+| `method_name` | `str` | A string that identifies the method. Files with the same method name are predictions of the same learning method. |
+| `method_display_name` | `str \| None` | Human-readable short name of the method, shown instead of `method_name`, e.g. `"ViT-L-DINOv3-supervised"`. Optional. |
 | `training_splits` | `list[str] \| None` | Splits used to fit the model, `[]` for none (e.g. a zero-shot model), `null` if unknown. Required. |
 | `early_stopping_splits` | `list[str]` | Splits used only for checkpoint selection, `[]` for none. Required. |
 | `seed` | `int \| None` | Seed representing a training run. Optional. |
@@ -73,11 +75,7 @@ A model is identified by its dataset, method name and seed. All its files must h
 
 #### Details field of an ensemble
 
-An ensemble written by `irap_evaluation` is a `probs` file whose `context_offsets` are the union of its members' offsets (or null if any member's offsets are unknown). Its training splits are the union of its members' training splits (null if any are unknown), and its early stopping splits are the union of its members' early stopping splits that are not training splits of the ensemble (`make_ensemble_model`). It records member provenance in `details.ensemble`:
-
-```json
-{"members": [{"model": ..., "context_offsets": ..., "weight": ...}, ...]}
-```
+An ensemble written by `irap_evaluation` is a `probs` file whose `context_offsets` are the union of its members' offsets (or null if any member's offsets are unknown). Its training splits are the union of its members' training splits (null if any are unknown), and its early stopping splits are the union of its members' early stopping splits that are not training splits of the ensemble (`make_ensemble_model_info`). Its method name is given, or by default made of the sorted method names of its members with their seeds, e.g. `resnet-seq_seeds0-4+vit-l` for the seeds 0 to 4 of `resnet-seq` and the unseeded `vit-l`.
 
 ## Examples
 
@@ -93,7 +91,8 @@ header = ie.PredictionHeader(
   split="val",
   context_offsets=(0, -1, -4),
   model=ie.ModelInfo(method_name="resnet-seq", training_splits=("train",),
-                     early_stopping_splits=(), seed=3, details={"commit": "4f2a9c1"})
+                     early_stopping_splits=(), seed=3,
+                     method_display_name="ResNet-seq", details={"commit": "4f2a9c1"})
 )
 predictions = ie.Predictions.from_logits(
   header,
@@ -120,7 +119,7 @@ header = dict(
   dataset="vietnam",
   split="val",
   model=dict(method_name="resnet-seq", training_splits=["train"], early_stopping_splits=[],
-             seed=3),
+             seed=3, method_display_name="ResNet-seq", details={"commit": "4f2a9c1"}),
   context_offsets=[0, -1, -4],
   attribute_to_irap_codes={"Lane width": [1, 2, 3]}
 )

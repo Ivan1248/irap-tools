@@ -24,7 +24,7 @@ from .bootstrap import (
     compute_mean_metrics,
     compute_method_metrics,
 )
-from .ensembling import ensemble_predictions, make_ensemble_model
+from .ensembling import ensemble_predictions, make_ensemble_method_name, make_ensemble_model_info
 from .evaluation import (
     AttributeSelection,
     ClassMetrics,
@@ -64,7 +64,7 @@ from .metrics import (
     select_metric_attributes,
     sum_statistics,
 )
-from .prediction_io import read_predictions, write_predictions
+from .prediction_io import read_prediction_header, read_predictions, write_predictions
 from .predictions import (
     INVALID_IRAP_CODE,
     ModelInfo,

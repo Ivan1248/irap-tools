@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from irap_data.metadata import IGNORE_LABEL_INDEX
-from irap_evaluation.ensembling import ensemble_predictions
+from irap_evaluation.ensembling import ensemble_predictions, make_ensemble_method_name
 from irap_evaluation.predictions import (
     ModelInfo,
     PredictionFormatError,
@@ -14,9 +14,10 @@ CLASS_CODES = {"a": (1, 2)}
 REVERSED_CLASS_CODES = {"a": (2, 1)}
 
 
-def _header(method_name, offsets=None, training_splits=("train",), early_stopping_splits=()):
+def _header(method_name, offsets=None, training_splits=("train",), early_stopping_splits=(),
+            seed=None):
     model = ModelInfo(method_name=method_name, training_splits=training_splits,
-                      early_stopping_splits=early_stopping_splits)
+                      early_stopping_splits=early_stopping_splits, seed=seed)
     return PredictionHeader("vietnam", "val", model, context_offsets=offsets)
 
 
@@ -58,6 +59,30 @@ def test_ensemble_uses_the_splits_of_its_members(member_splits, training, early_
     assert (model.training_splits, model.early_stopping_splits) == (training, early_stopping)
     if training is None:
         assert model.get_split_use("val") == "unknown"
+
+
+@pytest.mark.parametrize("members, name", [
+    ([("b", None), ("a", None)], "a+b"),
+    ([("m", 3)], "m_seed3"),
+    ([("m", 2), ("m", 1)], "m_seeds1,2"),
+    ([("m", 4), ("m", 0), ("m", 2), ("m", 3), ("m", 1), ("m", 7), ("m", 9), ("m", 10)],
+     "m_seeds0-4,7,9,10"),
+    ([("vit", 2), ("resnet", 3), ("resnet", 1), ("dino", None)],
+     "dino+resnet_seeds1,3+vit_seed2"),
+])
+def test_default_method_name_lists_the_methods_with_their_seeds(members, name):
+    models = [ModelInfo(method_name=m, training_splits=(), early_stopping_splits=(), seed=s)
+              for m, s in members]
+    assert make_ensemble_method_name(models) == name
+
+
+def test_ensemble_gets_the_default_method_name_and_a_display_name():
+    members = [_probs(CLASS_CODES, [[0.8, 0.2], [0.6, 0.4]], _header("m", seed=i))
+               for i in range(3)]
+    model = ensemble_predictions(members).header.model
+    assert (model.method_name, model.method_display_name) == ("m_seeds0-2", None)
+    model = ensemble_predictions(members, "e", method_display_name="Ensemble").header.model
+    assert (model.method_name, model.method_display_name) == ("e", "Ensemble")
 
 
 def test_mean_of_hard_predictions_gives_vote_shares():

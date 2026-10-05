@@ -10,6 +10,7 @@ from irap_data.metadata import IGNORE_LABEL_INDEX
 from irap_evaluation.prediction_io import (
     HEADER_METADATA_KEY,
     from_arrow_table,
+    read_prediction_header,
     read_predictions,
     to_arrow_table,
     write_predictions,
@@ -219,11 +220,21 @@ def test_select_segments():
         select_segments(_predictions(), ["s1", "s1"])
 
 
-def test_reading_rejects_other_parquet_files(tmp_path):
+def test_read_prediction_header(tmp_path):
+    path = tmp_path / "m.predictions.parquet"
+    write_predictions(path, _predictions())
+    with path.open("rb") as file:
+        for header in (read_prediction_header(path), read_prediction_header(file)):
+            assert header == HEADER
+            assert header.model.details == HEADER.model.details
+
+
+@pytest.mark.parametrize("read", [read_predictions, read_prediction_header])
+def test_reading_rejects_other_parquet_files(tmp_path, read):
     table = to_arrow_table(_predictions()).replace_schema_metadata({})
     pq.write_table(table, tmp_path / "x.parquet")
     with pytest.raises(PredictionFormatError, match="header"):
-        read_predictions(tmp_path / "x.parquet")
+        read(tmp_path / "x.parquet")
 
 
 def test_probability_columns_are_not_dictionary_encoded(tmp_path):
@@ -328,6 +339,12 @@ def test_reading_rejects_invalid_columns(make_table, message):
                                "early_stopping_splits": [], "seed": "1"}), "'model'"),
     (lambda h: h.update(model={"method_name": "m", "training_splits": [],
                                "early_stopping_splits": [], "seed": True}), "'model'"),
+    (lambda h: h.update(model={"method_name": "m", "training_splits": [],
+                               "early_stopping_splits": [], "method_display_name": 1}),
+     "'method_display_name'"),
+    (lambda h: h.update(model={"method_name": "m", "training_splits": [],
+                               "early_stopping_splits": [], "method_display_name": " "}),
+     "must not be blank"),
     (lambda h: h.update(model={"method_name": "m", "training_splits": ["a", "a"],
                                "early_stopping_splits": []}), "duplicates"),
     (lambda h: h.update(model={"method_name": "m", "training_splits": ["a"],
@@ -351,24 +368,31 @@ def test_model_needs_only_a_method_name_and_splits():
     assert loaded.header.model == ModelInfo(method_name="m", training_splits=None,
                                             early_stopping_splits=())
     assert loaded.header.model.label == "m"
+    assert loaded.header.model.method_display_name is None
+    assert loaded.header.model.shown_method_name == "m"
 
 
-def test_model_round_trips(tmp_path):
+@pytest.mark.parametrize("method_display_name", [None, "Model M"])
+def test_model_round_trips(tmp_path, method_display_name):
     model = ModelInfo(method_name="m", training_splits=("train", "unlabeled_val"),
-                      early_stopping_splits=("val",), seed=3, details={"lr": 0.1})
+                      early_stopping_splits=("val",), seed=3,
+                      method_display_name=method_display_name, details={"lr": 0.1})
     predictions = dc.replace(_predictions(), header=dc.replace(HEADER, model=model))
     write_predictions(tmp_path / "m.predictions.parquet", predictions)
     loaded = read_predictions(tmp_path / "m.predictions.parquet")
     assert loaded.header.model == model
     assert loaded.header.model.details == model.details
+    assert loaded.header.model.method_display_name == method_display_name
     assert loaded.header.model.label == "m/seed3"
+    assert loaded.header.model.shown_method_name == (method_display_name or "m")
 
 
-def test_model_identity_ignores_details_and_split_order():
+def test_model_identity_ignores_details_display_name_and_split_order():
     model = ModelInfo(method_name="m", training_splits=("train", "extra"),
                       early_stopping_splits=("val", "val2"), seed=1, details={"commit": "a"})
     same = ModelInfo(method_name="m", training_splits=["extra", "train"],
-                     early_stopping_splits=("val2", "val"), seed=1, details={"commit": "b"})
+                     early_stopping_splits=("val2", "val"), seed=1, method_display_name="M",
+                     details={"commit": "b"})
     assert model == same and hash(model) == hash(same)
     assert model.training_splits == ("extra", "train")
     assert model != dc.replace(model, early_stopping_splits=())

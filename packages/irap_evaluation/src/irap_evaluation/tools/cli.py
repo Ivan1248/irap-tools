@@ -312,10 +312,11 @@ def run_compare(args: argparse.Namespace) -> None:
 def run_ensemble(args: argparse.Namespace) -> None:
     predictions_seq = _read_prediction_files(args.files)
     ensemble = ensemble_predictions(
-        predictions_seq, args.name, seed=args.model_seed, weights=args.weights,
-        intersect_segments=args.intersect_segments)
+        predictions_seq, args.name, method_display_name=args.display_name, seed=args.model_seed,
+        weights=args.weights, intersect_segments=args.intersect_segments)
     write_predictions(args.output, ensemble)
-    print(f"Wrote the mean of {len(predictions_seq)} prediction files"
+    print(f"Wrote the mean of {len(predictions_seq)} prediction files as the method"
+          f" {ensemble.header.model.method_name!r}"
           f" ({ensemble.num_segments} segments, trained on"
           f" {_format_training_splits(ensemble.header.model)}) to {args.output}.")
 
@@ -328,7 +329,7 @@ def run_export_coding_table(args: argparse.Namespace) -> None:
     template = coding_tables.load_coding_table_template(args.template)
     table = coding_tables.predictions_to_coding_table(
         predictions_seq, metadata, template,
-        coder_name=args.coder_name or predictions_seq[0].header.model.method_name,
+        coder_name=args.coder_name or predictions_seq[0].header.model.shown_method_name,
         coding_date=args.coding_date)
     confidence_table = (coding_tables.predictions_to_confidence_table(predictions_seq, metadata,
                                                                       template)
@@ -418,7 +419,11 @@ def make_argument_parser() -> argparse.ArgumentParser:
                          " The ensemble's training splits are the union of the members' training"
                          " splits.")
     ensemble.add_argument("files", nargs="+", type=Path)
-    ensemble.add_argument("--name", required=True, help="Method name of the ensemble.")
+    ensemble.add_argument("--name", default=None,
+                          help="Method name of the ensemble. Default: the sorted method names of"
+                               " the members with their seeds, e.g. resnet-seq_seeds0-4+vit-l.")
+    ensemble.add_argument("--display-name", default=None,
+                          help="Method display name of the ensemble. Default: none.")
     ensemble.add_argument("--model-seed", type=int, default=None,
                           help="Seed of the ensemble, if it is one model of a method with several"
                                " models. Default: none.")
@@ -437,7 +442,8 @@ def make_argument_parser() -> argparse.ArgumentParser:
                         help="Prediction files of one model on disjoint segments, e.g. one per"
                              " split, which go into one table.")
     export.add_argument("-o", "--output", type=Path, required=True, help="A .xlsx or .csv path.")
-    export.add_argument("--coder-name", default=None, help="Default: the method name.")
+    export.add_argument("--coder-name", default=None,
+                        help="Default: the method display name, or the method name.")
     export.add_argument("--coding-date", default=date.today().isoformat(),
                         help="YYYY-MM-DD. Default: today.")
     export.add_argument("--confidence-table", action="store_true",
