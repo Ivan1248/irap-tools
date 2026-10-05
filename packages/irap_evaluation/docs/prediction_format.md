@@ -1,6 +1,6 @@
 # iRAP prediction file format
 
-A prediction file is an [Apache Parquet](https://parquet.apache.org/) file holding the predictions of a model for a split of an iRAP dataset. Files are conventionally named `<method>.<split>.predictions.parquet`, or `<method>_seed<seed>.<split>.predictions.parquet` for one of several models of a method.
+A prediction file is an [Apache Parquet](https://parquet.apache.org/) file holding the predictions of a model for a split of an iRAP dataset. Files are conventionally named `<method>.<split>.predictions.parquet`, or `<method>_seed<seed>.<split>.predictions.parquet` for one of several models of a method. `make_prediction_file_name` makes such a name: it replaces characters that are not valid in a file name (`to_valid_file_name`), and it cuts a method name that would make the name longer than 255 bytes and adds a hash of it (`shorten_file_name`). The full method name is in the header.
 
 Prediction file structure:
 ```
@@ -27,7 +27,7 @@ Parquet file
 
 Header types are Python types of the parsed JSON. `?` marks optional fields. Column types are Arrow types.
 
-`irap_evaluation.prediction_io` reads and writes the format (`read_predictions`, `write_predictions`, and `read_prediction_header` for the header alone), represented in memory by `irap_evaluation.predictions.Predictions`.
+`irap_evaluation.prediction_io` reads and writes the format (`read_predictions`, `write_predictions`, and `read_prediction_header` for the header alone) and names the files (`make_prediction_file_name`), represented in memory by `irap_evaluation.predictions.Predictions`.
 
 ## Columns
 

@@ -4,7 +4,6 @@ import collections
 import dataclasses as dc
 import json
 import math
-import re
 import typing as T
 from pathlib import Path
 
@@ -17,6 +16,7 @@ from ..evaluation import (
     compute_class_metrics,
     group_models_by_method,
 )
+from ..file_names import to_valid_file_name
 from ..metrics import MetricValues, map_metric_values, parse_metric_name
 
 V = T.TypeVar("V")
@@ -284,10 +284,6 @@ def to_evaluation_set_tables(
                   **{f"per_attribute_{metric}": to_per_attribute_table(table, metric)
                      for metric in table_metrics}}
             for key, table in long_table.groupby(list(EVALUATION_SET_COLUMNS), sort=False)}
-
-
-def to_valid_file_name(name: str) -> str:
-    return re.sub(r"[^\w.-]+", "_", name)
 
 
 def check_model_dir_names(model_labels: T.Iterable[str]) -> None:

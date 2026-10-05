@@ -13,12 +13,14 @@ import pyarrow.parquet as pq
 
 from irap_data.metadata import IGNORE_LABEL_INDEX
 
+from .file_names import shorten_file_name, to_valid_file_name
 from .predictions import (
     ModelInfo,
     OutputKind,
     PredictionFormatError,
     PredictionHeader,
     Predictions,
+    format_model_label,
     to_class_indices,
 )
 
@@ -247,8 +249,27 @@ def from_arrow_table(table: pa.Table,
                                           is_valid)
 
 
+def make_prediction_file_name(method_name: str, seed: int | None, split: str) -> str:
+    """The conventional name of a prediction file: `<method>.<split>.predictions.parquet`, or
+    `<method>_seed<seed>.<split>.predictions.parquet` for a model with a seed.
+
+    The method name and the split are made valid by `to_valid_file_name`. A method name that
+    would make the name longer than `MAX_FILE_NAME_BYTES` is cut by `shorten_file_name`. The
+    full method name is in the file's header.
+
+    Raises:
+        ValueError: If the split name leaves no room for the method name.
+    """
+    # The label is `<method>/seed<seed>` for a model with a seed, as for report directories.
+    stem = to_valid_file_name(format_model_label(method_name, seed))
+    seed_part = "" if seed is None else f"_seed{seed}"
+    return shorten_file_name(stem.removesuffix(seed_part),
+                             f"{seed_part}.{to_valid_file_name(split)}.predictions.parquet")
+
+
 def write_predictions(path: str | Path, predictions: Predictions) -> None:
-    """Writes `predictions` to a Parquet file, conventionally named `*.predictions.parquet`."""
+    """Writes `predictions` to a Parquet file, conventionally named by
+    `make_prediction_file_name`."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(to_arrow_table(predictions), path,

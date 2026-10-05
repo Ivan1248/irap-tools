@@ -65,7 +65,13 @@ from .metrics import (
     select_metric_attributes,
     sum_statistics,
 )
-from .prediction_io import read_prediction_header, read_predictions, write_predictions
+from .file_names import MAX_FILE_NAME_BYTES, shorten_file_name, to_valid_file_name
+from .prediction_io import (
+    make_prediction_file_name,
+    read_prediction_header,
+    read_predictions,
+    write_predictions,
+)
 from .predictions import (
     INVALID_IRAP_CODE,
     ModelInfo,
