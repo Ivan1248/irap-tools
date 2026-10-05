@@ -42,7 +42,6 @@ from datetime import datetime
 from pathlib import Path
 
 import irap_evaluation as ie
-from irap_evaluation.reports.evaluation_report import to_valid_file_name
 
 from .database import begin_write, connect, get_utc_now, initialize_schema
 
@@ -301,7 +300,8 @@ def get_differing_model_fields(files: T.Iterable[Submission | NewSubmission]) ->
 
 
 def get_download_file_name(submission: Submission) -> str:
-    return to_valid_file_name(f"{submission.label}.{submission.split}.predictions.parquet")
+    return ie.make_prediction_file_name(submission.model.method_name, submission.model.seed,
+                                        submission.split)
 
 
 def describe_model_fields(file: Submission | NewSubmission, names: T.Iterable[str]) -> str:

@@ -11,7 +11,7 @@ import urllib.parse
 import irap_evaluation as ie
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from irap_evaluation.reports.evaluation_report import to_valid_file_name
+from irap_evaluation import to_valid_file_name
 from nicegui import app, run, ui
 from starlette.background import BackgroundTask
 

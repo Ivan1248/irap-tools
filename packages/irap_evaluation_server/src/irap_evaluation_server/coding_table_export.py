@@ -8,8 +8,8 @@ import typing as T
 from pathlib import Path
 
 import irap_evaluation as ie
+from irap_evaluation import to_valid_file_name
 from irap_evaluation.reports import coding_tables
-from irap_evaluation.reports.evaluation_report import to_valid_file_name
 
 from .archive import ModelArchive, Submission
 from .database import get_utc_now
