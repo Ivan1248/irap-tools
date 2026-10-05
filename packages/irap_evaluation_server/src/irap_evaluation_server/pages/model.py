@@ -11,7 +11,7 @@ import urllib.parse
 import irap_evaluation as ie
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from irap_evaluation.reports.evaluation_report import to_file_name
+from irap_evaluation.reports.evaluation_report import to_valid_file_name
 from nicegui import app, run, ui
 
 from ..accounts import can_write, is_admin
@@ -504,7 +504,7 @@ def register_model_page(archive: ModelArchive,
         if not _can_see_class_scores(context.config, submission.split,
                                      is_admin(sessions.get_account())):
             report = remove_class_scores(report)
-        file_name = to_file_name(f"{submission.label}.{submission.split}.{evaluation_set}"
+        file_name = to_valid_file_name(f"{submission.label}.{submission.split}.{evaluation_set}"
                                  f".scores.json")
         return JSONResponse(report,
                             headers={"Content-Disposition": _make_attachment_header(file_name)})

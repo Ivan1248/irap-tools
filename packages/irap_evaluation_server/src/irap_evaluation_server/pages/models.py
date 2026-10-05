@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
-from irap_evaluation.reports.evaluation_report import to_file_name
+from irap_evaluation.reports.evaluation_report import to_valid_file_name
 from nicegui import app, run, ui
 
 from ..accounts import can_write
@@ -65,7 +65,7 @@ _SUMMARY_COLUMNS = ("Output", "Segments", "Attributes", "Description", "Updated"
 
 
 def get_download_file_name(submission: Submission) -> str:
-    return to_file_name(f"{submission.label}.{submission.split}.predictions.parquet")
+    return to_valid_file_name(f"{submission.label}.{submission.split}.predictions.parquet")
 
 
 def _make_submission_cell_html(summary: ModelSummary, split: str) -> str:

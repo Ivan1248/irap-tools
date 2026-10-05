@@ -9,7 +9,7 @@ from pathlib import Path
 
 import irap_evaluation as ie
 from irap_evaluation.reports import coding_tables
-from irap_evaluation.reports.evaluation_report import to_file_name
+from irap_evaluation.reports.evaluation_report import to_valid_file_name
 
 from .archive import ModelArchive, Submission
 from .database import get_utc_now
@@ -115,7 +115,7 @@ def export_model_coding_table(archive: ModelArchive,
     if unknown := [s for s in splits if s not in split_to_active]:
         raise ValueError(f"The model has no active files of the splits {unknown}.")
     submissions = [split_to_active[s] for s in dict.fromkeys(splits)]
-    file_name = to_file_name(f"{model.label}.{'+'.join(s.split for s in submissions)}"
+    file_name = to_valid_file_name(f"{model.label}.{'+'.join(s.split for s in submissions)}"
                              f".coding_table.{file_format}")
     coder_name = coder_name or model.shown_method_name
     if file_format == "csv" and coder_name.startswith(_FORMULA_PREFIXES):
