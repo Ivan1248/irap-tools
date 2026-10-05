@@ -58,6 +58,7 @@ from .metrics import (
     compute_classification_statistics,
     compute_grouped_metrics,
     compute_multi_attribute_metrics,
+    describe_metric,
     get_irap_metric_names,
     is_lower_better,
     map_metric_values,

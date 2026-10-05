@@ -118,6 +118,8 @@ A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but n
 
 **Attribute average.** The prefix `a` averages a metric over the scored attributes where it is not NaN, e.g. `amF1`. Infinite values are included. Each attribute counts equally, so `aNLL` is the mean of the per-attribute NLLs. Per-class metrics are not averaged.
 
+`describe_metric(name)` describes any such name in words, e.g. for a tooltip.
+
 **Averages over a subset of the attributes.** Since an average is the mean of the per-attribute values, `select_metric_attributes(result.metrics, subset)` computes it for a subset from those values, without the predictions. It needs the per-attribute value of each average, e.g. `mP` for `amP`. `evaluate_predictions` computes them by default, and `add_per_attribute_metric_names` adds them to other lists of metric names. Intervals of such averages cannot be computed from the per-attribute intervals, since the attributes of a road sequence are correlated. `select_result_attributes(result, subset)` restricts a result to the subset with its statistics, and `compute_bootstrap_intervals` and `compare_methods` then work on it as on any result.
 
 The iRAP protocol (`get_irap_metric_names`) reports the following. Its main metric is `amF1`.

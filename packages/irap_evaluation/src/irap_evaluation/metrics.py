@@ -124,6 +124,69 @@ def is_lower_better(name: str) -> bool:
     return parse_metric_name(name).base in PROBABILISTIC_METRICS
 
 
+#: Base metric name -> its description (`describe_metric`), with the placeholders `{name}` for the
+#: metric name, e.g. 'mF1_supp10', and `{classes}` for the classes of a mean over classes.
+_BASE_METRIC_DESCRIPTIONS = {
+    "A": "Accuracy ({name}): the fraction of labeled examples whose predicted class matches the"
+         " label.",
+    "P": "Precision ({name}): among examples predicted as this class, the fraction whose label is"
+         " this class.",
+    "R": "Recall ({name}): among examples whose label is this class, the fraction predicted as"
+         " this class.",
+    "F1": "{name}: the harmonic mean of this class's precision and recall.",
+    "IoU": "Intersection over union ({name}): for this class, the number of examples both labeled"
+           " and predicted as the class, divided by the number labeled or predicted as the class.",
+    "mP": "Macro precision ({name}): the mean of precision over {classes}.",
+    "mR": "Macro recall ({name}): the mean of recall over {classes}.",
+    "mF1": "Macro F1 ({name}): the mean of F1 over {classes}.",
+    "mIoU": "Mean intersection over union ({name}): the mean of IoU over {classes}.",
+    "n": "{name}: the number of labeled examples.",
+    "nc": "{name}: the number of {classes}.",
+    "MCC": "Matthews correlation coefficient ({name}): the correlation between labels and predicted"
+           " classes; 1 indicates perfect agreement and 0 indicates no correlation.",
+    "kappa": "Cohen's kappa ({name}): the agreement of predicted classes with labels beyond"
+             " chance, 1 for perfect predictions and 0 for agreement by chance.",
+    "NLL": "Negative log-likelihood ({name}): the mean over examples of −ln of the predicted"
+           " probability of the label. Infinite if a label gets probability 0.",
+    "Brier": "Brier score ({name}): the mean, over examples, of the sum of squared differences"
+             " between the predicted class probabilities and the one-hot label (from 0 to 2).",
+    "cNLL": "Class NLL ({name}): the mean negative log-likelihood of examples whose label is this"
+            " class.",
+    "cBrier": "Class Brier score ({name}): the mean Brier score of examples whose label is this"
+              " class.",
+    "mNLL": "Class-balanced negative log-likelihood ({name}): the mean of class NLL over"
+            " {classes}.",
+    "mBrier": "Class-balanced Brier score ({name}): the mean of class Brier score over"
+              " {classes}.",
+}
+#: Metrics that count something, so that neither higher nor lower values are better.
+_COUNT_METRICS = frozenset({"n", "nc"})
+
+
+def describe_metric(name: str) -> str:
+    """Describes a metric in words, e.g. 'Macro F1 (mF1): the mean of F1 over …', for a tooltip. An
+    attribute average gets a sentence about the average, then a line break and the description of
+    its per-attribute metric.
+
+    Raises:
+        ValueError: For an invalid name (`parse_metric_name`).
+    """
+    parsed = parse_metric_name(name)
+    if parsed.min_support is not None:
+        classes = f"classes with at least {parsed.min_support} labeled examples"
+    elif parsed.base in PROBABILISTIC_METRICS:
+        classes = "labeled classes"
+    else:
+        classes = "classes that are labeled or predicted"
+    description = _BASE_METRIC_DESCRIPTIONS[parsed.base].format(name=parsed.name, classes=classes)
+    if parsed.base not in _COUNT_METRICS:
+        description += " Lower is better." if is_lower_better(name) else " Higher is better."
+    if not parsed.is_averaged:
+        return description
+    return (f"The mean over attributes of {parsed.name}, leaving out those where it is"
+            f" undefined.\n{description}")
+
+
 def add_per_attribute_metric_names(metric_names: T.Sequence[str]) -> tuple[str, ...]:
     """`metric_names` followed by the per-attribute name of each attribute average that they
     lack, e.g. 'NLL' for 'aNLL', so that `select_metric_attributes` can average the results
