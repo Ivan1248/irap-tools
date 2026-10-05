@@ -8,6 +8,7 @@ attributes for one delegated click handler each, since hundreds of NiceGUI eleme
 import html
 import typing as T
 
+import irap_evaluation as ie
 import numpy as np
 
 from ..prediction_analysis import SegmentDetail
@@ -86,8 +87,11 @@ def make_class_table_html(class_report: T.Mapping[str, T.Any],
         rows.append(f"<tr><td>{html.escape(_format_class(code, name))}</td>"
                     f'<td class="number">{class_report["support"][k]}</td>{cells}'
                     f'<td class="number">{int(confusion_matrix[k, -1])}</td></tr>')
-    number_headers = ["Support", "P", "R", "F1", "Invalid"]
-    return make_table_html(["Class", *number_headers], rows, number_headers)
+    metric_names = ("P", "R", "F1")
+    number_headers = ["Support", *metric_names, "Invalid"]
+    header_titles = {"Support": "The number of segments labeled with the class.",
+                     **{n: ie.describe_metric(n) for n in metric_names}}
+    return make_table_html(["Class", *number_headers], rows, number_headers, header_titles)
 
 
 def make_segment_list_html(segment_indices: T.Sequence[int], segment_ids: T.Sequence[str],

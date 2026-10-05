@@ -70,27 +70,40 @@ def make_code_spans_html(text: str) -> str:
 
 
 def make_table_html(header_cells: T.Sequence[str], rows: T.Sequence[str],
-                    number_headers: T.Collection[str] = ()) -> str:
+                    number_headers: T.Collection[str] = (),
+                    header_titles: T.Mapping[str, str] | None = None) -> str:
     """Makes a `data-table` (`styles.css`) of escaped header texts and `<tr>` rows.
 
     Args:
         number_headers: The headers of the columns of `number` cells, which are right-aligned like
             the cells.
+        header_titles: Header -> its tooltip, e.g. a description of a metric.
 
     Raises:
-        ValueError: If a header in `number_headers` is not in `header_cells`.
+        ValueError: If a header in `number_headers` or `header_titles` is not in `header_cells`.
     """
-    if unknown := set(number_headers) - set(header_cells):
-        raise ValueError(f"Number headers not in the header: {sorted(unknown)}.")
+    header_titles = header_titles or {}
+    if unknown := (set(number_headers) | set(header_titles)) - set(header_cells):
+        raise ValueError(f"Headers not in the header: {sorted(unknown)}.")
     return make_table_html_from_header(
-        "".join(make_header_cell_html(c, c in number_headers) for c in header_cells), rows)
+        "".join(make_header_cell_html(c, c in number_headers, header_titles.get(c, ""))
+                for c in header_cells), rows)
 
 
-def make_header_cell_html(text: str, is_number: bool = False) -> str:
+def make_title_attribute(title: str) -> str:
+    """Makes a ` title="…"` attribute of an escaped tooltip, or '' if `title` is ''."""
+    return f' title="{html.escape(title)}"' if title else ""
+
+
+def make_header_cell_html(text: str, is_number: bool = False, title: str = "") -> str:
     """Makes a `<th>` of an escaped text, right-aligned like the cells if it is the header of
-    `number` cells."""
+    `number` cells.
+
+    Args:
+        title: The tooltip, e.g. a description of a metric, or '' for none.
+    """
     class_attribute = ' class="number"' if is_number else ""
-    return f"<th{class_attribute}>{html.escape(text)}</th>"
+    return f"<th{class_attribute}{make_title_attribute(title)}>{html.escape(text)}</th>"
 
 
 def make_table_html_from_header(header_html: str, rows: T.Sequence[str]) -> str:

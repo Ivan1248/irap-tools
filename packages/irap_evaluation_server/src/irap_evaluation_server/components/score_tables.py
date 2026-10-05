@@ -28,6 +28,7 @@ from .formatting import (
     make_model_link_html,
     make_table_html,
     make_table_html_from_header,
+    make_title_attribute,
     make_truncated_name_html,
 )
 
@@ -114,10 +115,6 @@ def format_signed_metric_value(value: float, num_decimals: int) -> str:
     return ("+" if value > 0 else "") + format_metric_value(value, num_decimals)
 
 
-def _make_title_attribute(title: str) -> str:
-    return f' title="{html.escape(title)}"' if title else ""
-
-
 def _get_interval_text(state: ResultState, select_interval: IntervalSelector,
                        is_signed: bool = False) -> tuple[str, str]:
     """Returns the text of the interval of a cell, or of the state of its computation, and a
@@ -144,7 +141,7 @@ def _get_interval_text(state: ResultState, select_interval: IntervalSelector,
 
 def _make_interval_html(state: ResultState, select_interval: IntervalSelector) -> str:
     text, title = _get_interval_text(state, select_interval)
-    return f'<div class="interval"{_make_title_attribute(title)}>{text}</div>'
+    return f'<div class="interval"{make_title_attribute(title)}>{text}</div>'
 
 
 def make_value_cell_html(value: float | None, state: ResultState,
@@ -243,7 +240,7 @@ def _make_difference_html(difference: float, state: ResultState,
     interval_text, title = _get_interval_text(state, select_interval, is_signed=True)
     better = get_better_method(_select_cell_interval(state, select_interval), metric_name)
     verdict = {"A": " <b>better</b>", "B": " <b>worse</b>", None: ""}[better]
-    return (f'<div class="interval"{_make_title_attribute(title)}>'
+    return (f'<div class="interval"{make_title_attribute(title)}>'
             f"Δ {format_signed_metric_value(difference, 4)} ({interval_text}){verdict}</div>")
 
 
@@ -301,7 +298,7 @@ def _make_model_links_html(row: MethodScores, split: str,
 def _make_notes_html(row: MethodScores, is_model_compatible_view: bool) -> str:
     notes = []
     if row.missing_attributes:
-        title_attribute = _make_title_attribute(", ".join(row.missing_attributes))
+        title_attribute = make_title_attribute(", ".join(row.missing_attributes))
         notes.append(f"<span{title_attribute}>{len(row.missing_attributes)} not predicted</span>")
     if is_model_compatible_view:
         notes.append(
@@ -309,6 +306,15 @@ def _make_notes_html(row: MethodScores, is_model_compatible_view: bool) -> str:
     if _is_single_model(row):
         notes.append("single model*")
     return "<br>".join(notes)
+
+
+def _make_sortable_metric_header_html(metric_name: str, is_sorted: bool) -> str:
+    """Makes the header of a metric column with a `data-sort` attribute (`make_method_table_html`)
+    and the description of the metric as its tooltip."""
+    title = f"{ie.describe_metric(metric_name)}\nClick to sort by it, best first."
+    return (f'<th class="number sortable{" sorted" if is_sorted else ""}"'
+            f' data-sort="{metric_name}"{make_title_attribute(title)}>'
+            f'{metric_name}{" ▾" if is_sorted else ""}</th>')
 
 
 def make_method_table_html(rows: T.Sequence[MethodScores],
@@ -330,10 +336,8 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
             context offsets are shown.
         comparisons: The comparisons with a reference method, or None.
     """
-    metric_headers = "".join(
-        f'<th class="number sortable{" sorted" if n == sort_metric else ""}" data-sort="{n}"'
-        f' title="Sort by {n}, best first">{n}{" ▾" if n == sort_metric else ""}</th>'
-        for n in RANKING_METRIC_NAMES)
+    metric_headers = "".join(_make_sortable_metric_header_html(n, n == sort_metric)
+                             for n in RANKING_METRIC_NAMES)
     header = f"<th>Method</th><th>Models</th>{metric_headers}<th>Notes</th>"
     states = [method_to_intervals.get(r.method_name, ResultState()) for r in rows]
     metric_columns = [
@@ -383,7 +387,9 @@ def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
         html_rows.append(f"<tr><td>{html.escape(attribute)}</td>{''.join(cells)}</tr>")
     method_headers = "".join(
         f'<th class="number">{_make_method_label_html(r, comparisons, split)}</th>' for r in rows)
+    metric_note = f'<div class="muted">{html.escape(ie.describe_metric(metric_name))}</div>'
     return (make_table_html_from_header(f"<th>Attribute</th>{method_headers}", html_rows)
+            + metric_note
             + _make_highlight_note_html("the other methods in its row", has_best_or_tied=True))
 
 
@@ -397,7 +403,7 @@ def make_model_scores_html(scores: MethodScores, state: ResultState) -> str:
     [model] = scores.models
     if scores.metrics is None:
         return f'<div class="error">{html.escape(scores.error or "")}</div>'
-    average_rows = [f"<tr><td>{n}</td>"
+    average_rows = [f"<tr><td{make_title_attribute(ie.describe_metric(n))}>{n}</td>"
                     f"{make_value_cell_html(v, state, select_average_value(n))}</tr>"
                     for n, v in scores.metrics.averages.items()]
     attributes = list(scores.metrics.per_attribute[IRAP_ATTRIBUTE_METRIC_NAMES[0]])
@@ -420,7 +426,8 @@ def make_model_scores_html(scores: MethodScores, state: ResultState) -> str:
                               f'<td class="number">{num_invalid}</td></tr>')
     average_table = make_table_html(["Average", "Value"], average_rows, number_headers=["Value"])
     number_headers = [*IRAP_ATTRIBUTE_METRIC_NAMES, "Invalid cells"]
-    attribute_table = make_table_html(["Attribute", *number_headers], attribute_rows,
-                                      number_headers)
+    attribute_table = make_table_html(
+        ["Attribute", *number_headers], attribute_rows, number_headers,
+        header_titles={n: ie.describe_metric(n) for n in IRAP_ATTRIBUTE_METRIC_NAMES})
     return (f'<div class="score-tables">{average_table}{attribute_table}</div>'
             f"{_make_highlight_note_html('the other attributes', has_best_or_tied=False)}")
