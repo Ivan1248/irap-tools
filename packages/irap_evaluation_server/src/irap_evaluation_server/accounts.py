@@ -1,8 +1,8 @@
 """The accounts of the users, who register in the app.
 
 Anyone can view the archive, also without an account. The permission of an account
-(`Permission`) says what else it may do: 'view' nothing else, 'write' also change the archive,
-and 'admin' also download the per-class scores of the protected splits
+(`Permission`) says what else it may do: 'view' nothing else, 'write' also change the archive
+and see the action log, and 'admin' also download the per-class scores of the protected splits
 (`config.DatasetConfig.is_protected_split`), and change the permissions of the accounts and
 remove them. The first account to register is an admin, and later ones can view until an admin
 gives them more. There is always an admin.
@@ -28,7 +28,7 @@ PERMISSIONS: tuple[Permission, ...] = T.get_args(Permission)
 PERMISSION_DESCRIPTIONS: T.Mapping[Permission, str] = {
     "view": "Can view, like visitors without an account.",
     "write": "Can also upload, replace and delete files, delete models, edit"
-             " descriptions and create ensembles.",
+             " descriptions, create ensembles and see the action log.",
     "admin": "Can also download the per-class scores of the splits that are not analysed, e.g."
              " test, and change the permissions of the accounts and remove them.",
 }

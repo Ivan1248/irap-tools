@@ -7,7 +7,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from ..accounts import Account, is_admin
+from ..accounts import Account, can_write, is_admin
 from .routes import (
     ACCOUNTS_PATH,
     ACTION_LOG_PATH,
@@ -20,10 +20,9 @@ from .routes import (
     get_sign_in_path,
 )
 
-#: (Title, path) of the pages in the navigation.
+#: (Title, path) of the pages in the navigation of everyone, also of visitors.
 NAVIGATION_PAGES = (("Scores", SCORES_PATH), ("Analysis", ANALYSIS_PATH),
-                    ("Models", MODELS_PATH), ("Ensemble", ENSEMBLE_PATH),
-                    ("Action log", ACTION_LOG_PATH))
+                    ("Models", MODELS_PATH), ("Ensemble", ENSEMBLE_PATH))
 
 _STYLES = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
 
@@ -72,7 +71,9 @@ def create_page_frame(current_path: str, account: Account | None,
     """
     ui.add_css(_STYLES)
     ui.query(".nicegui-content").classes("p-0 gap-0" + (" h-screen" if fills_window else ""))
-    pages = NAVIGATION_PAGES + ((("Accounts", ACCOUNTS_PATH),) if is_admin(account) else ())
+    pages = (NAVIGATION_PAGES
+             + ((("Action log", ACTION_LOG_PATH),) if can_write(account) else ())
+             + ((("Accounts", ACCOUNTS_PATH),) if is_admin(account) else ()))
     with ui.element("header").classes("top-bar w-full"):
         ui.label("iRAP evaluation").classes("title")
         with ui.element("nav"):

@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from irap_evaluation import to_valid_file_name
 from nicegui import app, run, ui
+from nicegui.elements.mixins.text_element import TextElement
 from starlette.background import BackgroundTask
 
 from ..accounts import can_write, is_admin
@@ -120,7 +121,7 @@ class _ModelSnapshot:
 
 class _ModelPage:
     """The panels of the page and their refreshes after a change of the model. A user who cannot
-    write sees them without the controls that change the model."""
+    write sees them without the controls that change the model and without the action log."""
 
     def __init__(self, archive: ModelArchive,
                  dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
@@ -180,7 +181,7 @@ class _ModelPage:
             rows = {
                 "Dataset": model.dataset,
                 "Method": model.method_name,
-                "Seed": "–" if model.seed is None else str(model.seed),
+                "Seed": str(model.seed),
                 "Training splits": "–" if info is None else format_splits(info.training_splits),
                 "Early stopping splits": ("–" if info is None
                                           else format_splits(info.early_stopping_splits)),
@@ -488,14 +489,19 @@ class _ModelPage:
         self.refreshes.append(show_form.refresh)
 
     def create_actions(self) -> None:
+        if not self.can_write:
+            return
+
         @ui.refreshable
         def show_actions() -> None:
             model = self.snapshot.model
-            ui.label("Action log").classes("section-title")
             ui.html(make_action_table_html(self.snapshot.actions, {model.id: model}),
                     sanitize=False)
 
-        with ui.element("section").classes("panel"):
+        # Collapsed at first. Not refreshed with the table, so that a refresh does not close it.
+        with ui.element("section").classes("panel"), \
+                ui.element("details").classes("collapsible-section"):
+            TextElement(tag="summary", text="Action log").classes("section-title")
             show_actions()
         self.refreshes.append(show_actions.refresh)
 

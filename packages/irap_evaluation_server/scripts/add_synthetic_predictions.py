@@ -153,7 +153,7 @@ def main():
                if s.model.method_name == "strong-probs" and s.split == "val"]
     plan = plan_ensemble(submissions, DATASET, members, LABELED_SPLITS)
     update = prepare_ensemble(archive, context, plan, method_name=None,
-                              method_display_name="Strong ensemble", seed=None,
+                              method_display_name="Strong ensemble", seed=0,
                               intersect_segments=False,
                               description="Ensemble of strong-probs seeds 1-3.")
     created = archive.apply_model_update(update, submitter=SUBMITTER)

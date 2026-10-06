@@ -66,7 +66,7 @@ def test_coding_table_of_several_splits(archive, disjoint_split_contexts, tmp_pa
     metadata = context.metadata
     first, second = (
         add_model(archive, disjoint_split_contexts, with_split(make_predictions(
-            metadata.vocabulary, list(metadata.splits[split]), name="m", seed=0), split))
+            metadata.vocabulary, list(metadata.splits[split]), name="m", seed=0, model_seed=0), split))
         for split in (SPLIT, OTHER_SPLIT))
     path = tmp_path / "table.csv"
     write_model_coding_table(archive, context, [first, second], path, coder_name="Bo",
@@ -83,7 +83,7 @@ def test_export_model_coding_table(archive, disjoint_split_contexts):
     metadata = disjoint_split_contexts["vietnam"].metadata
     first, second = (
         add_model(archive, disjoint_split_contexts, with_split(make_predictions(
-            metadata.vocabulary, list(metadata.splits[split]), name="m", seed=0), split))
+            metadata.vocabulary, list(metadata.splits[split]), name="m", seed=0, model_seed=0), split))
         for split in (SPLIT, OTHER_SPLIT))
 
     def export(splits, file_format="csv", coding_date=""):
@@ -92,7 +92,7 @@ def test_export_model_coding_table(archive, disjoint_split_contexts):
                                          coding_date=coding_date)
 
     coding_table = export([OTHER_SPLIT, SPLIT])
-    assert coding_table.file_name == f"{first.model.label}.{OTHER_SPLIT}_{SPLIT}.coding_table.csv"
+    assert coding_table.file_name == f"m_seed0.{OTHER_SPLIT}_{SPLIT}.coding_table.csv"
     stored = pd.read_csv(io.BytesIO(coding_table.content))
     assert len(stored) == first.num_segments + second.num_segments
     coder_column = coding_tables.load_coding_table_template().field_to_column["coder_name"]

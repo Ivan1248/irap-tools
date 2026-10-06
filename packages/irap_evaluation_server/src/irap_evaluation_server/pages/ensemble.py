@@ -122,7 +122,7 @@ def _create_ensemble_form(archive: ModelArchive,
     id_to_label = {m.model.id: m.model.shown_label for m in member_models}
     # The labels that the member filter matches.
     matching_labels = set(id_to_label.values())
-    form = {"name": "", "display_name": "", "seed": "", "description": "",
+    form = {"name": "", "display_name": "", "seed": "0", "description": "",
             "intersect_segments": False}
 
     def get_plan(submissions: T.Sequence[Submission]) -> EnsemblePlan:
@@ -267,7 +267,7 @@ def _create_ensemble_form(archive: ModelArchive,
                                              size=40)
             create_native_input("Display name", "", lambda v: form.update(display_name=v),
                                 placeholder="blank: keep the method's", size=30)
-            create_native_input("Seed (optional)", "", lambda v: form.update(seed=v),
+            create_native_input("Seed", form["seed"], lambda v: form.update(seed=v),
                                 input_type="number", size=10)
             create_native_input("Description", "", lambda v: form.update(description=v),
                                 placeholder="blank: keep the model's", size=40)

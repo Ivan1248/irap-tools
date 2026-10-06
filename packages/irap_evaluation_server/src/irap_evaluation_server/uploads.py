@@ -28,9 +28,9 @@ from .datasets import DatasetContext
 
 #: The most bytes of an uploaded file, and of the files extracted from an uploaded archive, whose
 #: parquet files hardly compress. As `request_body` of `/api/uploads` in deployment/Caddyfile.
-MAX_UPLOAD_NUM_BYTES = 2 * 10 ** 9
+MAX_UPLOAD_NUM_BYTES = 2 ** 30
 #: `MAX_UPLOAD_NUM_BYTES` for messages.
-MAX_UPLOAD_SIZE_TEXT = f"{MAX_UPLOAD_NUM_BYTES / 1e9:g} GB"
+MAX_UPLOAD_SIZE_TEXT = f"{MAX_UPLOAD_NUM_BYTES / 2**30:g} GiB"
 _COPY_CHUNK_NUM_BYTES = 2 ** 20
 
 
@@ -307,8 +307,10 @@ def plan_upload(
         file_name: The name of the file on the uploader's computer, for the action log, which
             also records the name of each file in an archive.
         seed: If not None, it replaces the seed in each header (`irap_evaluation.ModelInfo.seed`),
-            e.g. to add another model of a method. The files are then rewritten, and the action
-            log records the original seed and the hash of the uploaded file.
+            e.g. to add another model of a method, or to give a seed to files without one, which
+            the archive requires (see `ModelArchive.plan_model_update`). The files are then
+            rewritten, and the action log records the original seed and the hash of the
+            uploaded file.
         description: The new description of the model, or None to keep it.
         method_display_name: The new display name of the method, or None to take it from the
             headers (see `ModelArchive.plan_model_update`). The files are not rewritten.

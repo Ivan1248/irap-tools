@@ -80,7 +80,7 @@ def test_description_change_needs_confirmation(archive, dataset_contexts):
     first = add_model(archive, dataset_contexts, predictions, description="first")
     assert first.model.description == "first"
     planned = plan(archive, dataset_contexts, predictions, description="second")
-    assert any("Changes the description of m from 'first' to 'second'" in c
+    assert any("Changes the description of m/seed0 from 'first' to 'second'" in c
                for c in planned.update.confirmations)
     second = apply_upload(archive, planned, submitter="Al")[0]
     assert second.model.description == "second"
@@ -114,7 +114,7 @@ def test_files_set_the_method_display_name(archive, dataset_contexts):
                for c in planned.update.confirmations)
     apply_upload(archive, planned, submitter="Al")
     assert {m.label: m.method_display_name for m in archive.list_models()} == {
-        "m/seed1": "M", "m/seed2": "M", "m/seed3": "M", "other": None}
+        "m/seed1": "M", "m/seed2": "M", "m/seed3": "M", "other/seed0": None}
 
 
 def test_an_entered_method_display_name_replaces_the_files(archive, dataset_contexts):
@@ -182,13 +182,14 @@ def test_seed_override_adds_another_model(archive, dataset_contexts):
     assert not list(archive.uploads_dir.iterdir())
 
 
-def test_models_of_a_method_need_seeds(archive, dataset_contexts):
-    add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=None))
-    path = write_upload(archive, make_model(dataset_contexts, model_seed=1))
-    with pytest.raises(ValueError, match=r"each needs a seed.*on vietnam: m, m/seed1\.$"):
+def test_a_model_needs_a_seed(archive, dataset_contexts):
+    path = write_upload(archive, make_model(dataset_contexts, model_seed=None))
+    with pytest.raises(ValueError, match="The model has no seed. Enter one"):
         plan_upload(archive, dataset_contexts, path, file_name="m")
     assert list(archive.uploads_dir.iterdir()) == [path]  # Kept for a retry.
-    add_model(archive, dataset_contexts, make_model(dataset_contexts, name="other"))
+    planned = plan_upload(archive, dataset_contexts, path, file_name="m", seed=0)
+    [submission] = apply_upload(archive, planned, submitter="Al")
+    assert submission.model.seed == 0
 
 
 def test_models_of_a_method_need_the_same_training_splits(archive, dataset_contexts):
@@ -233,14 +234,14 @@ def test_a_change_after_the_planning_is_refused(archive, dataset_contexts):
     planned = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=1))
     other = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=2))
     apply_upload(archive, other, submitter="Bo")
-    with pytest.raises(ValueError, match="model m has changed since the files were checked"):
+    with pytest.raises(ValueError, match="model m/seed0 has changed since the files were checked"):
         apply_upload(archive, planned, submitter="Al")
     assert planned.uploaded_path.exists()  # Kept for a retry.
 
     replanned = plan_upload(archive, dataset_contexts, planned.uploaded_path, file_name="m")
     newer = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=3))
     apply_upload(archive, newer, submitter="Bo")
-    with pytest.raises(ValueError, match=f"{SPLIT} file of m has changed"):
+    with pytest.raises(ValueError, match=f"{SPLIT} file of m/seed0 has changed"):
         apply_upload(archive, replanned, submitter="Al")
 
 
@@ -260,12 +261,12 @@ def test_delete_a_submission(archive, two_split_contexts):
 
     archive.delete_submission(active.id, actor="Bo")
     assert archive.list_submissions() == [other]
-    with pytest.raises(ValueError, match="last active file of m. Delete the model instead"):
+    with pytest.raises(ValueError, match="last active file of m/seed0. Delete the model instead"):
         archive.delete_submission(other.id, actor="Bo")
     assert [(a.action, a.model_label, a.submission_id, a.details)
             for a in archive.list_actions()[:2]] == [
-        ("delete", "m", active.id, {"split": SPLIT}),
-        ("delete", "m", replaced.id, {"split": SPLIT})]
+        ("delete", "m/seed0", active.id, {"split": SPLIT}),
+        ("delete", "m/seed0", replaced.id, {"split": SPLIT})]
 
 
 def test_delete_a_model(archive, dataset_contexts):

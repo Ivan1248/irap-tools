@@ -59,7 +59,7 @@ def score_submission_again(worker, submission, evaluation_set):
         worker.settings)
 
 
-def make_model(dataset_contexts, name="m", model_seed=None, random_seed=0,
+def make_model(dataset_contexts, name="m", model_seed=0, random_seed=0,
                drop_attribute=None, is_hard=False, training_splits=()) -> ie.Predictions:
     """Makes predictions of a model on `SPLIT`, without `drop_attribute`, and hard if
     `is_hard`."""

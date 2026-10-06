@@ -6,13 +6,13 @@ An web app that keeps an archive of model predictions, scores them, and compares
 |---|---|---|
 | Scores | `/scores` (start page) | The methods of a dataset split ranked by an attribute average, or one per-attribute metric, with intervals and differences from a reference method. |
 | Models | `/models` | The models of each dataset by method, with the active file of each split, and the upload form. |
-| Model | `/models/<id>` | A model's files, also the replaced ones, its scores, the coding-table export and its actions. |
+| Model | `/models/<id>` | A model's files, also the replaced ones, its scores, the coding-table export and its actions (collapsed, for accounts with write permission). |
 | Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
 | Ensemble | `/ensemble` | Creates an ensemble of stored models. |
-| Action log | `/actions` | All changes, with the name of the user. |
+| Action log | `/actions` | All changes, with the name of the user. Only for accounts with write permission. |
 | Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins. |
 
-Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles. The action log shows the account name.
+Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles, and see the action log, which shows the account name of each change.
 
 ## Installation and start
 
@@ -157,7 +157,7 @@ Back up `/srv/irap-eval/data`, and keep the backups private.
 
 ## Models and files
 
-A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). It has at most one active file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
+A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). Unlike `irap_evaluation`, the app requires a seed also for the only model of a method, so that a second model can be added without changing the first. It has at most one active file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
 
 A method on a dataset can have a display name, which the pages show instead of the method name. The Method filter of the Scores page and the member filter of the Ensemble page match the shown name. An upload sets the display name of its method, entered in the upload form or from a file header's `method_display_name`, and the Model page edits it for all models of the method. Files, URLs, download names and the action log keep the method name.
 
@@ -165,8 +165,9 @@ A method on a dataset can have a display name, which the pages show instead of t
 
 A file is refused if:
 
-- it has more than 2 GB, or the files of a `.zip` archive have more than 2 GB together,
+- it has more than 1 GiB, or the files of a `.zip` archive have more than 1 GiB together,
 - it is not a valid prediction file,
+- it has no seed, neither in its header nor in the Seed field,
 - its dataset is not configured, or its splits, attributes or iRAP codes are not those of the dataset,
 - it lacks segments of its [evaluation sets](../irap_evaluation/docs/evaluation.md#evaluation-sets),
 - its output kind, context offsets, or training or early stopping splits differ from those of the model's other active files,
@@ -174,7 +175,7 @@ A file is refused if:
 
 Files of unlabeled splits are accepted but not scored.
 
-- The Seed field replaces the seed in the header, e.g. to add another model of a method. The action log records the original seed.
+- The Seed field replaces the seed in the header, e.g. to add another model of a method, or gives a seed to a file without one. The action log records the original seed.
 - A file of a split that the model already has replaces the active file, which is kept as a replaced file. It can be downloaded or [deleted](#deletion), and only an upload makes it active again.
 - A blank description keeps the model's description.
 - A method display name entered with the upload replaces the method's, without changing the files. A blank one takes the display name from the files, and files without one keep the method's. The files of one upload must then not have different display names. When a file is uploaded, the field's placeholder shows the display name that a blank one gives.
@@ -222,7 +223,7 @@ The page keeps the 8 most recently used files in memory. Reading and aligning a 
 
 The Ensemble page creates the weighted mean of the distributions of stored models of a dataset, as `irap-eval ensemble` does (`irap_evaluation.ensemble_predictions`). A hard prediction counts as a one-hot distribution.
 
-- The ensemble is a model with the given method name, display name and seed. A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
+- The ensemble is a model with the given method name, display name and seed (0 in a new form). A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
 - It gets a file for each split where every member has an active file, and these replace all files of an existing model of that name, so that all its files are of the same members.
 - Its training splits are the union of its members', and its early stopping splits are its members' that are not training splits (`irap_evaluation.make_ensemble_model_info`).
 - Members with different context offsets predict different segments. "Only the segments that every member predicts" keeps their common segments.

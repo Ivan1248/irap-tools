@@ -180,7 +180,7 @@ body { display: flex; flex-direction: column; color: var(--fg); background: var(
        font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { padding: 8px 16px; border-bottom: 1px solid var(--border); }
 header h1 { margin: 0 0 4px; font-size: 1.2em; }
-header p { margin: 2px 0; color: var(--muted); }
+header p { margin: 2px 0; }
 code { font-size: 0.9em; }
 #map { flex: 1; min-height: 300px; }
 .leaflet-container { font: inherit; }

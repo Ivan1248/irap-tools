@@ -71,7 +71,7 @@ class ModelSummary:
 
 @dc.dataclass(frozen=True)
 class MethodGroup:
-    """The models of a method, by seed (a model without a seed first)."""
+    """The models of a method, by seed."""
 
     method_name: str
     models: tuple[ModelSummary, ...]
@@ -110,8 +110,7 @@ def summarize_models_by_method(models: T.Iterable[Model],
     for model in models:
         method_to_summaries.setdefault(model.method_name, []).append(
             ModelSummary.from_submissions(model, model_id_to_submissions.get(model.id, ())))
-    groups = sorted((MethodGroup(name, tuple(sorted(summaries, key=lambda m: (
-                         m.model.seed is not None, m.model.seed or 0))))
+    groups = sorted((MethodGroup(name, tuple(sorted(summaries, key=lambda m: m.model.seed)))
                      for name, summaries in method_to_summaries.items()),
                     key=lambda g: (g.shown_method_name, g.method_name))
     return sorted(groups, key=lambda g: g.updated_at, reverse=True)  # Stable: ties by name.

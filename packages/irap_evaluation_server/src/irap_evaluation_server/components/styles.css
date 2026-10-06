@@ -19,7 +19,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
 
 .top-bar { display: flex; align-items: center; gap: 16px; padding: 6px 12px;
            background: var(--panel); border-bottom: 1px solid var(--border); }
-.top-bar .title { font-size: 15px; font-weight: bold; color: var(--text); }
+.top-bar .title { font-size: 15px; font-weight: bold; }
 .top-bar nav { display: flex; gap: 12px; }
 .top-bar nav a.current { color: var(--text); font-weight: bold; }
 .top-bar > .sign-in { margin-left: auto; }
@@ -31,14 +31,16 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
          padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 /* A control directly in a panel keeps its own width instead of the panel's. */
 .panel > .native-control { align-self: flex-start; }
-.section-title { font-size: 14px; letter-spacing: 0.04em;
-                 color: var(--muted); font-weight: bold; }
+.section-title { font-size: 14px; letter-spacing: 0.04em; font-weight: bold; }
 .muted { color: var(--muted); }
 .error { color: var(--error); white-space: pre-wrap; }
 .form-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+/* A `details` element whose content is shown by clicking its title, a `summary`. */
+.collapsible-section summary { display: list-item; cursor: pointer; }
+.collapsible-section[open] summary { margin-bottom: 6px; }
 
 .data-table { border-collapse: collapse; }
-.data-table th { text-align: left; font-weight: normal; color: var(--muted);
+.data-table th { text-align: left; font-weight: normal;
                  border-bottom: 1px solid var(--border); padding: 3px 4px; white-space: nowrap; }
 .data-table td { border-bottom: 1px solid #eceef1; padding: 3px 4px; vertical-align: top; }
 .data-table td.number { text-align: right; font-variant-numeric: tabular-nums; }
@@ -53,7 +55,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
 .subsection-title { font-weight: bold; margin-top: 4px; }
 .data-table th.sortable { cursor: pointer; }
 .data-table th.sortable:hover { color: var(--accent); }
-.data-table th.sorted { color: var(--text); font-weight: bold; }
+.data-table th.sorted { font-weight: bold; }
 .data-table td.error { white-space: normal; }
 /* A long method name or model label is cut off, so that the tables fit the page. Its `title`
    shows it. */
@@ -66,8 +68,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
   background: color-mix(in srgb, var(--accent) calc(var(--strength, 0) * 30%), transparent); }
 .interval { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .score-tables { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
-.attribute-filter summary { display: list-item; cursor: pointer; color: var(--muted); }
-.attribute-filter[open] summary { margin-bottom: 6px; }
+.attribute-filter summary { color: var(--muted); }
 .attribute-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
                      gap: 2px 12px; margin-top: 6px; }
 
@@ -86,11 +87,14 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
 .analysis-controls .wide { grid-column: span 2; }
 .analysis-controls select { max-width: 100%; }
 .confusion-matrix { display: grid; gap: 1px; font-size: 11px; }
-.confusion-matrix .header { color: var(--muted); overflow: hidden; white-space: nowrap;
-                            text-overflow: ellipsis; }
+.confusion-matrix .header { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .confusion-matrix .center { text-align: center; }
 .confusion-matrix .cell { min-height: 22px; line-height: 22px; text-align: center;
-                          cursor: pointer; }
+                          cursor: pointer; container-type: inline-size; }
+/* A count is scaled down to fit its cell: the `--num-digits` of the largest count of the matrix,
+   at about 0.6 em per tabular digit, fit the cell's width minus a 2px margin. */
+.confusion-matrix .cell span { font-variant-numeric: tabular-nums;
+  font-size: min(11px, calc((100cqi - 2px) / (var(--num-digits) * 0.6))); }
 .confusion-matrix .cell[disabled] { cursor: default; }
 .confusion-matrix .cell.selected { outline: 2px solid var(--text); outline-offset: -2px; }
 .segment-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
@@ -118,7 +122,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
 .context-images figcaption { font-size: 11px; color: var(--muted); }
 .segment-facts { max-width: 50%; overflow: auto; display: flex; flex-direction: column;
                  gap: 6px; }
-.probabilities th { padding: 1px 4px; text-align: left; color: var(--muted);
+.probabilities th { padding: 1px 4px; text-align: left;
                     font-weight: normal; font-size: 11px; }
 .probabilities td { padding: 1px 4px; white-space: nowrap; font-size: 11px; }
 .probabilities td.label { font-weight: bold; }

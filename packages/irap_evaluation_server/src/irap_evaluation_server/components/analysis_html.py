@@ -16,11 +16,6 @@ from .deck_map import OUTCOME_COLORS
 from .formatting import make_table_html, make_truncated_name_html
 from .score_tables import format_optional_metric_value
 
-#: The most classes whose matrix cells show their counts. Larger matrices show them only as
-#: tooltips.
-_MAX_CLASSES_WITH_COUNTS = 8
-
-
 def _format_class(irap_code: int, class_name: str) -> str:
     return f"{irap_code} · {class_name}"
 
@@ -34,14 +29,14 @@ def _get_cell_color(label_index: int, predicted_index: int, num_classes: int) ->
 def make_confusion_matrix_html(confusion_matrix: np.ndarray, class_names: T.Sequence[str],
                                irap_codes: T.Sequence[int],
                                selected_cell: tuple[int, int] | None) -> str:
-    """Makes the matrix as a grid of cells, shaded by their share of the row.
+    """Makes the matrix as a grid of cells, shaded by their share of the row, with their counts
+    scaled to fit the cells.
 
     Args:
         confusion_matrix: (K, K + 1) counts with the invalid predictions in the last column (see
             `prediction_analysis.AttributeOutcomes.confusion_matrix`).
     """
     num_classes = len(class_names)
-    is_count_shown = num_classes <= _MAX_CLASSES_WITH_COUNTS
     parts = ['<div class="header">label ↓ predicted →</div>']
     parts += [f'<div class="header center" title="{html.escape(n)}">{c}</div>'
               for c, n in zip(irap_codes, class_names, strict=True)]
@@ -62,10 +57,11 @@ def make_confusion_matrix_html(confusion_matrix: np.ndarray, class_names: T.Sequ
                 f'<div class="{classes}"{attributes}'
                 f' style="background: color-mix(in srgb, rgb({color}) {round(share * 100)}%,'
                 f' white)" title="{label} → {html.escape(predicted)}: {count}">'
-                f'{count if is_count_shown else ""}</div>')
+                f'<span>{count}</span></div>')
     columns = f"minmax(70px, 9em) repeat({num_classes + 1}, minmax(14px, 1fr))"
-    return (f'<div class="confusion-matrix" style="grid-template-columns: {columns}">'
-            f'{"".join(parts)}</div>')
+    num_digits = len(str(int(confusion_matrix.max())))
+    return (f'<div class="confusion-matrix" style="grid-template-columns: {columns};'
+            f' --num-digits: {num_digits}">{"".join(parts)}</div>')
 
 
 def make_class_table_html(class_report: T.Mapping[str, T.Any],

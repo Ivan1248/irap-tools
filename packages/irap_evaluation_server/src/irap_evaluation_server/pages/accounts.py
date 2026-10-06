@@ -91,5 +91,5 @@ def register_accounts_page(sessions: AccountSessions) -> None:
                     ui.label(permission).classes("key")
                     ui.label(description)
             ui.label("A change applies at once, but pages that are open show or hide their"
-                     " controls only after a reload.").classes("muted")
+                     " controls and the action log only after a reload.").classes("muted")
             _create_accounts_table(sessions)

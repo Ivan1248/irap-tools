@@ -168,10 +168,14 @@ class _UploadFormState:
         upload_id: The latest upload of the file input (see `create_file_upload_input`).
         upload_path: The file of that upload (see `ModelArchive.get_upload_path`), from
             when it is uploaded until a check takes it.
+        is_uploading: Whether the latest upload is in progress.
+        is_checking: Whether an upload is being checked and stored after a click on Add.
     """
 
     upload_id: int | None = None
     upload_path: Path | None = None
+    is_uploading: bool = False
+    is_checking: bool = False
     file_name: str = ""
     description: str = ""
     method_display_name: str = ""
@@ -221,10 +225,15 @@ def _create_upload_form(archive: ModelArchive,
         if placeholder is not None and form.upload_id == upload_id and not client.is_deleted:
             set_native_input_placeholder(display_name_input, placeholder)
 
+    def update_add_button() -> None:
+        add_button.props["disabled"] = form.is_uploading or form.is_checking
+        add_button.update()
+
     async def on_upload_status_changed(status: dict) -> None:
         if status["status"] == "uploading":
             remove_pending_upload()
-            form.upload_id = status["upload_id"]
+            form.upload_id, form.is_uploading = status["upload_id"], True
+            update_add_button()
             set_native_input_placeholder(display_name_input, "")
             set_status(status_label, f"Uploading {status['file_name']}…")
             return
@@ -233,7 +242,10 @@ def _create_upload_form(archive: ModelArchive,
         if status["upload_id"] != form.upload_id:  # A newer upload replaced this one.
             if upload_path is not None:
                 upload_path.unlink(missing_ok=True)
-        elif upload_path is not None:
+            return
+        form.is_uploading = False
+        update_add_button()
+        if upload_path is not None:
             form.upload_path, form.file_name = upload_path, status["file_name"]
             set_status(status_label, f"{form.file_name} is uploaded. Click Add to check and"
                                      f" store it.")
@@ -243,9 +255,9 @@ def _create_upload_form(archive: ModelArchive,
             set_status(status_label, f"The upload failed: {status.get('message', status)}",
                        is_error=True)
 
-    def set_adding(is_adding: bool) -> None:
-        add_button.props["disabled"] = is_adding
-        add_button.update()
+    def set_checking(is_checking: bool) -> None:
+        form.is_checking = is_checking
+        update_add_button()
 
     async def on_add_clicked() -> None:
         if form.upload_path is None:
@@ -279,7 +291,7 @@ def _create_upload_form(archive: ModelArchive,
                 upload_path.unlink(missing_ok=True)
 
         set_status(status_label, f"Checking {file_name}…")
-        set_adding(True)
+        set_checking(True)
         try:
             submissions = await _check_and_store(archive, dataset_contexts, upload_path,
                                                  file_name=file_name, seed=seed,
@@ -299,7 +311,7 @@ def _create_upload_form(archive: ModelArchive,
             raise
         finally:
             if not client.is_deleted:
-                set_adding(False)
+                set_checking(False)
         if not submissions:  # Cancelled, or the server is stopping.
             give_back_upload()
             if not client.is_deleted:
@@ -317,6 +329,7 @@ def _create_upload_form(archive: ModelArchive,
             "A `.predictions.parquet` file in the `irap_evaluation` format, whose header gives"
             " the dataset, split, method, seed and training splits, or a `.zip` archive with"
             " one such file per split of one model, stored only if all are accepted. A file"
+            " without a seed needs one in the Seed field, also for a method's only model. A file"
             " of a split that the model already has replaces its active file, which is kept as"
             " a replaced file."),
             sanitize=False).classes("muted")
@@ -435,8 +448,7 @@ def register_models_pages(archive: ModelArchive,
             if can_write(account):
                 _create_upload_form(archive, dataset_contexts, worker,
                                     sessions.require_writer_name)
-            # Visitors see no upload panel, which would push the models down.
-            elif account is not None:
+            else:
                 create_write_permission_panel(account, _UPLOAD_FORM_TITLE, "upload predictions")
             with ui.element("section").classes("panel"):
                 ui.label("Models").classes("section-title")

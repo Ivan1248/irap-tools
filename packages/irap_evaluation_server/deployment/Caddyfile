@@ -3,10 +3,10 @@
 # gets and renews a Let's Encrypt certificate for the name.
 eval.example.org {
 	# Only uploads may be large: a .zip archive of all splits of a model can be several hundred
-	# MB. The app refuses more than 2 GB (`uploads.MAX_UPLOAD_NUM_BYTES`).
+	# MB, e.g. for Bosnia. The app refuses more than 1 GiB (`uploads.MAX_UPLOAD_NUM_BYTES`).
 	@upload path /api/uploads
 	request_body @upload {
-		max_size 2GB
+		max_size 1GiB
 	}
 	@not_upload not path /api/uploads
 	request_body @not_upload {

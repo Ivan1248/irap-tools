@@ -289,8 +289,7 @@ def _make_method_label_html(row: MethodScores, comparisons: ReferenceComparisons
 def _make_model_links_html(row: MethodScores, split: str,
                            attributes_query: T.Sequence[str]) -> str:
     """Makes the number of models, with a link to each, labeled by seed."""
-    links = ", ".join(make_model_link_html(model.id, "model" if model.seed is None
-                                           else f"seed{model.seed}", split, attributes_query)
+    links = ", ".join(make_model_link_html(model.id, f"seed{model.seed}", split, attributes_query)
                       for model in (m.submission.model for m in row.models))
     return f'{row.num_models} <span class="muted">({links})</span>'
 

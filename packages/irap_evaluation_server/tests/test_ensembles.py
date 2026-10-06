@@ -19,11 +19,11 @@ SPLITS = (SPLIT, OTHER_SPLIT)
 
 @pytest.fixture
 def submissions(archive, two_split_contexts):
-    """Models a/seed1 and b on both splits, c only on `SPLIT`, and a deleted model d, whose
-    `Model` the tests use as a member."""
+    """Models a/seed1 and b/seed0 on both splits, c/seed0 only on `SPLIT`, and a deleted model
+    d/seed0, whose `Model` the tests use as a member."""
     added = {}
-    for name, seed, splits in [("a", 1, SPLITS), ("b", None, SPLITS), ("c", None, (SPLIT,)),
-                               ("d", None, SPLITS)]:
+    for name, seed, splits in [("a", 1, SPLITS), ("b", 0, SPLITS), ("c", 0, (SPLIT,)),
+                               ("d", 0, SPLITS)]:
         predictions = make_model(two_split_contexts, name, seed, random_seed=len(added))
         for split in splits:
             added[(name, split)] = add_model(archive, two_split_contexts,
@@ -39,13 +39,13 @@ def member(submissions, name, weight=1.0):
 def test_member_models_and_plan(archive, submissions):
     members = list_member_models(archive.list_submissions(), "vietnam", SPLITS)
     assert [(m.model.label, m.splits) for m in members] == [
-        ("a/seed1", SPLITS), ("b", SPLITS), ("c", (SPLIT,))]
+        ("a/seed1", SPLITS), ("b/seed0", SPLITS), ("c/seed0", (SPLIT,))]
 
     members = [member(submissions, "a", 2.0), member(submissions, "b"),
                member(submissions, "c")]
     plan = plan_ensemble(archive.list_submissions(), "vietnam", members, SPLITS)
     assert plan.split_to_submissions == {SPLIT: tuple(submissions[(n, SPLIT)] for n in "abc")}
-    assert plan.split_to_missing == {OTHER_SPLIT: ("c",)}
+    assert plan.split_to_missing == {OTHER_SPLIT: ("c/seed0",)}
     for wrong_members, message in [
             (members[:1], "at least 2"), ([members[0], members[0]], "only once"),
             ([dc.replace(members[0], weight=0.0), members[1]], "positive"),
@@ -82,7 +82,7 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
             {"submission_id": submissions[("a", submission.split)].id,
              "model_id": submissions[("a", SPLIT)].model.id, "label": "a/seed1", "weight": 2.0},
             {"submission_id": submissions[("b", submission.split)].id,
-             "model_id": submissions[("b", SPLIT)].model.id, "label": "b", "weight": 1.0}]
+             "model_id": submissions[("b", SPLIT)].model.id, "label": "b/seed0", "weight": 1.0}]
     assert not list(archive.uploads_dir.iterdir())
 
     # The model exists now, so another ensemble with its name and seed replaces its files.
@@ -97,19 +97,20 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
 def test_an_ensemble_gets_the_default_method_name(archive, two_split_contexts, submissions):
     plan = plan_ensemble(archive.list_submissions(), "vietnam",
                          [member(submissions, "b"), member(submissions, "a")], SPLITS)
-    assert plan.make_model_info().method_name == "a_seed1+b"
+    assert plan.make_model_info().method_name == "a_seed1+b_seed0"
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name=None,
-                              method_display_name=None, seed=None, intersect_segments=False,
+                              method_display_name=None, seed=0, intersect_segments=False,
                               description=None)
     created = archive.apply_model_update(update, submitter="Bo")
-    assert {(s.label, s.model.method_display_name) for s in created} == {("a_seed1+b", None)}
+    assert {(s.label, s.model.method_display_name) for s in created} == {
+        ("a_seed1+b_seed0/seed0", None)}
 
 
 def _prepare(archive, two_split_contexts, submissions, names):
     plan = plan_ensemble(archive.list_submissions(), "vietnam",
                          [member(submissions, n) for n in names], SPLITS)
     return prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                            method_display_name=None, seed=None, intersect_segments=False,
+                            method_display_name=None, seed=0, intersect_segments=False,
                             description=None)
 
 
@@ -133,8 +134,8 @@ def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts
 def test_an_ensemble_is_refused_if_a_member_changes(archive, two_split_contexts, submissions):
     update = _prepare(archive, two_split_contexts, submissions, "ab")
     archive.delete_submission(submissions[("b", OTHER_SPLIT)].id, actor="Al")
-    with pytest.raises(ValueError, match=f"{OTHER_SPLIT} file #.* of b, which the new files are"
-                                         f" made of, has been replaced or deleted"):
+    with pytest.raises(ValueError, match=f"{OTHER_SPLIT} file #.* of b/seed0, which the new files"
+                                         f" are made of, has been replaced or deleted"):
         archive.apply_model_update(update, submitter="Bo")
     discard_model_update(update)
 
@@ -150,7 +151,7 @@ def test_an_ensemble_is_refused_if_its_model_gets_another_split(archive, two_spl
         [n for n in other.new_submissions if n.split == OTHER_SPLIT], action="upload",
         description=None), submitter="Al")
     discard_model_update(other)
-    with pytest.raises(ValueError, match="files of ens have changed"):
+    with pytest.raises(ValueError, match="files of ens/seed0 have changed"):
         archive.apply_model_update(update, submitter="Bo")
     discard_model_update(update)
 
@@ -169,6 +170,6 @@ def test_ensemble_files_are_removed_if_it_fails(archive, two_split_contexts, sub
     monkeypatch.setattr(ie, "ensemble_predictions", fail_on_second_split)
     with pytest.raises(ie.PredictionFormatError, match="Refused"):
         prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                         method_display_name=None, seed=None, intersect_segments=False,
+                         method_display_name=None, seed=0, intersect_segments=False,
                          description=None)
     assert not list(archive.uploads_dir.iterdir())

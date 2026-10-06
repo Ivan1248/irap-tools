@@ -72,11 +72,11 @@ CREATE TABLE models (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dataset TEXT NOT NULL,
     method_name TEXT NOT NULL,
-    seed INTEGER,
+    seed INTEGER NOT NULL,
     description TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX model_identity ON models (dataset, method_name, COALESCE(seed, 'none'));
+CREATE UNIQUE INDEX model_identity ON models (dataset, method_name, seed);
 -- The methods with a display name.
 CREATE TABLE methods (
     dataset TEXT NOT NULL,
@@ -135,7 +135,7 @@ class Model:
     dataset: str
     method_name: str
     method_display_name: str | None
-    seed: int | None
+    seed: int
     description: str
     created_at: datetime
 
@@ -317,7 +317,8 @@ class ModelUpdate:
     `ModelArchive.apply_model_update` applies it if the archive has not changed since.
 
     Attributes:
-        new_submissions: Of distinct splits and one model, the model of their headers.
+        new_submissions: Of distinct splits and one model, the model of their headers, which has
+            a seed.
         action: The action of each new submission in the action log.
         description: The new description of the model, or None to keep it.
         method_display_name: The new display name of the method, given with the update or that
@@ -353,7 +354,7 @@ class ModelUpdate:
         return self.new_submissions[0].header.model.method_name
 
     @property
-    def seed(self) -> int | None:
+    def seed(self) -> int:
         return self.new_submissions[0].header.model.seed
 
     @property
@@ -467,13 +468,21 @@ def _check_actor(actor: str) -> str:
     return actor.strip()
 
 
-def check_seed_storable(seed: int | None) -> None:
-    """
+def _check_seed(seed: int | None) -> int:
+    """Checks the seed of a model in its file headers. Unlike `irap_evaluation`, the archive
+    requires a seed also for the only model of a method, so that a method never has a model
+    without a seed next to models with one (`irap_evaluation.check_method_models`), which could be
+    given a seed only by storing its files again.
+
     Raises:
-        ValueError: If `seed` does not fit SQLite's INTEGER.
+        ValueError: If `seed` is None or does not fit SQLite's INTEGER.
     """
-    if seed is not None and seed not in _SQLITE_INTEGER_RANGE:
+    if seed is None:
+        raise ValueError("The model has no seed. Enter one, e.g. 0 for the first model of the"
+                         " method.")
+    if seed not in _SQLITE_INTEGER_RANGE:
         raise ValueError(f"The seed {seed} does not fit a signed 64-bit integer.")
+    return seed
 
 
 def _get_model(connection: sqlite3.Connection, model_id: int) -> Model:
@@ -484,9 +493,9 @@ def _get_model(connection: sqlite3.Connection, model_id: int) -> Model:
 
 
 def _find_model(connection: sqlite3.Connection, dataset: str, method_name: str,
-                seed: int | None) -> Model | None:
+                seed: int) -> Model | None:
     row = connection.execute(
-        f"{_MODEL_QUERY} WHERE m.dataset = ? AND m.method_name = ? AND m.seed IS ?",
+        f"{_MODEL_QUERY} WHERE m.dataset = ? AND m.method_name = ? AND m.seed = ?",
         (dataset, method_name, seed)).fetchone()
     return None if row is None else _to_model(row)
 
@@ -640,9 +649,10 @@ def _check_method_invariant(connection: sqlite3.Connection, dataset: str,
     try:
         ie.check_method_models(model_id_to_info.values())
     except ValueError as e:
-        # Without the model ids, which a dry run (`ModelArchive._apply`) rolls back.
-        labels = ", ".join(sorted({s.label for s in submissions}))
-        raise ValueError(f"{e} Models of {method_name!r} on {dataset}: {labels}.") from e
+        # Distinct per model (`models.model_identity`). Without the model ids, which a dry run
+        # (`ModelArchive._apply`) rolls back.
+        seeds = ", ".join(f"seed {seed}" for seed in sorted({s.model.seed for s in submissions}))
+        raise ValueError(f"{e} Models on {dataset}: {seeds}.") from e
 
 
 def _check_sources_active(connection: sqlite3.Connection,
@@ -835,8 +845,8 @@ class ModelArchive:
         Raises:
             ValueError: If there are no new submissions, they are of several models, have a
                 split twice, `method_display_name` is blank, or it is None and they have
-                different method display names, a seed does not fit SQLite's INTEGER, or the
-                update is refused (see `apply_model_update`).
+                different method display names, the model has no seed or one that does not fit
+                SQLite's INTEGER, or the update is refused (see `apply_model_update`).
         """
         if not new_submissions:
             raise ValueError("At least one new submission is required.")
@@ -852,10 +862,9 @@ class ModelArchive:
             method_display_name = _get_method_display_name(headers)
         elif not (method_display_name := method_display_name.strip()):
             raise ValueError("The method display name must not be blank.")
-        check_seed_storable(first.model.seed)
+        seed = _check_seed(first.model.seed)
         with connect(self.database_path) as connection:
-            model = _find_model(connection, first.dataset, first.model.method_name,
-                                first.model.seed)
+            model = _find_model(connection, first.dataset, first.model.method_name, seed)
             active = {} if model is None else {
                 s.split: s for s in _list_active_submissions(connection, model.id)}
             old_method_display_name = _read_method_display_name(connection, first.dataset,

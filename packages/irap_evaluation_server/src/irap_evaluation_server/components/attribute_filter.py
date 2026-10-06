@@ -107,7 +107,7 @@ class AttributeFilter:
     def _create_panel(self) -> None:
         subset = self.subset
         self._option_to_checkbox, self._option_to_container = {}, {}
-        with ui.element("details").classes("attribute-filter"):
+        with ui.element("details").classes("collapsible-section attribute-filter"):
             self._summary = TextElement(tag="summary", text=f"Attributes: {subset.count_label}")
             with ui.element("div").classes("form-row"):
                 create_native_input("Filter", "", self._filter_options,
