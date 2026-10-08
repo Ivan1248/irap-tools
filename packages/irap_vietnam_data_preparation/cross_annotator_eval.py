@@ -26,8 +26,7 @@ annotators (``--min-annotators``):
   excluded; a segment contributes to an attribute only where >= 2 annotators
   gave a genuine code for it.
 - Precision/recall/F1 are macro-averaged over the iRAP codes *present* in the
-  compared data (matching vidlu's ``only_present_classes=True`` convention),
-  treating one annotator as truth and the other as prediction.
+  compared data, treating one annotator as truth and the other as prediction.
 - ``pairs`` reports each *ordered* annotator pair A->B (truth=A, pred=B), where
   precision and recall are directional.
 - ``pooled`` aggregates all ordered pairs into one confusion matrix. Pooling
@@ -75,7 +74,7 @@ def macro_prf(y_true: T.Sequence[int], y_pred: T.Sequence[int]) -> dict[str, flo
     """Macro precision/recall/F1 over the codes present in ``y_true``/``y_pred``.
 
     Averaging only over present classes matches sklearn's ``average='macro'`` on
-    the present-label subset and vidlu's ``only_present_classes=True``.
+    the present-label subset.
     """
     labels = sorted(set(y_true) | set(y_pred))
     precision, recall, f1, _ = precision_recall_fscore_support(

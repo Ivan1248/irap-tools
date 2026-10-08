@@ -2,7 +2,7 @@
 
 Each archive contains entries like ``splitN/<video_dir>/<video_dir>_segNNN.png``.
 The script strips the outer ``splitN/`` wrapper (an arbitrary RAR-partitioning
-artifact) and writes files under ``<out>/<video_dir>/<basename>.png``, preserving
+artifact) and writes files under ``FRAMES/<video_dir>/<basename>.png``, preserving
 the per-video grouping. Same-basename files across different video directories
 are not collisions; only two archives writing the **same post-strip path** count.
 By default the script aborts on any such duplicate path; pass
@@ -26,7 +26,7 @@ Usage:
     python extract_images.py <data_dir>
 
 Reads ``<data_dir>/_raw/image_rars/*.rar``; writes nested images into
-``<data_dir>/images/<video_dir>/``.
+``<data_dir>/FRAMES/<video_dir>/``.
 """
 import argparse
 import re

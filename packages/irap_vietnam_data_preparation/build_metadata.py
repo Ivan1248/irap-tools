@@ -6,7 +6,7 @@ Usage:
 Reads (under <data_dir>):
     _raw/attribute_metadata.json
     _work/rows.parquet                    (from parse_coding_tables.py)
-    images/<video_dir>/...                (nested dir from extract_images.py)
+    FRAMES/<video_dir>/...                (nested dir from extract_images.py)
 
 Writes (into <data_dir>/ directly):
     segment_id_to_data_paths_rel.json
@@ -26,7 +26,7 @@ Writes (into <data_dir>/ directly):
 Writes (into <data_dir>/_work/):
     build_report.json                     (counts, warnings)
 
-Rows are matched to images **by seg_id**: every ``*.png`` under ``images/`` is
+Rows are matched to images **by seg_id**: every ``*.png`` under ``FRAMES/`` is
 indexed by the integer in its ``_seg<N>.png`` suffix, and each parquet row is
 joined to its seg_id. Exactly one image must match each seg_id; if multiple
 images share a seg_id a ValueError is raised. Rows with no matching image are
@@ -77,7 +77,7 @@ def index_images_by_seg_id(images_dir: Path) -> dict[str, list[Path]]:
 
     Keys are decimal seg_id strings (matching the parquet's ``seg_id`` column).
     Values are paths relative to ``images_dir.parent`` so they begin with
-    ``images/<video_dir>/<basename>.png``.
+    ``FRAMES/<video_dir>/<basename>.png``.
     """
     index: dict[str, list[Path]] = defaultdict(list)
     data_root = images_dir.parent
@@ -501,8 +501,6 @@ def main(argv: list[str] | None = None) -> int:
     # Normalize iRAP codes to int when writing the metadata. The input JSON
     # encodes them as strings, but `required_attributes` in
     # segment_id_to_road_data.json uses ints (see build_segment_id_to_road_data).
-    # BihSequence inverts `attribute_value_to_irap_number` and looks up by the
-    # int code, so the two sides must agree.
     # `attribute_irap_number_to_class_idx` is dropped. Class indices are the value order of
     # `attribute_value_to_irap_number` (irap_data.ClassVocabulary, and the original irap_gaim
     # code, which deletes the field on loading), while this field numbers the classes in iRAP

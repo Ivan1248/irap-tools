@@ -45,7 +45,7 @@ MACRO_METRIC_TO_PER_CLASS = {"mP": "P", "mR": "R", "mF1": "F1", "mIoU": "IoU",
                              "mNLL": "cNLL", "mBrier": "cBrier"}
 PER_CLASS_METRICS = frozenset(MACRO_METRIC_TO_PER_CLASS.values())
 
-# The iRAP protocol, as in `vidlu_irap_gaim.metrics`.
+# The iRAP protocol.
 IRAP_ATTRIBUTE_METRIC_NAMES = ("mF1", "mP", "mR", "MCC")
 IRAP_MAIN_METRIC = "mF1"
 IRAP_IGNORE_MISSING_CLASSES = True
@@ -55,8 +55,6 @@ IRAP_CLASS_SUPPORT_THRESHOLDS = (5, 10)
 def get_irap_metric_names(min_class_supports: T.Sequence[int] = IRAP_CLASS_SUPPORT_THRESHOLDS,
                           output_kind: OutputKind = "probs") -> tuple[str, ...]:
     """The metric names of the iRAP protocol, attribute averages first.
-
-    The same names in the same order as `vidlu_irap_gaim.metrics.get_irap_metric_names`.
 
     Args:
         min_class_supports: Support thresholds of the restricted versions of the main metric.

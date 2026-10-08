@@ -105,7 +105,7 @@ def resolve_coding_tables_dir(data_dir: Path) -> Path:
     zip_path = layout.coding_tables_zip_path(data_dir)
     if not zip_path.is_file():
         raise FileNotFoundError(
-            f"'{zip_path}' not found. Expected coding tables in --in."
+            f"'{zip_path}' not found."
         )
     if unzipped.is_dir():
         print(f"Removing existing {unzipped}...")

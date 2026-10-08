@@ -260,7 +260,7 @@ irap_evaluation_server/
 The logic modules (all but `components`, `pages` and `server`) do not import NiceGUI and are tested with pytest:
 
 ```bash
-python -m pytest packages/irap_evaluation_server/tests
+uv run --project packages/irap_evaluation_server --extra test python -m pytest packages/irap_evaluation_server/tests
 ```
 
 [`scripts/add_synthetic_predictions.py`](scripts/add_synthetic_predictions.py) fills an archive with synthetic Vietnam predictions and those of an ensemble, e.g. to try the pages:

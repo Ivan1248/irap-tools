@@ -1,6 +1,6 @@
 # Agent Instructions
 
-Version: 2026-04-20
+Version: 2026-10-08
 
 These are the user rules that all coding agents should follow in this repository.
 
@@ -17,6 +17,10 @@ See [docs/conventions.md](docs/conventions.md) for code style and other conventi
   - what you expect,
   - and what the correct conclusions would be depending on the outcome.
 - Update based on the observations.
+
+## Environments
+
+- Run code and tests in the project's virtual environment.
 
 ## Units and dates
 

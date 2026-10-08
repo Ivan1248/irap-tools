@@ -346,7 +346,7 @@ def run_export_coding_table(args: argparse.Namespace) -> None:
 
 def _add_scoring_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--attributes", choices=ATTRIBUTE_SELECTIONS, default="canonical",
-                        help="canonical: the iRAP attribute subset, as in vidlu_irap_gaim."
+                        help="canonical: the iRAP attribute subset."
                              " all: every attribute of the dataset. Attributes without a label"
                              " in the evaluation set are left out. Default: canonical.")
     parser.add_argument("--seed", type=int, default=0, help="Bootstrap seed. Default: 0.")

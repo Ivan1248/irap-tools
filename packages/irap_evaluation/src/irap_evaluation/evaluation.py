@@ -35,8 +35,8 @@ from .predictions import (
 )
 
 #: How an invalid cell (`Predictions.is_valid` False) is scored:
-#: - 'first_class': as class 0 in the metrics of the predicted classes, as in vidlu, and as the
-#:   uniform distribution in NLL and Brier.
+#: - 'first_class': as class 0 in the metrics of the predicted classes and as the uniform
+#:   distribution in NLL and Brier.
 #: - 'exclude': not scored, like a missing label. Results with invalid cells are then scored on
 #:   different segments, so the means over models and the comparisons of `bootstrap` refuse them.
 #: `docs/evaluation.md#invalid-cells` gives the reasons.
@@ -51,8 +51,8 @@ NULL_POLICIES: tuple[str, ...] = T.get_args(NullPolicy)
 MissingAttributePolicy = T.Literal["error", "invalid"]
 MISSING_ATTRIBUTE_POLICIES: tuple[str, ...] = T.get_args(MissingAttributePolicy)
 
-#: 'canonical': the iRAP attribute subset (`irap_data.attrs.get_attrs_to_include`), as in
-#: `vidlu_irap_gaim.metrics`. 'all': every attribute of the dataset.
+#: 'canonical': the iRAP attribute subset (`irap_data.attrs.get_attrs_to_include`). 'all': every
+#: attribute of the dataset.
 AttributeSelection = T.Literal["canonical", "all"]
 ATTRIBUTE_SELECTIONS: tuple[str, ...] = T.get_args(AttributeSelection)
 
