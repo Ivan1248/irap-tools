@@ -92,7 +92,10 @@ The metadata directory must contain the following files (names match BH):
     the human-readable iRAP label (see Q14 for the source of these labels).
 - **`road_id_to_segment_id_sequence.json`** – `{road_id: [seg_id, seg_id, ...]}`,
   ordered along the road. Used for context-window construction (offsets like
-  `(0, -1, -4)`) and for N-context filtering.
+  `(0, -1, -4)`) and for N-context filtering. Besides the section road
+  sequences, it has unlabeled road sequences
+  `unlabeled:<recording>:<first seg_id>` of unlabeled segments only (Step 3.5),
+  so that every image is in a road sequence.
 - (Optional) `seg_to_res/{train,val,test}.pickle` for N-context filtering. We
   can skip these initially and pass `use_ncontext_filter=False`.
 
@@ -262,6 +265,14 @@ already when parsing.
   different recording session); blocking the pipeline would make iteration
   on the rest of the dataset awkward. Loaders skip split-boundary segments
   as context centres automatically because no offset window fits.
+- Insert each unlabeled segment that lies between two adjacent labeled
+  segments of the same recording into that section road sequence. A segment
+  that several road sequences span goes into each of them (reported as
+  `shared_unlabeled_segments`).
+- Add an unlabeled road sequence `unlabeled:<recording>:<first seg_id>` for
+  each run of consecutive seg_ids of the remaining unlabeled segments of a
+  recording.
+  These include all unlocated segments.
 
 ### Step 3.6 – Build `splits.json` (per-section)
 

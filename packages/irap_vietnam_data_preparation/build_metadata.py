@@ -11,12 +11,13 @@ Reads (under <data_dir>):
 Writes (into <data_dir>/ directly):
     segment_id_to_data_paths_rel.json
     segment_id_to_road_data.json
-    road_id_to_segment_id_sequence.json
-    attribute_metadata.json               (copy of _raw/attribute_metadata.json with int
+    road_id_to_segment_id_sequence.json   (section and unlabeled road sequences, see below)
+    attribute_metadata.json              (copy of _raw/attribute_metadata.json with int
                                            iRAP codes and without the misleading
                                            attribute_irap_number_to_class_idx)
     unlabeled_segment_ids.json
-    unlabeled_sequence_id_to_data.json    (sequence_id -> {segs, centroid}) for editor
+    unlabeled_sequence_id_to_data.json    (recording -> {segs, centroid} of its unlabeled
+                                           segments, for the split editor)
     unlabeled_unlocated_segment_ids.json  (seg_ids from recordings with no
                                            labeled siblings, so no map coordinate
                                            is derivable; written only when
@@ -40,6 +41,14 @@ adjacency invariant `distance_step_km == 0.01 × abs(seg_id_step)` is
 enforced (each unit of seg_id ↔ 10 m). Violating transitions split the
 section into multiple road_ids (`<section>__part0`, `<section>__part1`, …)
 and are reported on stderr and in the build_report.
+
+Unlabeled segments between two adjacent labeled segments of the same recording
+are inserted into that section road sequence
+(`interleave_unlabeled_into_road_sequences`). The other unlabeled segments get
+unlabeled road sequences of their own, `unlabeled:<recording>:<first seg_id>`
+(`make_unlabeled_road_sequences`), so every image is in a road sequence, which
+the loader takes the context frames from. Only an unlabeled segment that two
+road sequences span is in both.
 """
 
 import argparse
@@ -260,6 +269,16 @@ def build_road_sequences_and_validate(
     return road_to_seq, violations, sections_split
 
 
+def split_into_runs(sorted_ids: list[int], max_step: int) -> list[list[int]]:
+    """Split non-empty sorted ids wherever consecutive ids are more than `max_step` apart."""
+    runs = [[sorted_ids[0]]]
+    for prev, curr in zip(sorted_ids, sorted_ids[1:]):
+        if curr - prev > max_step:
+            runs.append([])
+        runs[-1].append(curr)
+    return runs
+
+
 def split_folders_into_recordings(seg_to_folder: dict[str, str]) -> dict[str, str]:
     """Map each seg_id to its recording: its image folder, or a run of it.
 
@@ -280,12 +299,7 @@ def split_folders_into_recordings(seg_to_folder: dict[str, str]) -> dict[str, st
         folder_to_seg_ids[folder].append(int(sid))
     seg_to_recording: dict[str, str] = {}
     for folder, seg_ids in folder_to_seg_ids.items():
-        seg_ids.sort()
-        runs = [[seg_ids[0]]]
-        for prev, curr in zip(seg_ids, seg_ids[1:]):
-            if curr - prev > MAX_SEG_ID_STEP_WITHIN_RECORDING:
-                runs.append([])
-            runs[-1].append(curr)
+        runs = split_into_runs(sorted(seg_ids), MAX_SEG_ID_STEP_WITHIN_RECORDING)
         for run in runs:
             recording = folder if len(runs) == 1 else f"{folder}@{run[0]}"
             seg_to_recording.update((str(sid), recording) for sid in run)
@@ -308,6 +322,13 @@ def interleave_unlabeled_into_road_sequences(
     We only inject between two labeled neighbours from the same recording (see
     `split_folders_into_recordings`), which is where the "1 seg_id = 10 m"
     invariant holds.
+
+    Two road sequences span the same unlabeled seg_ids when both take labeled segments
+    from the same stretch of a recording, e.g. two sections that code alternate frames,
+    or two parts of a section split by the adjacency check. This is worth checking in the
+    coding tables. Such a seg_id is injected into both, as it lies between labeled
+    neighbours in each (see `irap_data.metadata.index_road_sequences` for its position as
+    a context centre, and `find_shared_segments`).
     """
     recording_to_sorted_ids = {
         recording: sorted(int(s) for s in seg_ids)
@@ -333,6 +354,51 @@ def interleave_unlabeled_into_road_sequences(
             out.append(curr)
         enriched[road_id] = out
     return enriched
+
+
+def find_shared_segments(road_to_seq: dict[str, list[str]]) -> list[dict]:
+    """Find the seg_ids that are in more than one road sequence.
+
+    Returns:
+        One entry per group of road sequences that share seg_ids, with their road IDs
+        and the shared seg_ids.
+    """
+    seg_to_road_ids: dict[str, list[str]] = defaultdict(list)
+    for road_id, seq in road_to_seq.items():
+        for sid in seq:
+            seg_to_road_ids[sid].append(road_id)
+    road_ids_to_shared_seg_ids: dict[tuple[str, ...], list[str]] = defaultdict(list)
+    for sid, road_ids in seg_to_road_ids.items():
+        if len(road_ids) > 1:
+            road_ids_to_shared_seg_ids[tuple(road_ids)].append(sid)
+    return [{"road_ids": list(road_ids), "seg_ids": seg_ids}
+            for road_ids, seg_ids in road_ids_to_shared_seg_ids.items()]
+
+
+def make_unlabeled_road_sequences(
+    road_to_seq: dict[str, list[str]],
+    recording_to_unlabeled_seg_ids: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Make road sequences of the unlabeled segments that are in none of `road_to_seq`.
+
+    These are the unlabeled segments outside the labeled spans of their recording, and
+    all segments of a recording without labeled segments (the unlocated ones). Each run
+    of consecutive seg_ids (step 1, 10 m) of a recording becomes a road sequence, in
+    seg_id order, so that the loader can take context frames for these segments. A run
+    ends at a missing seg_id, which keeps the spacing in a road sequence uniform.
+
+    Returns:
+        ``"unlabeled:<recording>:<first seg_id>" -> [seg_id, ...]``.
+    """
+    seg_ids_in_roads = {sid for seq in road_to_seq.values() for sid in seq}
+    unlabeled_road_to_seq: dict[str, list[str]] = {}
+    for recording, seg_ids in recording_to_unlabeled_seg_ids.items():
+        ids = sorted(int(s) for s in seg_ids if s not in seg_ids_in_roads)
+        if not ids:
+            continue
+        for run in split_into_runs(ids, max_step=1):
+            unlabeled_road_to_seq[f"unlabeled:{recording}:{run[0]}"] = [str(s) for s in run]
+    return unlabeled_road_to_seq
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -437,9 +503,6 @@ def main(argv: list[str] | None = None) -> int:
           f"(recording has ≥1 labeled sibling; centroid = median of sibling lat/lon; "
           f"selectable in split editor under unlabeled_train/val/test).")
     if unplaceable_unlabeled_seg_ids:
-        # TODO: once per-segment geolocation is available for unlabeled images,
-        # emit these as standalone road_to_seq entries so they're reachable as
-        # context frames around future labeled additions.
         print(f"    {len(unplaceable_unlabeled_seg_ids)}/{len(unlabeled_seg_ids)} unlocated "
               f"(recording has no labeled sibling, no map coordinate derivable; "
               f"auto-assigned to unlabeled_unlocated split).", file=sys.stderr)
@@ -454,12 +517,41 @@ def main(argv: list[str] | None = None) -> int:
     road_to_seq = interleave_unlabeled_into_road_sequences(
         road_to_seq, seg_to_recording, unlabeled_recording_to_seg_ids,
     )
+    shared_unlabeled_segments = find_shared_segments(road_to_seq)
+    shared_labeled_seg_ids = [sid for shared in shared_unlabeled_segments
+                              for sid in shared["seg_ids"] if sid in seg_to_path]
+    if shared_labeled_seg_ids:
+        raise ValueError(f"{len(shared_labeled_seg_ids)} labeled seg_ids are in more than one "
+                         f"road sequence, e.g. {shared_labeled_seg_ids[:10]}.")
+    # Distinct seg_ids, as a shared unlabeled segment is in two road sequences.
     num_unlabeled_inserted_into_sequences = (
-        sum(len(seq) for seq in road_to_seq.values()) - num_labeled_in_sequences
+        len({sid for seq in road_to_seq.values() for sid in seq}) - num_labeled_in_sequences
     )
     print(f"  Interleaved {num_unlabeled_inserted_into_sequences}/{num_placeable_unlabeled} "
           f"placeable-unlabeled segments between adjacent labeled segments from the same "
           f"recording (the rest fall outside any labeled span).")
+    if shared_unlabeled_segments:
+        print(f"WARNING: {len(shared_unlabeled_segments)} group(s) of road sequences share "
+              f"interleaved unlabeled segments, so the road sequences of a group take labeled "
+              f"segments from the same stretch of a recording:", file=sys.stderr)
+        for shared in shared_unlabeled_segments:
+            print(f"  {' and '.join(map(repr, shared['road_ids']))}: seg_ids "
+                  f"{', '.join(shared['seg_ids'])}", file=sys.stderr)
+    unlabeled_road_to_seq = make_unlabeled_road_sequences(
+        road_to_seq, unlabeled_recording_to_seg_ids)
+    num_unlabeled_in_unlabeled_road_sequences = sum(
+        len(seq) for seq in unlabeled_road_to_seq.values())
+    print(f"  Added {len(unlabeled_road_to_seq)} unlabeled road sequences of the remaining "
+          f"{num_unlabeled_in_unlabeled_road_sequences} unlabeled segments, including the "
+          f"unlocated ones, one per run of consecutive seg_ids of a recording.")
+    all_road_to_seq = {**road_to_seq, **unlabeled_road_to_seq}
+    if len(all_road_to_seq) != len(road_to_seq) + len(unlabeled_road_to_seq):
+        raise ValueError("A road ID of an unlabeled road sequence is also a section road ID.")
+    # The unlabeled road sequences hold only seg_ids that are in no other road sequence.
+    num_seg_ids_in_roads = len({sid for seq in all_road_to_seq.values() for sid in seq})
+    if num_seg_ids_in_roads != len(all_seg_to_path):
+        raise ValueError(f"{len(all_seg_to_path) - num_seg_ids_in_roads} of the "
+                         f"{len(all_seg_to_path)} images are in no road sequence.")
     if violations:
         by_section: dict[str, list[dict]] = defaultdict(list)
         for v in violations:
@@ -497,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _dump(layout.segment_id_to_data_paths_rel_path(data_dir), seg_to_paths)
     _dump(layout.segment_id_to_road_data_path(data_dir), seg_to_road)
-    _dump(layout.road_id_to_segment_id_sequence_path(data_dir), road_to_seq)
+    _dump(layout.road_id_to_segment_id_sequence_path(data_dir), all_road_to_seq)
     # Normalize iRAP codes to int when writing the metadata. The input JSON
     # encodes them as strings, but `required_attributes` in
     # segment_id_to_road_data.json uses ints (see build_segment_id_to_road_data).
@@ -531,6 +623,9 @@ def main(argv: list[str] | None = None) -> int:
         "num_unlabeled_images": len(unlabeled_seg_ids),
         "unlabeled_examples": unlabeled_seg_ids[:20],
         "num_unlabeled_inserted_into_sequences": num_unlabeled_inserted_into_sequences,
+        "shared_unlabeled_segments": shared_unlabeled_segments,
+        "num_unlabeled_road_sequences": len(unlabeled_road_to_seq),
+        "num_unlabeled_in_unlabeled_road_sequences": num_unlabeled_in_unlabeled_road_sequences,
         "num_unlabeled_sequences_placed": len(unlabeled_sequence_id_to_data),
         "folders_split_into_recordings": folders_split_into_recordings,
         "num_unplaceable_unlabeled_seg_ids": len(unplaceable_unlabeled_seg_ids),
