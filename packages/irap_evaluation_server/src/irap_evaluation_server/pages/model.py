@@ -98,8 +98,7 @@ def _can_see_class_scores(config: DatasetConfig, split: str, is_admin: bool) -> 
 
 @dc.dataclass(frozen=True)
 class _ModelSnapshot:
-    """A model with its active and replaced submissions and its actions, as the panels show
-    them."""
+    """A model with its submissions and its actions, as the panels show them."""
 
     model: Model
     submissions: list[Submission]
@@ -211,9 +210,9 @@ class _ModelPage:
 
         async def on_delete_model_clicked() -> None:
             label = self.snapshot.model.label
-            changes = [f"Permanently deletes the model {label} with all its files, active and"
-                       f" replaced, and their scores. To keep a copy, first download the active"
-                       f" files (.zip) under Files, which can be uploaded again."]
+            changes = [f"Permanently deletes the model {label} with all its files and their"
+                       f" scores. To keep a copy, first download the files (.zip) under Files,"
+                       f" which can be uploaded again."]
             if await confirm_changes(f"Delete model {label}", changes, "Delete"):
                 await self.run_change(lambda actor: self.archive.delete_model(
                     self.model_id, actor=actor), status_label)
@@ -255,9 +254,7 @@ class _ModelPage:
             delete_button = ("" if not can_delete else
                              f' <button class="native-control" type="button"'
                              f' data-delete-id="{submission.id}">Delete</button>')
-            return (f'<tr class="{"" if submission.is_active else "replaced"}">'
-                    f"<td>{html.escape(submission.split)}</td><td>#{submission.id}</td>"
-                    f"<td>{'active' if submission.is_active else 'replaced'}</td>"
+            return (f"<tr><td>{html.escape(submission.split)}</td><td>#{submission.id}</td>"
                     f'<td class="number">{submission.num_segments}</td>'
                     f'<td class="number">{submission.num_attributes}</td>'
                     f"<td>{html.escape(submission.submitter)}</td>"
@@ -269,22 +266,19 @@ class _ModelPage:
         @ui.refreshable
         def show_files() -> None:
             submissions, actions = self.snapshot.submissions, self.snapshot.actions
-            # The last active file is deleted with the model (`ModelArchive.delete_submission`).
-            active = self.snapshot.summary.submissions
-            last_active_id = active[0].id if len(active) == 1 else None
+            # The last file is deleted with the model (`ModelArchive.delete_submission`).
+            can_delete = self.can_write and len(submissions) > 1
             ui.label("Files").classes("section-title")
-            ui.label("Only the active file of each split is scored. A new file of a split"
-                     " replaces the active one, which is kept as a replaced file. Deleting a file"
-                     " removes it permanently. The last active file is deleted with the model."
-                     ).classes("muted")
-            ui.html(f'<a href="{get_model_download_path(self.model_id)}">Download the active'
-                    f" files (.zip)</a>, which can be uploaded again as the files of this model.",
+            ui.label("A model has one file per split. A new file of a split replaces the old one,"
+                     " which is deleted permanently. Deleting a file also removes it"
+                     " permanently. The last file is deleted with the model.").classes("muted")
+            ui.html(f'<a href="{get_model_download_path(self.model_id)}">Download the files'
+                    f" (.zip)</a>, which can be uploaded again as the files of this model.",
                     sanitize=False)
             ui.html(make_table_html(
-                ["Split", "#", "State", "Segments", "Attributes", "Submitter",
-                 "Upload time", "", "Notes"],
-                [make_row(s, actions, self.can_write and s.id != last_active_id)
-                 for s in sorted(submissions, key=lambda s: (s.split, -s.id))],
+                ["Split", "#", "Segments", "Attributes", "Submitter", "Upload time", "", "Notes"],
+                [make_row(s, actions, can_delete)
+                 for s in sorted(submissions, key=lambda s: s.split)],
                 number_headers=["Segments", "Attributes"]),
                 sanitize=False).classes("w-full overflow-x-auto").on(
                 "click", lambda e: on_delete_clicked(int(e.args)),
@@ -299,10 +293,9 @@ class _ModelPage:
                 set_status(status_label, f"File #{submission_id} is not a file of this model.",
                            is_error=True)
                 return
-            no_scores = (f", so that the model has no {submission.split} scores"
-                         if submission.is_active else "")
             changes = [f"Permanently deletes the {submission.split} file #{submission.id} of"
-                       f" {submission.label}{no_scores}. To keep a copy, download it first."]
+                       f" {submission.label}, so that the model has no {submission.split} scores."
+                       f" To keep a copy, download it first."]
             if await confirm_changes(f"Delete file #{submission.id}", changes, "Delete"):
                 await self.run_change(lambda actor: self.archive.delete_submission(
                     submission.id, actor=actor), status_label)
@@ -336,25 +329,26 @@ class _ModelPage:
 
         @ui.refreshable
         def show_scores() -> None:
-            model, active = self.snapshot.model, self.snapshot.summary.split_to_submission
+            model = self.snapshot.model
+            split_to_submission = self.snapshot.summary.split_to_submission
             context = self.dataset_contexts.get(model.dataset)
             if context is None:
                 ui.label(f"The dataset {model.dataset!r} is not configured, so the model is not"
                          f" scored.").classes("muted")
                 return
-            if not active:
-                ui.label("The model has no active files.").classes("muted")
+            if not split_to_submission:
+                ui.label("The model has no files.").classes("muted")
                 return
-            splits = [s for s in context.split_names if s in active]
-            if state["split"] not in active:
+            splits = [s for s in context.split_names if s in split_to_submission]
+            if state["split"] not in split_to_submission:
                 if state["split"]:
-                    ui.label(f"The model has no active file of the split {state['split']!r}."
+                    ui.label(f"The model has no file of the split {state['split']!r}."
                              ).classes("error")
                 state["split"] = splits[0]
             with ui.element("div").classes("form-row"):
                 create_native_select("Split", {s: s for s in splits}, state["split"],
                                      on_split_changed)
-            submission = active[state["split"]]
+            submission = split_to_submission[state["split"]]
             self._show_submission_scores(context, submission, attribute_filter,
                                          interval_requester, refresh_timer)
 
@@ -429,10 +423,11 @@ class _ModelPage:
 
         @ui.refreshable
         def show_form() -> None:
-            model, active = self.snapshot.model, self.snapshot.summary.split_to_submission
+            model = self.snapshot.model
+            split_to_submission = self.snapshot.summary.split_to_submission
             context = self.dataset_contexts.get(model.dataset)
-            active_splits = ([s for s in context.split_names if s in active] if context is not None
-                             else sorted(active))
+            splits = ([s for s in context.split_names if s in split_to_submission]
+                      if context is not None else sorted(split_to_submission))
             ui.label("Coding table").classes("section-title")
             ui.html(make_code_spans_html(
                 "The predicted iRAP code of each attribute and segment of the chosen splits, in"
@@ -441,13 +436,13 @@ class _ModelPage:
                 " file of probabilistic predictions has the probability of each predicted code"
                 " on a second sheet. Preparing a `.xlsx` file can take tens of seconds, a"
                 " `.csv` file is much faster."), sanitize=False).classes("muted")
-            if not active_splits:
-                ui.label("The model has no active files.").classes("muted")
+            if not splits:
+                ui.label("The model has no files.").classes("muted")
                 return
-            form.update(split_to_is_chosen=dict.fromkeys(active_splits, True),
+            form.update(split_to_is_chosen=dict.fromkeys(splits, True),
                         coder=model.shown_method_name, date=parse_coding_date(""))
             with ui.element("div").classes("form-row items-end"):
-                for split in active_splits:
+                for split in splits:
                     create_native_checkbox(
                         split, True,
                         lambda is_chosen, split=split: form["split_to_is_chosen"].update(

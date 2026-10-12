@@ -1,6 +1,7 @@
 import dataclasses as dc
 import hashlib
 import io
+import os
 import sqlite3
 
 import irap_evaluation as ie
@@ -38,9 +39,7 @@ def test_upload_creates_a_model(archive, dataset_contexts):
     model = submission.model
     assert (model.dataset, model.method_name, model.seed, model.label, model.description) == (
         "vietnam", "m", 1, "m/seed1", "first model")
-    assert (submission.split, submission.file_sha256, submission.replaced_at) == (
-        SPLIT, uploaded_sha256, None)
-    assert submission.is_active
+    assert (submission.split, submission.file_sha256) == (SPLIT, uploaded_sha256)
     assert submission.context_offsets == (0, -1)
     assert (submission.training_splits, submission.early_stopping_splits) == ((), ())
     assert submission.model_info == ie.ModelInfo("m", (), (), 1)
@@ -64,15 +63,23 @@ def test_reupload_replaces_the_split(archive, dataset_contexts):
     assert planned.update.model == first.model
     assert planned.update.replaced == {SPLIT: first}
     [confirmation] = planned.update.confirmations
-    assert f"Replaces the {SPLIT} file #{first.id} of m" in confirmation
+    assert f"Replaces and permanently deletes the {SPLIT} file #{first.id} of m" in confirmation
+    # The dry run of the plan keeps the file.
+    assert archive.get_submission(first.id) == first
+    assert archive.get_predictions_path(first.id).exists()
     [second] = apply_upload(archive, planned, submitter="Bo")
 
     assert second.model == first.model
-    replaced = archive.get_submission(first.id)
-    assert not replaced.is_active and archive.get_predictions_path(first.id).exists()
+    with pytest.raises(LookupError):
+        archive.get_submission(first.id)
+    assert not archive.get_predictions_path(first.id).parent.exists()
     assert archive.list_submissions() == [second]
-    assert archive.list_model_submissions(first.model.id) == [second, replaced]
-    assert archive.list_actions()[0].details["replaced_submission_id"] == first.id
+    assert archive.list_model_submissions(first.model.id) == [second]
+    upload, deletion = archive.list_actions()[:2]
+    assert (upload.action, upload.submission_id, upload.details["replaced_submission_id"]) == (
+        "upload", second.id, first.id)
+    assert (deletion.action, deletion.submission_id, deletion.details) == (
+        "delete", first.id, {"split": SPLIT, "by": "upload"})
 
 
 def test_description_change_needs_confirmation(archive, dataset_contexts):
@@ -84,7 +91,8 @@ def test_description_change_needs_confirmation(archive, dataset_contexts):
                for c in planned.update.confirmations)
     second = apply_upload(archive, planned, submitter="Al")[0]
     assert second.model.description == "second"
-    assert archive.list_actions()[1].action == "edit_description"
+    assert [a.action for a in archive.list_actions()[:3]] == [
+        "upload", "delete", "edit_description"]
     # A blank description keeps it.
     third = add_model(archive, dataset_contexts, predictions, description=None)
     assert third.model.description == "second"
@@ -241,50 +249,46 @@ def test_a_change_after_the_planning_is_refused(archive, dataset_contexts):
     replanned = plan_upload(archive, dataset_contexts, planned.uploaded_path, file_name="m")
     newer = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=3))
     apply_upload(archive, newer, submitter="Bo")
-    with pytest.raises(ValueError, match=f"{SPLIT} file of m/seed0 has changed"):
+    with pytest.raises(ValueError, match="files of m/seed0 have changed"):
         apply_upload(archive, replanned, submitter="Al")
 
 
 def test_delete_a_submission(archive, two_split_contexts):
     predictions = make_model(two_split_contexts)
-    replaced = add_model(archive, two_split_contexts, predictions)
-    active = add_model(archive, two_split_contexts, make_model(two_split_contexts, random_seed=1))
+    first = add_model(archive, two_split_contexts, predictions)
     other = add_model(archive, two_split_contexts, with_split(predictions, OTHER_SPLIT))
 
-    # A replaced file is deleted with its file.
-    assert archive.delete_submission(replaced.id, actor="Bo").id == replaced.id
-    assert not archive.get_predictions_path(replaced.id).parent.exists()
+    assert archive.delete_submission(first.id, actor="Bo").id == first.id
+    assert not archive.get_predictions_path(first.id).parent.exists()
     with pytest.raises(LookupError):
-        archive.get_submission(replaced.id)
+        archive.get_submission(first.id)
     with pytest.raises(LookupError):
-        archive.delete_submission(replaced.id, actor="Bo")
+        archive.delete_submission(first.id, actor="Bo")
 
-    archive.delete_submission(active.id, actor="Bo")
     assert archive.list_submissions() == [other]
-    with pytest.raises(ValueError, match="last active file of m/seed0. Delete the model instead"):
+    with pytest.raises(ValueError, match="last file of m/seed0. Delete the model instead"):
         archive.delete_submission(other.id, actor="Bo")
-    assert [(a.action, a.model_label, a.submission_id, a.details)
-            for a in archive.list_actions()[:2]] == [
-        ("delete", "m/seed0", active.id, {"split": SPLIT}),
-        ("delete", "m/seed0", replaced.id, {"split": SPLIT})]
+    action = archive.list_actions()[0]
+    assert (action.action, action.model_label, action.submission_id, action.details) == (
+        "delete", "m/seed0", first.id, {"split": SPLIT})
 
 
-def test_delete_a_model(archive, dataset_contexts):
-    first = add_model(archive, dataset_contexts, with_model(
-        make_model(dataset_contexts, model_seed=1), method_display_name="M"))
-    replacing = add_model(archive, dataset_contexts,
-                          make_model(dataset_contexts, model_seed=1, random_seed=1))
-    other = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
-    model = replacing.model
+def test_delete_a_model(archive, two_split_contexts):
+    predictions = with_model(make_model(two_split_contexts, model_seed=1),
+                             method_display_name="M")
+    first = add_model(archive, two_split_contexts, predictions)
+    second = add_model(archive, two_split_contexts, with_split(predictions, OTHER_SPLIT))
+    other = add_model(archive, two_split_contexts, make_model(two_split_contexts, model_seed=2))
+    model = second.model
     deleted = archive.delete_model(model.id, actor="Bo")
-    assert [s.id for s in deleted] == [replacing.id, first.id]
+    assert [s.id for s in deleted] == [second.id, first.id]
     assert archive.list_models() == [other.model]
     assert [p.name for p in archive.submissions_dir.iterdir()] == [str(other.id)]
     assert [(a.action, a.model_label, a.submission_id, a.details)
             for a in archive.list_actions(model_id=model.id)[:3]] == [
         ("delete_model", "m/seed1", None, {}),
         ("delete", "m/seed1", first.id, {"split": SPLIT, "by": "delete_model"}),
-        ("delete", "m/seed1", replacing.id, {"split": SPLIT, "by": "delete_model"})]
+        ("delete", "m/seed1", second.id, {"split": OTHER_SPLIT, "by": "delete_model"})]
     with pytest.raises(LookupError):
         archive.delete_model(model.id, actor="Bo")
 
@@ -292,7 +296,7 @@ def test_delete_a_model(archive, dataset_contexts):
     assert archive.get_model(other.model.id).method_display_name == "M"
     archive.delete_model(other.model.id, actor="Bo")
     # An upload creates the model again, with a new id.
-    again = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
+    again = add_model(archive, two_split_contexts, make_model(two_split_contexts, model_seed=1))
     assert again.model.method_display_name is None
     assert again.model.id not in {model.id, other.model.id}
 
@@ -353,6 +357,64 @@ def test_failed_storing_moves_back_all_files(archive, two_split_contexts, monkey
     assert not archive.get_predictions_path(2).exists()
     assert archive.list_models() == []
     assert archive.list_actions() == []
+
+
+def test_a_deletion_while_a_failed_update_moves_back_keeps_its_file(archive, dataset_contexts,
+                                                                    monkeypatch):
+    other = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
+    planned = plan(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
+    [new] = planned.update.new_submissions
+    replace = os.replace
+
+    def fail(*args):
+        raise RuntimeError("after the moves")
+
+    def delete_other_then_replace(source, target):
+        # The lock is released before the file is moved back, so another deletion can run.
+        if target == new.file_path:
+            archive.delete_model(other.model.id, actor="Bo")
+        replace(source, target)
+
+    monkeypatch.setattr(archive_module, "_get_submission", fail)
+    monkeypatch.setattr(archive_module.os, "replace", delete_other_then_replace)
+    with pytest.raises(RuntimeError, match="after the moves"):
+        apply_upload(archive, planned, submitter="Al")
+    assert new.file_path.exists()
+    assert archive.list_models() == []
+    assert not archive.get_predictions_path(other.id).parent.exists()
+
+
+def test_a_failed_replacement_keeps_the_old_file(archive, dataset_contexts, monkeypatch):
+    first = add_model(archive, dataset_contexts, make_model(dataset_contexts, random_seed=1))
+    planned = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=2))
+
+    def fail(*args):
+        raise RuntimeError("after the moves")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(archive_module, "_get_submission", fail)
+        with pytest.raises(RuntimeError, match="after the moves"):
+            apply_upload(archive, planned, submitter="Al")
+    assert archive.list_submissions() == [first]
+    assert archive.get_predictions_path(first.id).exists()
+
+
+def test_a_replaced_file_that_cannot_be_removed_is_removed_later(archive, dataset_contexts,
+                                                                 monkeypatch, caplog):
+    first = add_model(archive, dataset_contexts, make_model(dataset_contexts, random_seed=1))
+    planned = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=2))
+
+    def fail(path):
+        raise PermissionError(f"{path} is open")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(archive_module.shutil, "rmtree", fail)
+        [second] = apply_upload(archive, planned, submitter="Al")
+    assert archive.list_submissions() == [second]
+    assert archive.get_predictions_path(first.id).exists()
+    assert f"deleted submission #{first.id} failed" in caplog.text
+    archive.delete_model(second.model.id, actor="Al")
+    assert not list(archive.submissions_dir.iterdir())
 
 
 def test_updates_are_of_one_model(archive, two_split_contexts):

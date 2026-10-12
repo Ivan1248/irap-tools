@@ -186,7 +186,7 @@ def select_shown_methods(rows: T.Iterable[MethodScores],
 
 def get_unscored_reason(scoring: SubmissionScoring | None, is_current: bool,
                         is_pending: bool) -> str | None:
-    """Explains why an active submission has no current scores. Returns None if it has them.
+    """Explains why a submission has no current scores. Returns None if it has them.
 
     Args:
         scoring: Its stored scoring, or None.

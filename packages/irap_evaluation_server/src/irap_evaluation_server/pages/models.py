@@ -70,8 +70,8 @@ _SPLIT_USE_MARKS: dict[ie.SplitUse, str] = {"training": "training", "early_stopp
 
 
 def _make_submission_cell_html(summary: ModelSummary, split: str) -> str:
-    """Makes the cell of a split: a link to the model page with the scores of its active
-    submission, the submission details in the title, and a mark if the model used the split, with
+    """Makes the cell of a split: a link to the model page with the scores of its submission,
+    the submission details in the title, and a mark if the model used the split, with
     the explanation in its title."""
     submission = summary.split_to_submission.get(split)
     if submission is None:
@@ -330,8 +330,8 @@ def _create_upload_form(archive: ModelArchive,
             " the dataset, split, method, seed and training splits, or a `.zip` archive with"
             " one such file per split of one model, stored only if all are accepted. A file"
             " without a seed needs one in the Seed field, also for a method's only model. A file"
-            " of a split that the model already has replaces its active file, which is kept as"
-            " a replaced file."),
+            " of a split that the model already has replaces its file, which is deleted"
+            " permanently."),
             sanitize=False).classes("muted")
         with ui.element("div").classes("form-row"):
             create_file_upload_input("File", UPLOAD_PATH, ".parquet,.zip",
@@ -455,7 +455,7 @@ def register_models_pages(archive: ModelArchive,
                 with ui.element("div").classes("form-row"):
                     create_native_select("Dataset", {"": "All", **{n: n for n in dataset_contexts}},
                                          dataset, on_dataset_changed)
-                ui.label("A ✓ opens the Model page with the scores of the split's active file."
+                ui.label("A ✓ opens the Model page with the scores of the split's file."
                          " Hover over it for the file details. Below it: whether the model used"
                          " the split for training or early stopping.").classes("muted")
                 show_tables()

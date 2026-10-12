@@ -189,7 +189,7 @@ class ScoringWorker:
 
     def load_split_scorings(self, dataset: str, split: str) -> tuple[
             list[Submission], dict[int, SubmissionScoring], dict[int, SubmissionScoring]]:
-        """Loads the active submissions of a dataset split, submission id -> its stored scoring
+        """Loads the submissions of a dataset split, submission id -> its stored scoring
         (`ScoreStore.get_scorings`), and submission id -> its current scoring
         (`select_current_scorings`)."""
         submissions = [s for s in self.archive.list_submissions()
@@ -208,8 +208,8 @@ class ScoringWorker:
             return
         context = self._get_context(submission)
         # Current if it was queued again while it was being scored.
-        if (not submission.is_active or context is None
-                or self.is_scoring_current(submission, self.store.get_scoring(submission_id))):
+        if context is None or self.is_scoring_current(submission,
+                                                      self.store.get_scoring(submission_id)):
             return
         try:
             scoring, reports = score_submission(self.archive, context, submission, self.settings)
@@ -223,18 +223,17 @@ class ScoringWorker:
                                         submission.model.method_name)
 
     def update_submissions(self, submissions: T.Collection[Submission]) -> None:
-        """Queues the work that follows when submissions become active or replaced, e.g. when
-        they are added: the scoring of the active ones whose scoring is not current, and the
-        default intervals of their methods.
+        """Queues the work that follows when submissions are added: the scoring of those whose
+        scoring is not current, and the default intervals of their methods.
 
         Args:
             submissions: As they are in the archive after the change.
         """
-        current = self.get_current_scorings([s for s in submissions if s.is_active])
+        current = self.get_current_scorings(submissions)
         for submission in submissions:
             if self._get_context(submission) is None:
                 continue
-            if submission.is_active and submission.id not in current:
+            if submission.id not in current:
                 self._enqueue(("score", submission.id), TaskPriority.SCORING,
                               lambda i=submission.id: self._score(i))
             else:  # Scoring queues them otherwise.
@@ -251,7 +250,7 @@ class ScoringWorker:
                 self._enqueue_default_intervals(model.dataset, split, model.method_name)
 
     def update_all_submissions(self) -> None:
-        """Calls `update_submissions` with every active submission, e.g. at the start of the
+        """Calls `update_submissions` with every submission, e.g. at the start of the
         server, since the metadata or the settings may have changed."""
         self.update_submissions(self.archive.list_submissions())
 
@@ -318,7 +317,7 @@ class ScoringWorker:
 
     def _request_default_intervals(self, dataset: str, split: str, method_name: str) -> None:
         """Queues the intervals over all scored attributes of the method and of each of its
-        models, of their active submissions of the split, on each evaluation set."""
+        models, of their submissions of the split, on each evaluation set."""
         submissions = [s for s in self.archive.list_submissions()
                        if (s.dataset, s.split, s.model.method_name)
                        == (dataset, split, method_name)]

@@ -1,6 +1,6 @@
 """Scores of the submissions, computed with irap_evaluation and cached in the database.
 
-An active submission is scored once on all its evaluation sets and all scored attributes
+A submission is scored once on all its evaluation sets and all scored attributes
 (`SubmissionScoring`), and again only when its scoring is out of date. Means over the models of a
 method, also over a subset of the attributes, are computed from these scores when they are shown
 (`compute_method_scores`). Bootstrap intervals need the per-sequence statistics, which are too

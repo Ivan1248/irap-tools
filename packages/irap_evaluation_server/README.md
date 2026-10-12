@@ -5,8 +5,8 @@ An web app that keeps an archive of model predictions, scores them, and compares
 | Page | Path | Content |
 |---|---|---|
 | Scores | `/scores` (start page) | The methods of a dataset split ranked by an attribute average, or one per-attribute metric, with intervals and differences from a reference method. |
-| Models | `/models` | The models of each dataset by method, with the active file of each split, and the upload form. |
-| Model | `/models/<id>` | A model's files, also the replaced ones, its scores, the coding-table export and its actions (collapsed, for accounts with write permission). |
+| Models | `/models` | The models of each dataset by method, with the file of each split, and the upload form. |
+| Model | `/models/<id>` | A model's files, its scores, the coding-table export and its actions (collapsed, for accounts with write permission). |
 | Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
 | Ensemble | `/ensemble` | Creates an ensemble of stored models. |
 | Action log | `/actions` | All changes, with the name of the user. Only for accounts with write permission. |
@@ -53,7 +53,7 @@ The image paths in the metadata (`segment_id_to_data_paths_rel.json`) are relati
 The data directory holds:
 
 - `archive.sqlite3`: the index of models and files, the action log and the score cache,
-- `submissions/<id>/predictions.parquet`: the stored files, removed when they are [deleted](#deletion),
+- `submissions/<id>/predictions.parquet`: the stored files, removed when they are [deleted](#deletion) (or at a later deletion if a file is open, e.g. on Windows),
 - `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
 - `vendor/`: the map libraries,
 - `accounts.sqlite3`: the [accounts](#accounts),
@@ -157,7 +157,7 @@ Back up `/srv/irap-eval/data`, and keep the backups private.
 
 ## Models and files
 
-A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). Unlike `irap_evaluation`, the app requires a seed also for the only model of a method, so that a second model can be added without changing the first. It has at most one active file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
+A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). Unlike `irap_evaluation`, the app requires a seed also for the only model of a method, so that a second model can be added without changing the first. It has at most one file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
 
 A method on a dataset can have a display name, which the pages show instead of the method name. The Method filter of the Scores page and the member filter of the Ensemble page match the shown name. An upload sets the display name of its method, entered in the upload form or from a file header's `method_display_name`, and the Model page edits it for all models of the method. Files, URLs, download names and the action log keep the method name.
 
@@ -170,32 +170,32 @@ A file is refused if:
 - it has no seed, neither in its header nor in the Seed field,
 - its dataset is not configured, or its splits, attributes or iRAP codes are not those of the dataset,
 - it lacks segments of its [evaluation sets](../irap_evaluation/docs/evaluation.md#evaluation-sets),
-- its output kind, context offsets, or training or early stopping splits differ from those of the model's other active files,
+- its output kind, context offsets, or training or early stopping splits differ from those of the model's other files,
 - the method's models would not have distinct seeds or would differ in training or early stopping splits (`irap_evaluation.check_method_models`), since a method is one training recipe and its models are averaged.
 
 Files of unlabeled splits are accepted but not scored.
 
 - The Seed field replaces the seed in the header, e.g. to add another model of a method, or gives a seed to a file without one. The action log records the original seed.
-- A file of a split that the model already has replaces the active file, which is kept as a replaced file. It can be downloaded or [deleted](#deletion), and only an upload makes it active again.
+- A file of a split that the model already has replaces its file, which is deleted permanently, with its scores (see [Deletion](#deletion)). The action log records the deletion.
 - A blank description keeps the model's description.
 - A method display name entered with the upload replaces the method's, without changing the files. A blank one takes the display name from the files, and files without one keep the method's. The files of one upload must then not have different display names. When a file is uploaded, the field's placeholder shows the display name that a blank one gives.
-- The user confirms replaced files, and a replaced description or method display name before anything is stored. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
+- The user confirms the deletion of replaced files, and a replaced description or method display name before anything is stored. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
 
-A `.zip` archive uploads the files of one model on several splits at once. Every member must be a `.parquet` prediction file (others are refused, not skipped), of the same model, output kind, context offsets, and training and early stopping splits (`archive.MODEL_FILE_FIELDS`), and of distinct splits. Their header `details` may differ. Either all files are stored, each as its own submission, or none. An archive that replaces all active files of a model may change their output kind, context offsets, and training and early stopping splits.
+A `.zip` archive uploads the files of one model on several splits at once. Every member must be a `.parquet` prediction file (others are refused, not skipped), of the same model, output kind, context offsets, and training and early stopping splits (`archive.MODEL_FILE_FIELDS`), and of distinct splits. Their header `details` may differ. Either all files are stored, each as its own submission, or none. An archive that replaces all files of a model may change their output kind, context offsets, and training and early stopping splits.
 
 ### Deletion
 
-Deletion is permanent. The Model page deletes an active or a replaced file, or the whole model with all its files, after a confirmation. A deleted file is removed with its scores and the cached intervals computed from it, and it cannot be restored, only uploaded again. The last active file of a model is deleted only with the model, so every model has an active file. Deleting the last model of a method also removes the method's display name. The action log keeps the actions on deleted models and files, and their ids are not reused.
+Deletion is permanent. The Model page deletes a file, or the whole model with all its files, after a confirmation. An upload or an ensemble also deletes the files that it replaces, after a confirmation. A deleted file is removed with its scores and the cached intervals computed from it, and it cannot be restored, only uploaded again. The last file of a model is deleted only with the model, so every model has a file. Deleting the last model of a method also removes the method's display name. The action log keeps the actions on deleted models and files, and their ids are not reused.
 
-To keep a copy, the Model page downloads the active files of a model, e.g. an ensemble, as one `.zip` archive (`/api/models/<id>/predictions.zip`), which can be uploaded again.
+To keep a copy, the Model page downloads the files of a model, e.g. an ensemble, as one `.zip` archive (`/api/models/<id>/predictions.zip`), which can be uploaded again.
 
 ## Scoring
 
-A background thread scores each new active file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all models are scored on the same attributes. It then computes the intervals of each model and of the mean over the models of each method.
+A background thread scores each new file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all models are scored on the same attributes. It then computes the intervals of each model and of the mean over the models of each method.
 
 The database caches the attribute averages and per-attribute values, from which the means over models are computed, also over any subset of attributes. Intervals and comparisons need per-sequence statistics, which are too large to cache, so the thread recomputes them from the files when a page asks for them, and caches the results.
 
-Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the files of a method's models change. At start, the server rescores the active files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason. Replaced files are not scored.
+Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the files of a method's models change. At start, the server rescores the files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason.
 
 ## Scores
 
@@ -224,15 +224,14 @@ The page keeps the 8 most recently used files in memory. Reading and aligning a 
 The Ensemble page creates the weighted mean of the distributions of stored models of a dataset, as `irap-eval ensemble` does (`irap_evaluation.ensemble_predictions`). A hard prediction counts as a one-hot distribution.
 
 - The ensemble is a model with the given method name, display name and seed (0 in a new form). A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
-- It gets a file for each split where every member has an active file, and these replace all files of an existing model of that name, so that all its files are of the same members.
+- It gets a file for each split where every member has a file, and these replace all files of an existing model of that name, which are deleted, so that all its files are of the same members.
 - Its training splits are the union of its members', and its early stopping splits are its members' that are not training splits (`irap_evaluation.make_ensemble_model_info`).
 - Members with different context offsets predict different segments. "Only the segments that every member predicts" keeps their common segments.
 - Its files are checked, confirmed and scored like uploads, and the action log records the members and weights. If a member's file changes before the ensemble is stored, the ensemble is refused and can be created again.
 
 ## Coding tables
 
-The Model page downloads the active files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the shown method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
-
+The Model page downloads the files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the shown method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
 ## Development
 
 ```

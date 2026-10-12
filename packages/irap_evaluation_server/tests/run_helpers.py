@@ -45,12 +45,12 @@ def assert_close(a, b, label=""):
 
 
 def score_and_get_models(worker, submission_ids, evaluation_set="reference"):
-    """Scores the submissions with the worker. Returns the scored models of all active
-    submissions."""
+    """Scores the submissions with the worker. Returns the scored models of all submissions."""
     worker.update_submissions([worker.archive.get_submission(i) for i in submission_ids])
     worker.run_pending()
-    active = worker.archive.list_submissions()
-    return select_scored_models(active, worker.get_current_scorings(active), evaluation_set)
+    submissions = worker.archive.list_submissions()
+    return select_scored_models(submissions, worker.get_current_scorings(submissions),
+                                evaluation_set)
 
 
 def score_submission_again(worker, submission, evaluation_set):
@@ -87,7 +87,7 @@ def write_upload(archive: ModelArchive, predictions: ie.Predictions) -> Path:
 
 
 def add_model(archive, dataset_contexts, predictions, description=None):
-    """Uploads and stores predictions, replacing the active submission of their split, if any.
+    """Uploads and stores predictions, replacing the submission of their split, if any.
     Returns the new submission."""
     planned = plan_upload(archive, dataset_contexts, write_upload(archive, predictions),
                           file_name="model.parquet", description=description)

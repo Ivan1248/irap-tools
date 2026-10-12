@@ -234,8 +234,8 @@ def _create_ensemble_form(archive: ModelArchive,
                  " prediction counts as one-hot, so an ensemble of hard predictions is a weighted"
                  " vote. A cell is invalid only if it is invalid in every member. The ensemble"
                  " gets a file for each split that every member has. If its model exists, these"
-                 " files replace all of the model's files. It counts as trained on the training"
-                 " splits of all members.").classes("muted")
+                 " files replace all of the model's files, which are deleted permanently. It"
+                 " counts as trained on the training splits of all members.").classes("muted")
         with ui.element("div").classes("form-row"):
             create_native_select(
                 "Dataset", {n: n for n in dataset_contexts}, dataset,

@@ -18,7 +18,7 @@ class AnalysisView:
     """What the Analysis page shows, as in its URL.
 
     Attributes:
-        model_id: Model A, whose active submission of the split the confusion matrix is of, or
+        model_id: Model A, whose submission of the split the confusion matrix is of, or
             None for the default, which `resolve_view` chooses.
         compare_id: Model B, which A is compared with, or None.
         attribute_name: The analysed attribute, or '' for the default, which `resolve_view`

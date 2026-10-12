@@ -42,14 +42,13 @@ def make_model_row(model_id, method_name="m", seed=None, method_display_name=Non
                  created_at=_TIME)
 
 
-def make_submission(submission_id, method_name="m", seed=None, replaced_at=None,
-                    training_splits=(), model=None, split="val", num_attributes=2):
+def make_submission(submission_id, method_name="m", seed=None, training_splits=(), model=None,
+                    split="val", num_attributes=2):
     return Submission(
         id=submission_id, model=model or make_model_row(submission_id, method_name, seed),
         split=split, file_sha256="0" * 64, output_kind="probs", context_offsets=(0,),
         training_splits=training_splits, early_stopping_splits=(), num_segments=10,
-        num_attributes=num_attributes, submitter="Bo", uploaded_at=_TIME,
-        replaced_at=replaced_at)
+        num_attributes=num_attributes, submitter="Bo", uploaded_at=_TIME)
 
 
 def make_scored_model(submission_id, attribute_to_value, method_name="m",
@@ -158,11 +157,10 @@ def test_summarize_models_by_method():
               make_model_row(3, "b"), make_model_row(4, "c")]
     submissions = [make_submission(10, model=models[0], split="val", num_attributes=3),
                    make_submission(11, model=models[0], split="test", num_attributes=5),
-                   make_submission(12, model=models[0], split="val", replaced_at=_TIME),
                    make_submission(13, model=models[1]),
                    make_submission(14, model=models[2], training_splits=None)]
-    later = dc.replace(submissions[4], uploaded_at=_TIME.replace(year=2027))
-    groups = summarize_models_by_method(models, [*submissions[:4], later])
+    later = dc.replace(submissions[3], uploaded_at=_TIME.replace(year=2027))
+    groups = summarize_models_by_method(models, [*submissions[:3], later])
     assert [g.method_name for g in groups] == ["b", "a", "c"]  # The latest updated first.
     a = groups[1]
     assert [m.model.seed for m in a.models] == [0, 1]

@@ -1,7 +1,7 @@
 /* A compact, desktop-like look instead of Quasar's Material style. */
 :root {
   --background: #f4f5f7; --panel: #ffffff; --border: #d9dde3; --text: #1d232b;
-  --muted: #5f6b7a; --accent: #2a78d6; --error: #b3261e; --replaced: #8a9099;
+  --muted: #5f6b7a; --accent: #2a78d6; --error: #b3261e;
 }
 body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px;
        line-height: normal; color: var(--text); background: var(--background); }
@@ -46,8 +46,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
 .data-table td.number { text-align: right; font-variant-numeric: tabular-nums; }
 .data-table th.number { text-align: right; }
 .data-table .mark { text-align: center; }
-.data-table tr.replaced td { color: var(--replaced); }
-.data-table tr.replaced a { color: var(--replaced); }
 
 .key-values { display: grid; grid-template-columns: max-content 1fr; gap: 3px 16px; }
 .key-values .key { color: var(--muted); }

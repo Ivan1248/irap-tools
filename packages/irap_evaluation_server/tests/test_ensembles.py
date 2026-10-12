@@ -120,15 +120,17 @@ def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts
     # c has no file of OTHER_SPLIT, so the ensemble of a and c has only SPLIT.
     update = _prepare(archive, two_split_contexts, submissions, "ac")
     assert (list(update.replaced), list(update.replaced_other_splits)) == ([SPLIT], [OTHER_SPLIT])
-    assert any(f"Replaces the {OTHER_SPLIT} file #{second.id}" in c for c in update.confirmations)
+    assert any(f"Permanently deletes the {OTHER_SPLIT} file #{second.id}" in c
+               for c in update.confirmations)
     [third] = archive.apply_model_update(update, submitter="Bo")
     assert archive.list_submissions() == [third, *archive.list_submissions()[1:]]
-    assert [s.split for s in archive.list_model_submissions(third.model.id) if s.is_active] == [
-        SPLIT]
-    assert not archive.get_submission(second.id).is_active
-    action = archive.list_actions(model_id=third.model.id)[0]
-    assert (action.action, action.submission_id, action.details) == (
-        "replace", second.id, {"by": "ensemble"})
+    assert archive.list_model_submissions(third.model.id) == [third]
+    assert not archive.get_predictions_path(second.id).parent.exists()
+    ensemble, *deletions = archive.list_actions(model_id=third.model.id)[:3]
+    assert (ensemble.action, ensemble.details["replaced_submission_id"]) == ("ensemble", first.id)
+    assert [(a.action, a.submission_id, a.details) for a in deletions] == [
+        ("delete", first.id, {"split": SPLIT, "by": "ensemble"}),
+        ("delete", second.id, {"split": OTHER_SPLIT, "by": "ensemble"})]
 
 
 def test_an_ensemble_is_refused_if_a_member_changes(archive, two_split_contexts, submissions):

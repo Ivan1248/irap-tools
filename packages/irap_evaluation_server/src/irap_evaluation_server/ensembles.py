@@ -1,6 +1,6 @@
 """Ensembles of stored models (`irap_evaluation.ensemble_predictions`): the weighted mean of their
 predicted distributions, stored as a model with a submission for each split where every member
-has an active submission, which replace all files of the model.
+has one, which replace all files of the model.
 
 The action log records each new submission with its member submissions and weights (action
 'ensemble'), and the prediction header records the member models (see
@@ -27,7 +27,7 @@ class EnsembleMember:
 
 @dc.dataclass(frozen=True)
 class MemberModel:
-    """A model that can be an ensemble member, with the splits of its active submissions."""
+    """A model that can be an ensemble member, with the splits of its submissions."""
 
     model: Model
     splits: tuple[str, ...]
@@ -35,10 +35,10 @@ class MemberModel:
 
 def list_member_models(submissions: T.Iterable[Submission], dataset: str,
                        split_names: T.Sequence[str]) -> list[MemberModel]:
-    """Lists the models of a dataset that have active submissions, sorted by shown label.
+    """Lists the models of a dataset that have submissions, sorted by shown label.
 
     Args:
-        submissions: The active submissions (`ModelArchive.list_submissions`).
+        submissions: E.g. all submissions (`ModelArchive.list_submissions`).
         split_names: The splits of the dataset, which give the order of `MemberModel.splits`.
     """
     model_id_to_model: dict[int, Model] = {}
@@ -58,9 +58,9 @@ class EnsemblePlan:
 
     Attributes:
         split_to_submissions: Split -> the submission of each member, in the order of `members`,
-            for the splits where every member has an active submission.
-        split_to_missing: Split -> the shown labels of the members without an active submission
-            of it, for the other splits that some member has one of.
+            for the splits where every member has a submission.
+        split_to_missing: Split -> the shown labels of the members without a submission of it,
+            for the other splits that some member has one of.
     """
 
     dataset: str
@@ -70,9 +70,8 @@ class EnsemblePlan:
 
     def make_model_info(self) -> ie.ModelInfo:
         """Makes the model of the ensemble, with the default method name and its training and
-        early stopping splits (`irap_evaluation.make_ensemble_model_info`). The active files of a
-        member have the same training and early stopping splits, so those of any split are
-        used."""
+        early stopping splits (`irap_evaluation.make_ensemble_model_info`). The files of a member
+        have the same training and early stopping splits, so those of any split are used."""
         submissions = next(iter(self.split_to_submissions.values()))
         return ie.make_ensemble_model_info(s.model_info for s in submissions)
 
@@ -82,12 +81,12 @@ def plan_ensemble(submissions: T.Iterable[Submission], dataset: str,
                   split_names: T.Sequence[str]) -> EnsemblePlan:
     """
     Args:
-        submissions: The active submissions (`ModelArchive.list_submissions`).
+        submissions: E.g. all submissions (`ModelArchive.list_submissions`).
         split_names: The splits of the dataset, in the order of the plan.
 
     Raises:
         ValueError: If there are fewer than 2 members, a member is given twice, a weight is not
-            positive and finite, or no split has an active submission of every member.
+            positive and finite, or no split has a submission of every member.
     """
     if len(members) < 2:
         raise ValueError("An ensemble needs at least 2 members.")
@@ -107,7 +106,7 @@ def plan_ensemble(submissions: T.Iterable[Submission], dataset: str,
             split_to_missing[split] = tuple(m.model.shown_label
                                             for m, s in zip(members, found) if s is None)
     if not split_to_submissions:
-        raise ValueError("No split has an active file of every member.")
+        raise ValueError("No split has a file of every member.")
     return EnsemblePlan(dataset=dataset, members=tuple(members),
                         split_to_submissions=split_to_submissions,
                         split_to_missing=split_to_missing)
