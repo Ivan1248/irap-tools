@@ -931,6 +931,7 @@ def main() -> None:
     )
     event = st.plotly_chart(
         fig,
+        key=f"map_{st.session_state.setdefault('map_key_version', 0)}",
         on_select="rerun",
         width="stretch",
         config={
@@ -958,7 +959,13 @@ def main() -> None:
                 changed = True
         if changed:
             st.session_state.history.append(prev)
-            st.rerun()
+        # Streamlit keeps a chart's selection for as long as the chart's identity
+        # (its key and figure) is unchanged. After a selection that changed
+        # nothing, it would therefore stay drawn and be replayed on the next
+        # rerun – into another split if that rerun came from the split radio.
+        # A new key discards it.
+        st.session_state.map_key_version += 1
+        st.rerun()
 
 
 if __name__ == "__main__":
