@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> None:
     config.data_dir.mkdir(parents=True, exist_ok=True)
     # NiceGUI reads the path of its per-browser storage when it is imported.
     os.environ["NICEGUI_STORAGE_PATH"] = str(config.data_dir / "nicegui_storage")
-    from nicegui import app, ui
+    from nicegui import app, run, ui
 
     from .components.account_sessions import AccountSessions
     from .components.request_checks import SameOriginMiddleware
@@ -108,6 +108,10 @@ def main(argv: list[str] | None = None) -> None:
     register_action_log_page(archive, sessions)
     vendor_dir.mkdir(exist_ok=True)
     app.add_static_files(VENDOR_PATH, vendor_dir)
+    # The processes of `run.cpu_bound`, e.g. for coding tables, start fresh on every platform.
+    # Linux defaults to "fork" before Python 3.14, which copies the state of the server's threads,
+    # e.g. held locks.
+    run.process_pool_start_method = "spawn"
     # No ripple effects on clicks, and no loading bar on requests.
     app.config.quasar_config["ripple"] = False
     app.config.quasar_config["loadingBar"]["skipHijack"] = True

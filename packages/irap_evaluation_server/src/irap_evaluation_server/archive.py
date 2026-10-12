@@ -298,6 +298,14 @@ def get_download_file_name(submission: Submission) -> str:
                                         submission.split)
 
 
+def make_label_file_name(label: str, suffix: str, *,
+                         max_bytes: int = ie.MAX_FILE_NAME_BYTES) -> str:
+    """Makes the name of a downloaded file from a label, e.g. of a model, with a long label cut
+    like in `ie.make_prediction_file_name`, so that `suffix` is kept whole."""
+    return ie.shorten_file_name(ie.to_valid_file_name(label), ie.to_valid_file_name(suffix),
+                                max_bytes=max_bytes)
+
+
 def describe_model_fields(file: Submission | NewSubmission, names: T.Iterable[str]) -> str:
     """Formats the values of some `MODEL_FILE_FIELDS` of a file, e.g. those that differ."""
     return ", ".join(f"{name} {MODEL_FILE_FIELDS[name](file)}" for name in names)
@@ -719,6 +727,16 @@ class ModelArchive:
         suffix = (ARCHIVE_SUFFIX if file_name.lower().endswith(ARCHIVE_SUFFIX)
                   else PREDICTIONS_SUFFIX)
         return self.uploads_dir / f"{uuid.uuid4().hex}{suffix}"
+
+    def make_download_path(self, suffix: str) -> Path:
+        """Makes a new path in `uploads_dir` for a file that is prepared for a download, e.g. a
+        coding table, which `remove_uploads` also removes. `get_upload_path` does not accept its
+        name, so that a browser cannot pass it as an upload.
+
+        Args:
+            suffix: E.g. '.xlsx'.
+        """
+        return self.uploads_dir / f"download-{uuid.uuid4().hex}{suffix}"
 
     def get_upload_path(self, upload_name: str) -> Path | None:
         """Returns the path of an upload by the name of its file, None if `make_upload_path` does

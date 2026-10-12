@@ -16,6 +16,10 @@ def _show_error(status_label: ui.label, text: str) -> None:
         set_status(status_label, text, is_error=True)
 
 
+def _show_internal_error(status_label: ui.label, text: str) -> None:
+    _show_error(status_label, f"Internal error: {text}. See the server log.")
+
+
 async def run_in_thread_showing_errors(function: T.Callable[[], R],
                                        status_label: ui.label) -> R | None:
     """Runs `function` in a thread, e.g. since it may wait for a database lock or take seconds.
@@ -33,7 +37,28 @@ async def run_in_thread_showing_errors(function: T.Callable[[], R],
         _show_error(status_label, str(e))
         return None
     except Exception as e:
-        _show_error(status_label, f"Internal error: {e!r}. See the server log.")
+        _show_internal_error(status_label, repr(e))
+        raise
+
+
+async def run_in_process_showing_errors(function: T.Callable[[], R],
+                                        status_label: ui.label) -> R | None:
+    """Runs `function` in a process of `run.cpu_bound`, e.g. since it takes seconds of CPU time,
+    which would delay the event loop in a thread. Shows an internal error in `status_label`.
+
+    Args:
+        function: Pickled for the process, e.g. a `functools.partial` of a module-level
+            function.
+
+    Returns:
+        The result of `function`, or None if the call was cancelled or the server is stopping.
+    """
+    try:
+        return await run.cpu_bound(function)
+    except Exception as e:
+        # The text of a `SubprocessException` has the traceback, which the server log shows.
+        _show_internal_error(status_label, f"{e.original_type}: {e.original_message}"
+                             if isinstance(e, run.SubprocessException) else repr(e))
         raise
 
 

@@ -5,13 +5,14 @@ import asyncio
 import dataclasses as dc
 import functools
 import html
+import secrets
 import typing as T
 import urllib.parse
+from pathlib import Path
 
 import irap_evaluation as ie
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from irap_evaluation import to_valid_file_name
 from nicegui import app, run, ui
 from nicegui.elements.mixins.text_element import TextElement
 from starlette.background import BackgroundTask
@@ -24,16 +25,22 @@ from ..archive import (
     Model,
     ModelArchive,
     Submission,
+    make_label_file_name,
 )
 from ..coding_table_export import (
     CODING_TABLE_FORMATS,
-    export_model_coding_table,
     parse_coding_date,
+    plan_model_coding_table,
+    write_model_coding_table,
 )
 from ..components.account_sessions import AccountSessions
 from ..components.analysis_view import AnalysisView
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
-from ..components.changes import run_change_in_thread, run_in_thread_showing_errors
+from ..components.changes import (
+    run_change_in_thread,
+    run_in_process_showing_errors,
+    run_in_thread_showing_errors,
+)
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import (
     EVALUATION_SET_LABELS,
@@ -56,6 +63,7 @@ from ..components.page_frame import create_page_frame
 from ..components.refresh_timer import RefreshTimer
 from ..components.routes import (
     ATTRIBUTE_PARAMETER,
+    CODING_TABLE_DOWNLOAD_PATH,
     MODEL_PATH,
     MODEL_PREDICTIONS_DOWNLOAD_PATH,
     MODELS_PATH,
@@ -118,17 +126,45 @@ class _ModelSnapshot:
         return ModelSummary.from_submissions(self.model, self.submissions)
 
 
+@dc.dataclass(frozen=True)
+class _PreparedFile:
+    path: Path
+    file_name: str
+
+
+class _CodingTableFiles:
+    """The coding tables that the Model pages prepare, shared by the pages and sent by the
+    endpoint `CODING_TABLE_DOWNLOAD_PATH`, which removes the file. A file that is not
+    downloaded, e.g. after the browser left, is removed by `ModelArchive.remove_uploads`."""
+
+    def __init__(self) -> None:
+        #: Held while a coding table is made: one at a time, since anyone can make one, and a
+        #: .xlsx file takes a process tens of seconds.
+        self.lock = asyncio.Lock()
+        #: The token of the download path -> the file.
+        self._token_to_file: dict[str, _PreparedFile] = {}
+
+    def add(self, path: Path, file_name: str) -> str:
+        """Adds a prepared file. Returns its download path, which works once."""
+        token = secrets.token_urlsafe(16)
+        self._token_to_file[token] = _PreparedFile(path, file_name)
+        return CODING_TABLE_DOWNLOAD_PATH.format(token=token)
+
+    def pop(self, token: str) -> _PreparedFile | None:
+        return self._token_to_file.pop(token, None)
+
+
 class _ModelPage:
     """The panels of the page and their refreshes after a change of the model. A user who cannot
     write sees them without the controls that change the model and without the action log."""
 
     def __init__(self, archive: ModelArchive,
                  dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
-                 coding_table_lock: asyncio.Lock, get_actor: T.Callable[[], str], can_write: bool,
-                 is_admin: bool, snapshot: _ModelSnapshot):
+                 coding_tables: _CodingTableFiles, get_actor: T.Callable[[], str],
+                 can_write: bool, is_admin: bool, snapshot: _ModelSnapshot):
         """
         Args:
-            coding_table_lock: Held while a coding table is made, shared by the pages.
+            coding_tables: Shared by the pages.
             get_actor: See `run_change_in_thread`.
             can_write: Whether the account that was signed in when the page was created could
                 write.
@@ -137,7 +173,7 @@ class _ModelPage:
         self.archive = archive
         self.dataset_contexts = dataset_contexts
         self.worker = worker
-        self.coding_table_lock = coding_table_lock
+        self.coding_tables = coding_tables
         self.get_actor = get_actor
         self.can_write = can_write
         self.is_admin = is_admin
@@ -461,22 +497,39 @@ class _ModelPage:
             splits = [s for s, is_chosen in form["split_to_is_chosen"].items() if is_chosen]
             state["is_preparing"] = True
             try:
-                if self.coding_table_lock.locked():
-                    set_status(status_label, "Waiting for the coding table of another page …")
-                async with self.coding_table_lock:
+                if self.coding_tables.lock.locked():
+                    set_status(status_label, "Waiting for the coding table of another page …",
+                               is_busy=True)
+                async with self.coding_tables.lock:
                     if self.client.is_deleted:
                         return
-                    set_status(status_label, f"Preparing the .{file_format} file …")
-                    coding_table = await run_in_thread_showing_errors(functools.partial(
-                        export_model_coding_table, self.archive, self.dataset_contexts,
+                    set_status(status_label, f"Preparing the .{file_format} file …",
+                               is_busy=True)
+                    job = await run_in_thread_showing_errors(functools.partial(
+                        plan_model_coding_table, self.archive, self.dataset_contexts,
                         self.model_id, splits, file_format, coder_name=form["coder"],
                         coding_date=form["date"]), status_label)
+                    if job is None:
+                        return
+                    download_path = self.archive.make_download_path(f".{file_format}")
+                    try:
+                        # None if cancelled, e.g. since the server is stopping.
+                        is_written = await run_in_process_showing_errors(functools.partial(
+                            write_model_coding_table, job.prediction_paths, job.metadata,
+                            download_path, coder_name=job.coder_name,
+                            coding_date=job.coding_date), status_label) is not None
+                    except BaseException:
+                        download_path.unlink(missing_ok=True)
+                        raise
             finally:
                 state["is_preparing"] = False
-            if coding_table is None or self.client.is_deleted:
+            if not is_written or self.client.is_deleted:
+                download_path.unlink(missing_ok=True)
                 return
             set_status(status_label, "")
-            ui.download.content(coding_table.content, coding_table.file_name)
+            # Over HTTP, so that the page's websocket does not carry a file of tens of MB as one
+            # message.
+            ui.download.from_url(self.coding_tables.add(download_path, job.file_name))
 
         with ui.element("section").classes("panel"):
             show_form()
@@ -504,9 +557,16 @@ class _ModelPage:
 def register_model_page(archive: ModelArchive,
                         dataset_contexts: T.Mapping[str, DatasetContext],
                         worker: ScoringWorker, sessions: AccountSessions) -> None:
-    # One coding table at a time, since anyone can make one, and it can take tens of seconds in
-    # the threads of `run.io_bound`, which changes and sign-ins also use.
-    coding_table_lock = asyncio.Lock()
+    coding_tables = _CodingTableFiles()
+
+    @app.get(CODING_TABLE_DOWNLOAD_PATH)
+    def download_coding_table(token: str) -> FileResponse:
+        prepared = coding_tables.pop(token)
+        if prepared is None:
+            raise HTTPException(status_code=404, detail="The coding table was already downloaded"
+                                                        " or does not exist. Prepare it again.")
+        return FileResponse(prepared.path, filename=prepared.file_name,
+                            background=BackgroundTask(prepared.path.unlink))
 
     @app.get(MODEL_PREDICTIONS_DOWNLOAD_PATH)
     def download_model_predictions(model_id: int) -> FileResponse:
@@ -515,14 +575,14 @@ def register_model_page(archive: ModelArchive,
         except LookupError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         # Removed after it is sent, or by `remove_uploads` if the download is cut off.
-        path = archive.make_upload_path(ARCHIVE_SUFFIX)
+        path = archive.make_download_path(ARCHIVE_SUFFIX)
         try:
             with path.open("wb") as file:
                 archive.write_model_predictions_zip(model_id, file)
         except BaseException:
             path.unlink(missing_ok=True)
             raise
-        return FileResponse(path, filename=to_valid_file_name(f"{model.label}.predictions.zip"),
+        return FileResponse(path, filename=make_label_file_name(model.label, ".predictions.zip"),
                             media_type="application/zip", background=BackgroundTask(path.unlink))
 
     @app.get(SCORES_DOWNLOAD_PATH)
@@ -541,8 +601,8 @@ def register_model_page(archive: ModelArchive,
         if not _can_see_class_scores(context.config, submission.split,
                                      is_admin(sessions.get_account())):
             report = remove_class_scores(report)
-        file_name = to_valid_file_name(f"{submission.label}.{submission.split}.{evaluation_set}"
-                                 f".scores.json")
+        file_name = make_label_file_name(
+            submission.label, f".{submission.split}.{evaluation_set}.scores.json")
         return JSONResponse(report,
                             headers={"Content-Disposition": _make_attachment_header(file_name)})
 
@@ -555,7 +615,7 @@ def register_model_page(archive: ModelArchive,
             except LookupError as e:
                 ui.label(str(e)).classes("error")
                 return
-            page = _ModelPage(archive, dataset_contexts, worker, coding_table_lock,
+            page = _ModelPage(archive, dataset_contexts, worker, coding_tables,
                               sessions.require_writer_name, can_write(account),
                               is_admin(account), snapshot)
             page.create_details()

@@ -148,10 +148,12 @@ def create_native_button(text: str, on_click: T.Callable[[], T.Any]) -> ui.eleme
     return button
 
 
-def set_status(label: ui.label, text: str, is_error: bool = False) -> None:
-    """Shows the status of a form in `label`, e.g. the result of a click."""
+def set_status(label: ui.label, text: str, is_error: bool = False,
+               is_busy: bool = False) -> None:
+    """Shows the status of a form in `label`, e.g. the result of a click, with a spinner if
+    `is_busy`, e.g. while a file is prepared."""
     label.set_text(text)
-    label.classes(replace="error" if is_error else "muted")
+    label.classes(replace="error" if is_error else "muted busy" if is_busy else "muted")
 
 
 def create_file_upload_input(label: str, upload_url: str, accept: str,

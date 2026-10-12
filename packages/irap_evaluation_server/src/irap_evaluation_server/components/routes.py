@@ -29,6 +29,8 @@ PREDICTIONS_DOWNLOAD_PATH = "/api/submissions/{submission_id}/predictions.parque
 #: The files of a model (`ModelArchive.write_model_predictions_zip`).
 MODEL_PREDICTIONS_DOWNLOAD_PATH = "/api/models/{model_id}/predictions.zip"
 SCORES_DOWNLOAD_PATH = "/api/submissions/{submission_id}/scores/{evaluation_set}.json"
+#: A coding table that a Model page prepared, which can be downloaded once.
+CODING_TABLE_DOWNLOAD_PATH = "/api/coding-tables/{token}"
 SEGMENT_IMAGE_PATH = "/api/datasets/{dataset}/images/{segment_id}"
 #: The static files of the map libraries (`map_libraries`).
 VENDOR_PATH = "/vendor"

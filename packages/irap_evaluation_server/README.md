@@ -232,6 +232,9 @@ The Ensemble page creates the weighted mean of the distributions of stored model
 ## Coding tables
 
 The Model page downloads the files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the shown method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
+
+One table is made at a time, in a separate process (NiceGUI's `run.cpu_bound`, started with "spawn"), since an `.xlsx` file of large splits takes tens of seconds, which in a thread delayed the server's other pages until browsers lost the connection. The file is written to `<data_dir>/uploads` and sent once over HTTP. File names are cut to 160 bytes, since Excel does not open a file whose path is longer than 218 characters.
+
 ## Development
 
 ```

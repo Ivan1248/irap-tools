@@ -17,7 +17,7 @@ from run_helpers import (
 from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server import archive as archive_module
-from irap_evaluation_server.archive import ModelArchive, NewSubmission
+from irap_evaluation_server.archive import ModelArchive, NewSubmission, make_label_file_name
 from irap_evaluation_server.uploads import apply_upload, plan_upload
 
 
@@ -415,6 +415,12 @@ def test_a_replaced_file_that_cannot_be_removed_is_removed_later(archive, datase
     assert f"deleted submission #{first.id} failed" in caplog.text
     archive.delete_model(second.model.id, actor="Al")
     assert not list(archive.submissions_dir.iterdir())
+
+
+def test_a_long_label_is_cut_in_a_file_name():
+    file_name = make_label_file_name("m" * 300, ".s.predictions.zip")
+    assert len(file_name.encode()) <= ie.MAX_FILE_NAME_BYTES
+    assert file_name.endswith(".s.predictions.zip")
 
 
 def test_updates_are_of_one_model(archive, two_split_contexts):
