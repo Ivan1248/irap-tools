@@ -65,6 +65,7 @@ ds = InferenceImageDataset.from_folder(
 - **BH N-context filter.** `make_bh_data()` also restricts each labeled split to the segments in its `seg_to_res/<split>.pickle` whose 10 preceding and 10 following segments on the road are in the same file (`load_ncontext_segment_ids`). The selected segments are thus the same for any context offsets with `max(abs(context_offsets)) ≤ 10`. `use_ncontext_filter=False` disables the filter. iRAP-Vietnam has no such filter.
 - **Reference set.** The reference set of a split is the segments with a complete context window for the `reference_context_offsets` of the release in `DATASET_PRESETS` (`select_preset_split_segments` with `context_offsets=None`). All models whose context offsets lie within this window can be scored on it.
 - **Unlabeled splits.** `splits.json` can contain `unlabeled_train`, `unlabeled_val` and `unlabeled_test` (unlabeled segments from the same sequences or areas as the labeled split) and `unlabeled_unlocated` (segments with an unknown relationship to the other splits). The datasets return them with all targets `-1`. The context-window check applies to them, the N-context filter does not.
+- **Segments in no road sequence.** A segment that is in no road sequence has no context window. `select_split_segments` warns about such segments, as they point to incomplete metadata.
 
 ### Conventions
 

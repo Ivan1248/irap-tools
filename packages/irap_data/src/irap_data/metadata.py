@@ -559,10 +559,19 @@ def compute_num_labeled_per_attribute(
 def index_road_sequences(
     road_id_to_segment_id_sequence: T.Mapping[str, T.Sequence[str]],
 ) -> dict[str, tuple[str, int]]:
-    """Segment ID -> (road ID, position in the road sequence)."""
-    return {sid: (road_id, i)
-            for road_id, sequence in road_id_to_segment_id_sequence.items()
-            for i, sid in enumerate(sequence)}
+    """Segment ID -> (road ID, position in the road sequence).
+
+    A segment can be in several road sequences, e.g. an unlabeled iRAP-Vietnam segment between
+    the labeled segments of two roads that cover the same stretch. It is a context frame in
+    each of them, and is indexed in the longest one (the first of equally long ones), whose
+    context window is the most likely to be complete.
+    """
+    index: dict[str, tuple[str, int]] = {}
+    for road_id, sequence in sorted(road_id_to_segment_id_sequence.items(),
+                                    key=lambda item: -len(item[1])):
+        for i, sid in enumerate(sequence):
+            index.setdefault(sid, (road_id, i))
+    return index
 
 
 def compute_segment_context_ids(
@@ -576,7 +585,8 @@ def compute_segment_context_ids(
 
     Context frames are drawn from the segment's own road sequence, so a window does not cross
     road boundaries. A window is complete if every offset stays inside the sequence and every
-    context segment is in `available_segment_ids` (has an image).
+    context segment is in `available_segment_ids` (has an image). A segment that is not in a road
+    sequence has no window.
 
     Args:
         sequence_index: `index_road_sequences(road_id_to_segment_id_sequence)` if already
@@ -768,6 +778,11 @@ def select_split_segments(
     """
     segment_id_to_labels = compute_split_labels(
         metadata, split, allow_missing_attributes=allow_missing_attributes)
+    num_without_sequence = sum(sid not in metadata.sequence_index for sid in segment_id_to_labels)
+    if num_without_sequence:
+        warnings.warn(f"{num_without_sequence} of the {len(segment_id_to_labels)} segments of"
+                      f" split {split!r} that have an image and labels are in no road sequence,"
+                      f" so they have no context window and are left out.")
     segment_id_to_context_ids = compute_segment_context_ids(
         metadata.road_id_to_segment_id_sequence, segment_id_to_labels, context_offsets,
         available_segment_ids=metadata.segment_id_to_data_paths_rel,
