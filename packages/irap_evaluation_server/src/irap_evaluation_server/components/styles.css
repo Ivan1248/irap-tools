@@ -15,7 +15,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
 /* The browser's own controls instead of Tailwind's reset. */
 .native-control { all: revert; font: inherit; color: var(--text); }
 .native-control::file-selector-button { all: revert; font: inherit; }
-.field { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+.field { display: flex; flex-direction: column; gap: 2px; }
 
 .top-bar { display: flex; align-items: center; gap: 16px; padding: 6px 12px;
            background: var(--panel); border-bottom: 1px solid var(--border); }
@@ -73,7 +73,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
   background: color-mix(in srgb, var(--accent) calc(var(--strength, 0) * 30%), transparent); }
 .interval { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .score-tables { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
-.attribute-filter summary { color: var(--muted); }
 .attribute-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
                      gap: 2px 12px; margin-top: 6px; }
 

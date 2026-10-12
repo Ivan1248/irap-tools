@@ -79,15 +79,15 @@ def _is_single_model(row: MethodScores) -> bool:
     return row.num_models == 1 and row.error is None
 
 
-def _make_highlight_note_html(compared_with: str, has_best_or_tied: bool) -> str:
+def _make_highlight_note_html(axis: T.Literal["column", "row"], has_best_or_tied: bool) -> str:
     """Explains the highlights.
 
     Args:
-        compared_with: What each value is compared with, e.g. 'the other methods in its column'.
+        axis: Along which the values are compared with each other.
     """
-    text = f"Shading: each value relative to {compared_with}, darkest is best."
+    text = f"Darker is better (in a {axis})."
     if has_best_or_tied:
-        text += " Bold: the best value, and the values whose interval overlaps its interval."
+        text += " The best, and what has an overlapping confidence interval is bold."
     return f'<div class="muted">{text}</div>'
 
 
@@ -359,7 +359,7 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
     footnote = (f'<div class="muted">* {SINGLE_MODEL_NOTE}</div>'
                 if any(_is_single_model(r) for r in rows) else "")
     return (make_table_html_from_header(header, html_rows) + footnote
-            + _make_highlight_note_html("the other methods in its column", has_best_or_tied=True))
+            + _make_highlight_note_html("column", has_best_or_tied=True))
 
 
 def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
@@ -389,7 +389,7 @@ def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
     metric_note = f'<div class="muted">{html.escape(ie.describe_metric(metric_name))}</div>'
     return (make_table_html_from_header(f"<th>Attribute</th>{method_headers}", html_rows)
             + metric_note
-            + _make_highlight_note_html("the other methods in its row", has_best_or_tied=True))
+            + _make_highlight_note_html("row", has_best_or_tied=True))
 
 
 def make_model_scores_html(scores: MethodScores, state: ResultState) -> str:
