@@ -78,11 +78,11 @@ class AttributeFilter:
     """
 
     def __init__(self, query_values: T.Sequence[str],
-                 on_change: T.Callable[[AttributeSubset], None]):
+                 on_change: T.Callable[[AttributeSubset], T.Any]):
         """
         Args:
             query_values: The subset of the URL.
-            on_change: Called after a change of the subset by the user.
+            on_change: Called after a change of the subset by the user. It can be async.
         """
         self.subset: AttributeSubset | None = None
         self._query_values = tuple(query_values)
@@ -127,20 +127,22 @@ class AttributeFilter:
                 ui.label(f"Ignored, since they are not scored here: {', '.join(subset.ignored)}."
                          ).classes("muted")
 
-    def _select(self, selected: T.Collection[str]) -> None:
+    def _select(self, selected: T.Collection[str]) -> T.Any:
+        """Selects attributes. Returns the result of `on_change`, so that NiceGUI awaits that of
+        an async one."""
         self.subset = self.subset.select(selected)
         for option, checkbox in self._option_to_checkbox.items():
             set_native_checkbox_checked(checkbox, option in self.subset.selected)
         self._summary.set_text(f"Attributes: {self.subset.count_label}")
-        self._on_change(self.subset)
+        return self._on_change(self.subset)
 
-    def _set_checked(self, option: str, is_checked: bool) -> None:
+    def _set_checked(self, option: str, is_checked: bool) -> T.Any:
         selected = set(self.subset.selected)
         if is_checked:
             selected.add(option)
         else:
             selected.discard(option)
-        self._select(selected)
+        return self._select(selected)
 
     def _filter_options(self, text: str) -> None:
         for option, container in self._option_to_container.items():

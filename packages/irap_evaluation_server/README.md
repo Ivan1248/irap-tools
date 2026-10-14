@@ -208,7 +208,7 @@ The Scores page shows the means over each method's models with their bootstrap i
 - Methods trained on the shown split are hidden by default, since their scores are not of held-out data. Methods that used the split for early stopping, or whose training splits are unknown, are marked.
 - The Method filter is a case-insensitive regular expression that matches any part of the name, e.g. `foo`, or `^(foo|bar)$` for exactly these two.
 - On the reference set, "Compare with" adds each method's difference from a reference method, with its interval, as `irap-eval compare` computes it. See [comparing methods](../irap_evaluation/docs/evaluation.md#comparing-methods) for how to read them.
-- The attribute filter, here and on the Model page, chooses the attributes that the averages cover. The attribute averages of a method over a new subset take about 12 ms to compute on Vietnam (34 attributes), and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
+- The attribute filter, here and on the Model page, chooses the attributes that the averages cover. The averages of a method over a new subset take about 12 ms on Vietnam (34 attributes). The pages compute them in a thread, so that a large table does not hold up the server, and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
 
 The URL keeps the view, so it can be shared as a link. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`). For a [protected split](#protected-splits), only admins get its per-class scores (`classes`).
 

@@ -9,11 +9,13 @@ import typing as T
 
 import irap_evaluation as ie
 from fastapi import Request
-from nicegui import ui
+from nicegui import run, ui
 
+from ..archive import Submission
 from ..components.account_sessions import AccountSessions
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
 from ..components.formatting import EVALUATION_SET_LABELS, make_model_link_html
+from ..components.latest_updates import LatestUpdates
 from ..components.native_controls import (
     create_native_checkbox,
     create_native_input,
@@ -47,7 +49,7 @@ from ..method_ranking import (
     rank_methods,
     select_shown_methods,
 )
-from ..scoring import ScoredModel, select_scored_models
+from ..scoring import MethodScores, ScoredModel, SubmissionScoring, select_scored_models
 from ..scoring_worker import ScoringWorker
 
 #: Plural for the model-compatible sets, since each method is scored on its own.
@@ -120,76 +122,96 @@ def _parse_view(query: T.Mapping[str, str],
 def register_scores_page(dataset_contexts: T.Mapping[str, DatasetContext],
                          worker: ScoringWorker, sessions: AccountSessions) -> None:
     @ui.page(SCORES_PATH, title="Scores · iRAP evaluation")
-    def scores_page(request: Request) -> None:
+    async def scores_page(request: Request) -> None:
         with create_page_frame(SCORES_PATH, sessions.get_account()):
             try:
                 view = _parse_view(request.query_params, dataset_contexts)
             except ValueError as e:
                 show_view_error(str(e), SCORES_PATH)
                 return
-            _create_scores(dataset_contexts, worker, view,
-                           request.query_params.getlist(ATTRIBUTE_PARAMETER))
+            await _create_scores(dataset_contexts, worker, view,
+                                 request.query_params.getlist(ATTRIBUTE_PARAMETER))
 
 
-def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
-                   view: _ScoresView, attribute_query: T.Sequence[str]) -> None:
-    def navigate_to(**changes: str) -> None:
-        # Another dataset has other attributes.
-        attributes = () if "dataset" in changes else attribute_filter.subset.to_query()
-        ui.navigate.to(dc.replace(view, **changes).to_path(attributes))
+@dc.dataclass(frozen=True)
+class _SplitScorings:
+    """The scorings of the files of the split of a view (`_load_split_scorings`).
 
-    def on_view_changed(**changes: str) -> None:
-        nonlocal view
-        view = dc.replace(view, **changes)
-        ui.navigate.history.replace(view.to_path(attribute_filter.subset.to_query()))
-        show_table.refresh()
+    Attributes:
+        submission_id_to_scoring: Submission id -> its stored scoring.
+        current: Submission id -> its current scoring (`ScoringWorker.select_current_scorings`).
+        models: The models scored on the evaluation set of the view.
+        pending_ids: The submissions whose scoring is queued or running.
+    """
 
-    def on_subset_changed(subset: AttributeSubset) -> None:
-        ui.navigate.history.replace(view.to_path(subset.to_query()))
-        show_table.refresh()
+    submissions: list[Submission]
+    submission_id_to_scoring: dict[int, SubmissionScoring]
+    current: dict[int, SubmissionScoring]
+    models: list[ScoredModel]
+    pending_ids: list[int]
 
-    context = dataset_contexts[view.dataset]
 
-    def show_methods(models: T.Sequence[ScoredModel], subset: AttributeSubset,
-                     matching_method_names: T.AbstractSet[str]) -> None:
-        rows = rank_methods(models, subset.selected, view.sort_metric)
-        name_to_comparable = {r.method_name: r for r in list_comparable_methods(rows)}
-        with ui.element("div").classes("form-row"):
-            if view.evaluation_set == ie.REFERENCE_SET_NAME:
-                create_native_select("Compare with",
-                                     {"": "–", **{n: r.shown_method_name
-                                                  for n, r in name_to_comparable.items()}},
-                                     view.reference_method,
-                                     lambda v: on_view_changed(reference_method=v))
-            if view.shows_trained_methods or any(
-                    get_method_split_use(r, view.split) == "training" for r in rows):
-                create_native_checkbox(f"Show methods trained on {view.split}",
-                                       view.shows_trained_methods,
-                                       lambda v: on_view_changed(shows_trained_methods=v))
-        reference = name_to_comparable.get(view.reference_method)
-        if view.reference_method and reference is None:
-            ui.label(f"{view.reference_method} cannot be compared, since it has no scores on"
-                     f" this split or its models cannot be combined.").classes("error")
-        elif reference is not None and reference.method_name not in matching_method_names:
-            ui.label(f"{reference.shown_method_name} is shown as the reference, although the filter"
-                     f" excludes it.").classes("muted")
-        reference_method = "" if reference is None else reference.method_name
-        shown, num_hidden = select_shown_methods(
-            rows, matching_method_names, reference_method,
-            hidden_training_split=None if view.shows_trained_methods else view.split)
-        if num_hidden:
-            ui.label(f"Number of hidden methods trained on {view.split}: {num_hidden}.").classes(
-                "muted")
-        if not shown:
-            if not num_hidden:  # Otherwise, the label above says that the matches are hidden.
-                ui.label("The filter matches no method.").classes("muted")
-            return
+def _load_split_scorings(worker: ScoringWorker, view: _ScoresView) -> _SplitScorings:
+    submissions, submission_id_to_scoring, current = worker.load_split_scorings(view.dataset,
+                                                                                view.split)
+    return _SplitScorings(
+        submissions, submission_id_to_scoring, current,
+        select_scored_models(submissions, current, view.evaluation_set),
+        [s.id for s in submissions if worker.is_scoring_pending(s.id)])
+
+
+@dc.dataclass(frozen=True)
+class _MethodTable:
+    """The methods of a view and their table (`_compute_method_table`).
+
+    Attributes:
+        rows: All methods, ranked (`rank_methods`).
+        name_to_comparable: Method name -> its row, for the methods that can be compared
+            (`list_comparable_methods`).
+        reference: The reference method of the view, None if there is none or it cannot be
+            compared.
+        is_reference_excluded: Whether the method filter excludes the reference method, which is
+            shown anyway.
+        shown: The rows of the table (`select_shown_methods`).
+        num_hidden: The number of matching methods that are hidden, since they were trained on
+            the split.
+        table_html: '' if no row is shown.
+        comparison_errors: Why some rows cannot be compared with the reference method.
+    """
+
+    rows: list[MethodScores]
+    name_to_comparable: dict[str, MethodScores]
+    reference: MethodScores | None
+    is_reference_excluded: bool
+    shown: list[MethodScores]
+    num_hidden: int
+    table_html: str
+    comparison_errors: list[str]
+
+
+def _compute_method_table(worker: ScoringWorker, view: _ScoresView,
+                          models: T.Sequence[ScoredModel], subset: AttributeSubset,
+                          matching_method_names: T.AbstractSet[str]) -> _MethodTable:
+    """Ranks the methods of a view over the attributes of `subset` and makes their table, with
+    the comparisons with the reference method, if any.
+
+    Args:
+        matching_method_names: The methods that the method filter matches.
+    """
+    rows = rank_methods(models, subset.selected, view.sort_metric)
+    name_to_comparable = {r.method_name: r for r in list_comparable_methods(rows)}
+    reference = name_to_comparable.get(view.reference_method)
+    shown, num_hidden = select_shown_methods(
+        rows, matching_method_names, "" if reference is None else reference.method_name,
+        hidden_training_split=None if view.shows_trained_methods else view.split)
+    table_html, comparison_errors = "", []
+    if shown:
         confidence = worker.settings.confidence
         metric_names = (view.metric_name,) if view.metric_name else RANKING_METRIC_NAMES
         method_to_resamples = {
             r.method_name: worker.get_method_resamples(r, subset.selected, metric_names)
             for r in shown}
-        comparisons, comparison_errors = None, []
+        comparisons = None
         if reference is not None:
             method_to_differences, comparison_errors = compare_with_reference(
                 shown, method_to_resamples, reference, confidence)
@@ -202,64 +224,170 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
             table_html = make_method_table_html(
                 shown, method_to_resamples, confidence, view.sort_metric, view.split,
                 subset.to_query(), comparisons)
-        ui.html(table_html, sanitize=False).classes("w-full overflow-x-auto").on(
+    return _MethodTable(
+        rows, name_to_comparable, reference,
+        reference is not None and reference.method_name not in matching_method_names, shown,
+        num_hidden, table_html, comparison_errors)
+
+
+@dc.dataclass(frozen=True)
+class _ScoresContent:
+    """What the table panel of the page shows (`_compute_scores_content`).
+
+    Attributes:
+        filter_error: Why the method filter is invalid, or None.
+        table: None if no model is scored on the evaluation set, no attribute is selected, or
+            the method filter is invalid.
+    """
+
+    view: _ScoresView
+    split_scorings: _SplitScorings
+    subset: AttributeSubset
+    filter_error: str | None
+    table: _MethodTable | None
+
+
+def _compute_scores_content(worker: ScoringWorker, view: _ScoresView,
+                            split_scorings: _SplitScorings,
+                            subset: AttributeSubset) -> _ScoresContent:
+    filter_error, table = None, None
+    if split_scorings.models and subset.selected:
+        # The filter matches the shown method names.
+        name_to_shown = {m.submission.model.method_name: m.submission.model.shown_method_name
+                         for m in split_scorings.models}
+        try:
+            matching_shown_names = select_matching_names(view.method_pattern,
+                                                         set(name_to_shown.values()))
+        except ValueError as e:
+            filter_error = str(e)
+        else:
+            matching_method_names = {n for n, s in name_to_shown.items()
+                                     if s in matching_shown_names}
+            table = _compute_method_table(worker, view, split_scorings.models, subset,
+                                          matching_method_names)
+    return _ScoresContent(view, split_scorings, subset, filter_error, table)
+
+
+async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
+                         view: _ScoresView, attribute_query: T.Sequence[str]) -> None:
+    """Creates the page. The scores are loaded and computed in threads (`update_table`), so that
+    a large table does not hold up the event loop, e.g. for other users."""
+    def navigate_to(**changes: str) -> None:
+        # Another dataset has other attributes.
+        attributes = () if "dataset" in changes else attribute_filter.subset.to_query()
+        ui.navigate.to(dc.replace(view, **changes).to_path(attributes))
+
+    async def on_view_changed(**changes: str) -> None:
+        nonlocal view
+        view = dc.replace(view, **changes)
+        ui.navigate.history.replace(view.to_path(attribute_filter.subset.to_query()))
+        await update_table()
+
+    async def on_subset_changed(subset: AttributeSubset) -> None:
+        ui.navigate.history.replace(view.to_path(subset.to_query()))
+        await update_table()
+
+    async def update_table(split_scorings: _SplitScorings | None = None) -> None:
+        """Loads and computes the table of the view in threads, and shows it if no later update
+        has started meanwhile.
+
+        Args:
+            split_scorings: The scorings of the split if they are loaded, e.g. at the start.
+        """
+        is_latest = latest_updates.start()
+        shown_view = view
+        if split_scorings is None:
+            split_scorings = await run.io_bound(_load_split_scorings, worker, shown_view)
+            if split_scorings is None or not is_latest():
+                return
+        subset = attribute_filter.set_options(collect_scored_attributes(split_scorings.models))
+        content = await run.io_bound(_compute_scores_content, worker, shown_view, split_scorings,
+                                     subset)
+        if content is not None and is_latest():
+            show_table.refresh(content)
+
+    context = dataset_contexts[view.dataset]
+
+    def show_methods(shown_view: _ScoresView, table: _MethodTable) -> None:
+        with ui.element("div").classes("form-row"):
+            if shown_view.evaluation_set == ie.REFERENCE_SET_NAME:
+                create_native_select("Compare with",
+                                     {"": "–", **{n: r.shown_method_name
+                                                  for n, r in table.name_to_comparable.items()}},
+                                     shown_view.reference_method,
+                                     lambda v: on_view_changed(reference_method=v))
+            if shown_view.shows_trained_methods or any(
+                    get_method_split_use(r, shown_view.split) == "training" for r in table.rows):
+                create_native_checkbox(f"Show methods trained on {shown_view.split}",
+                                       shown_view.shows_trained_methods,
+                                       lambda v: on_view_changed(shows_trained_methods=v))
+        reference = table.reference
+        if shown_view.reference_method and reference is None:
+            ui.label(f"{shown_view.reference_method} cannot be compared, since it has no scores"
+                     f" on this split or its models cannot be combined.").classes("error")
+        elif table.is_reference_excluded:
+            ui.label(f"{reference.shown_method_name} is shown as the reference, although the filter"
+                     f" excludes it.").classes("muted")
+        if table.num_hidden:
+            ui.label(f"Number of hidden methods trained on {shown_view.split}:"
+                     f" {table.num_hidden}.").classes("muted")
+        if not table.shown:
+            if not table.num_hidden:  # Otherwise, the label above says that the matches are hidden.
+                ui.label("The filter matches no method.").classes("muted")
+            return
+        ui.html(table.table_html, sanitize=False).classes("w-full overflow-x-auto").on(
             "click", lambda e: on_view_changed(sort_metric=e.args),
             js_handler="(e) => { const th = e.target.closest('th[data-sort]');"
                        " if (th) emit(th.dataset.sort); }")
         ui.label(make_interval_note(worker.settings, is_mean_over_models=True)).classes(
             "muted")
         if reference is not None:
-            ui.label(make_comparison_note(worker.settings, reference.shown_method_name, shown)
-                     ).classes("muted")
-        for error in comparison_errors:
+            ui.label(make_comparison_note(worker.settings, reference.shown_method_name,
+                                          table.shown)).classes("muted")
+        for error in table.comparison_errors:
             ui.label(error).classes("error")
 
     @ui.refreshable
-    def show_table() -> None:
-        submissions, submission_id_to_scoring, current = worker.load_split_scorings(
-            view.dataset, view.split)
-        models = select_scored_models(submissions, current, view.evaluation_set)
-        subset = attribute_filter.set_options(collect_scored_attributes(models))
-        pending_ids = [s.id for s in submissions if worker.is_scoring_pending(s.id)]
-
-        title = f"{view.dataset}/{view.split}, {_EVALUATION_SET_LABELS[view.evaluation_set]}"
-        if models:
-            title += (f": {view.metric_name} of {subset.label}" if view.metric_name
+    def show_table(content: _ScoresContent | None) -> None:
+        if content is None:
+            ui.label("Loading the scores…").classes("muted")
+            return
+        shown_view, split_scorings, subset = content.view, content.split_scorings, content.subset
+        title = (f"{shown_view.dataset}/{shown_view.split},"
+                 f" {_EVALUATION_SET_LABELS[shown_view.evaluation_set]}")
+        if split_scorings.models:
+            title += (f": {shown_view.metric_name} of {subset.label}" if shown_view.metric_name
                       else f": averages over {subset.label}")
         ui.label(title).classes("section-title")
-        matching_method_names = None
-        if not models:
+        if not split_scorings.models:
             ui.label("No models are scored on this evaluation set.").classes("muted")
-            notes = {n for s in current.values() if s.get_scores(view.evaluation_set) is None
-                     for n in s.notes}
+            notes = {n for s in split_scorings.current.values()
+                     if s.get_scores(shown_view.evaluation_set) is None for n in s.notes}
             for note in sorted(notes):
                 ui.label(note).classes("muted")
         elif not subset.selected:
             ui.label("Select at least one attribute.").classes("error")
-        else:
-            # The filter matches the shown method names.
-            name_to_shown = {m.submission.model.method_name: m.submission.model.shown_method_name
-                             for m in models}
-            try:
-                matching_shown_names = select_matching_names(view.method_pattern,
-                                                             set(name_to_shown.values()))
-                matching_method_names = {n for n, s in name_to_shown.items()
-                                         if s in matching_shown_names}
-            except ValueError as e:
-                ui.label(str(e)).classes("error")
-        if matching_method_names is not None:
-            show_methods(models, subset, matching_method_names)
+        elif content.filter_error is not None:
+            ui.label(content.filter_error).classes("error")
+        if content.table is not None:
+            show_methods(shown_view, content.table)
 
-        unlisted = [(s, reason) for s in submissions
-                    if (reason := get_unscored_reason(submission_id_to_scoring.get(s.id),
-                                                      s.id in current, s.id in pending_ids))]
+        unlisted = [(s, reason) for s in split_scorings.submissions
+                    if (reason := get_unscored_reason(
+                        split_scorings.submission_id_to_scoring.get(s.id),
+                        s.id in split_scorings.current, s.id in split_scorings.pending_ids))]
         if unlisted:
             ui.label("Unscored files").classes("section-title")
             ui.html("".join(f"<div>{make_model_link_html(s.model.id, s.shown_label, s.split)}"
                             f": {html.escape(reason)}</div>"
                             for s, reason in unlisted), sanitize=False)
-        refresh_timer.watch([lambda i=i: worker.is_scoring_pending(i) for i in pending_ids])
+        refresh_timer.watch([lambda i=i: worker.is_scoring_pending(i)
+                             for i in split_scorings.pending_ids])
 
+    latest_updates = LatestUpdates()
+    initial_scorings = await run.io_bound(_load_split_scorings, worker, view)
+    if initial_scorings is None:  # The server is stopping.
+        return
     with ui.element("section").classes("panel"):
         with ui.element("div").classes("form-row"):
             # Another dataset has other methods, and the other evaluation set no comparisons.
@@ -267,8 +395,9 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
                                  lambda v: navigate_to(dataset=v, split="", reference_method=""))
             create_native_select("Split", {n: n for n in context.split_names}, view.split,
                                  lambda v: navigate_to(split=v))
-            if view.evaluation_set != ie.REFERENCE_SET_NAME or _has_model_compatible_scores(
-                    worker, view):
+            if view.evaluation_set != ie.REFERENCE_SET_NAME or select_scored_models(
+                    initial_scorings.submissions, initial_scorings.current,
+                    ie.MODEL_COMPATIBLE_SET_NAME):
                 create_native_select(
                     "Evaluation set", _EVALUATION_SET_LABELS, view.evaluation_set,
                     lambda v: navigate_to(evaluation_set=v, reference_method=""))
@@ -279,10 +408,6 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
                                 size=24)
         attribute_filter = AttributeFilter(attribute_query, on_subset_changed)
     with ui.element("section").classes("panel"):
-        refresh_timer = RefreshTimer(show_table.refresh)
-        show_table()
-
-
-def _has_model_compatible_scores(worker: ScoringWorker, view: _ScoresView) -> bool:
-    submissions, _, current = worker.load_split_scorings(view.dataset, view.split)
-    return bool(select_scored_models(submissions, current, ie.MODEL_COMPATIBLE_SET_NAME))
+        refresh_timer = RefreshTimer(update_table)
+        show_table(None)
+    await update_table(initial_scorings)

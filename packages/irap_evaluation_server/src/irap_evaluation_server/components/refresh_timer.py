@@ -13,7 +13,11 @@ class RefreshTimer:
     which may watch new work.
     """
 
-    def __init__(self, on_progress: T.Callable[[], None], interval_s: float = 1.0):
+    def __init__(self, on_progress: T.Callable[[], T.Any], interval_s: float = 1.0):
+        """
+        Args:
+            on_progress: Renders the view again. It can be async.
+        """
         self._on_progress = on_progress
         self._pending_checks: list[T.Callable[[], bool]] = []
         self._timer = ui.timer(interval_s, self._check, active=False)
@@ -27,7 +31,10 @@ class RefreshTimer:
         self._pending_checks = list(pending_checks)
         self._timer.active = bool(self._pending_checks)
 
-    def _check(self) -> None:
+    def _check(self) -> T.Any:
+        """Returns the result of `on_progress`, if called, so that the timer awaits that of an
+        async one."""
         if not all(check() for check in self._pending_checks):
             self._timer.active = False
-            self._on_progress()
+            return self._on_progress()
+        return None

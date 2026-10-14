@@ -5,6 +5,7 @@ import asyncio
 import dataclasses as dc
 import functools
 import html
+import inspect
 import secrets
 import typing as T
 import urllib.parse
@@ -13,7 +14,7 @@ from pathlib import Path
 import irap_evaluation as ie
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from nicegui import app, run, ui
+from nicegui import app, background_tasks, run, ui
 from nicegui.elements.mixins.text_element import TextElement
 from starlette.background import BackgroundTask
 
@@ -52,6 +53,7 @@ from ..components.formatting import (
     make_ensemble_members_html,
     make_table_html,
 )
+from ..components.latest_updates import LatestUpdates
 from ..components.native_controls import (
     create_native_button,
     create_native_checkbox,
@@ -83,7 +85,7 @@ from ..config import DatasetConfig
 from ..datasets import DatasetContext
 from ..method_ranking import collect_scored_attributes, get_unscored_reason
 from ..model_listing import ModelSummary
-from ..scoring import ScoredModel, compute_method_scores, remove_class_scores
+from ..scoring import ScoredModel, SubmissionScoring, compute_method_scores, remove_class_scores
 from ..scoring_worker import ScoringWorker
 
 
@@ -121,6 +123,68 @@ class _ModelSnapshot:
     @property
     def summary(self) -> ModelSummary:
         return ModelSummary.from_submissions(self.model, self.submissions)
+
+
+@dc.dataclass(frozen=True)
+class _SubmissionScoring:
+    """The stored scoring of a submission and its state (`_load_submission_scoring`).
+
+    Attributes:
+        unscored_reason: Why it has no current scores (`get_unscored_reason`), or None.
+        models: The submission with its scores on each evaluation set, none if `unscored_reason`
+            is not None.
+    """
+
+    submission: Submission
+    scoring: SubmissionScoring | None
+    is_pending: bool
+    unscored_reason: str | None
+    models: list[ScoredModel]
+
+
+def _load_submission_scoring(worker: ScoringWorker, submission: Submission) -> _SubmissionScoring:
+    scoring = worker.store.get_scoring(submission.id)
+    is_pending = worker.is_scoring_pending(submission.id)
+    reason = get_unscored_reason(scoring, worker.is_scoring_current(submission, scoring),
+                                 is_pending)
+    models = ([] if reason is not None
+              else [ScoredModel(submission, s) for s in scoring.evaluation_set_scores])
+    return _SubmissionScoring(submission, scoring, is_pending, reason, models)
+
+
+def _make_set_score_tables_html(worker: ScoringWorker, models: T.Iterable[ScoredModel],
+                                subset: AttributeSubset) -> dict[str, str]:
+    """Makes the score tables of a submission over the attributes of `subset`
+    (`make_model_scores_html`) on each evaluation set that it is scored on.
+
+    Args:
+        models: The submission with its scores on each evaluation set.
+    """
+    set_to_tables_html = {}
+    for model in models:
+        scores = compute_method_scores(model.submission.label, [model], subset.selected)
+        resamples = worker.get_method_resamples(scores, subset.selected,
+                                                MODEL_SCORES_METRIC_NAMES)
+        set_to_tables_html[model.scores.evaluation_set] = make_model_scores_html(
+            scores, resamples, worker.settings.confidence)
+    return set_to_tables_html
+
+
+@dc.dataclass(frozen=True)
+class _ShownSubmissionScores:
+    """What the Scores panel shows of the submission of the chosen split.
+
+    Attributes:
+        split_error: Why the split of the URL is not shown, or ''.
+        subset: The attribute subset, None if the submission has no current scores.
+        set_to_tables_html: Evaluation set name -> its score tables
+            (`_make_set_score_tables_html`), none if no attribute is selected.
+    """
+
+    split_error: str
+    loaded: _SubmissionScoring
+    subset: AttributeSubset | None
+    set_to_tables_html: dict[str, str]
 
 
 @dc.dataclass(frozen=True)
@@ -178,7 +242,8 @@ class _ModelPage:
         #: What the panels show, loaded again after each change.
         self.snapshot = snapshot
         self.client = ui.context.client
-        self.refreshes: list[T.Callable[[], None]] = []
+        #: The refreshes of the panels after a change, which may return an awaitable.
+        self.refreshes: list[T.Callable[[], T.Any]] = []
 
     async def run_change(self, change: T.Callable[[str], T.Any], status_label: ui.label) -> None:
         """Runs a change of the model (`run_change_in_thread`), rescores what it affects and shows
@@ -201,7 +266,8 @@ class _ModelPage:
             return
         self.snapshot = snapshot
         for refresh in self.refreshes:
-            refresh()
+            if inspect.isawaitable(result := refresh()):
+                await result
 
     # Details ######################################################################################
 
@@ -342,23 +408,53 @@ class _ModelPage:
 
     def create_scores(self, split_query: str, attribute_query: T.Sequence[str]) -> None:
         state = {"split": split_query}
+        latest_updates = LatestUpdates()
 
-        def on_split_changed(split: str) -> None:
+        async def on_split_changed(split: str) -> None:
             state["split"] = split
             update_url()
-            show_scores.refresh()
+            await update_scores()
 
-        def on_subset_changed(subset: AttributeSubset) -> None:
+        async def on_subset_changed(subset: AttributeSubset) -> None:
             update_url(subset)
-            show_scores.refresh()
+            await update_scores()
 
         def update_url(subset: AttributeSubset | None = None) -> None:
             subset = subset or attribute_filter.subset
             ui.navigate.history.replace(get_model_path(self.model_id, state["split"],
                                                        subset.to_query()))
 
+        async def update_scores() -> None:
+            """Loads and computes the scores of the chosen split in threads, and shows them if no
+            later update has started meanwhile."""
+            is_latest = latest_updates.start()
+            split_to_submission = self.snapshot.summary.split_to_submission
+            context = self.dataset_contexts.get(self.snapshot.model.dataset)
+            if context is None or not split_to_submission:
+                show_scores.refresh(None)
+                return
+            split_error = ""
+            if state["split"] not in split_to_submission:
+                if state["split"]:
+                    split_error = f"The model has no file of the split {state['split']!r}."
+                state["split"] = next(s for s in context.split_names if s in split_to_submission)
+            submission = split_to_submission[state["split"]]
+            loaded = await run.io_bound(_load_submission_scoring, self.worker, submission)
+            if loaded is None or not is_latest():
+                return
+            subset, set_to_tables_html = None, {}
+            if loaded.unscored_reason is None:
+                subset = attribute_filter.set_options(collect_scored_attributes(loaded.models))
+                if subset.selected:
+                    set_to_tables_html = await run.io_bound(_make_set_score_tables_html,
+                                                            self.worker, loaded.models, subset)
+                    if set_to_tables_html is None or not is_latest():
+                        return
+            show_scores.refresh(_ShownSubmissionScores(split_error, loaded, subset,
+                                                       set_to_tables_html))
+
         @ui.refreshable
-        def show_scores() -> None:
+        def show_scores(shown: _ShownSubmissionScores | None) -> None:
             model = self.snapshot.model
             split_to_submission = self.snapshot.summary.split_to_submission
             context = self.dataset_contexts.get(model.dataset)
@@ -369,45 +465,40 @@ class _ModelPage:
             if not split_to_submission:
                 ui.label("The model has no files.").classes("muted")
                 return
+            if shown is None:
+                ui.label("Loading the scores…").classes("muted")
+                return
+            if shown.split_error:
+                ui.label(shown.split_error).classes("error")
             splits = [s for s in context.split_names if s in split_to_submission]
-            if state["split"] not in split_to_submission:
-                if state["split"]:
-                    ui.label(f"The model has no file of the split {state['split']!r}."
-                             ).classes("error")
-                state["split"] = splits[0]
             with ui.element("div").classes("form-row"):
                 create_native_select("Split", {s: s for s in splits}, state["split"],
                                      on_split_changed)
-            submission = split_to_submission[state["split"]]
-            self._show_submission_scores(context, submission, attribute_filter, refresh_timer)
+            self._show_submission_scores(context, shown, refresh_timer)
 
         with ui.element("section").classes("panel"):
             ui.label("Scores").classes("section-title")
             attribute_filter = AttributeFilter(attribute_query, on_subset_changed)
-            refresh_timer = RefreshTimer(show_scores.refresh)
-            show_scores()
-        self.refreshes.append(show_scores.refresh)
+            refresh_timer = RefreshTimer(update_scores)
+            show_scores(None)
+        background_tasks.create(update_scores(), name="update scores")
+        self.refreshes.append(update_scores)
 
-    def _show_submission_scores(self, context: DatasetContext, submission: Submission,
-                                attribute_filter: AttributeFilter,
+    def _show_submission_scores(self, context: DatasetContext, shown: _ShownSubmissionScores,
                                 refresh_timer: RefreshTimer) -> None:
         worker = self.worker
-        scoring = worker.store.get_scoring(submission.id)
-        is_pending = worker.is_scoring_pending(submission.id)
-        reason = get_unscored_reason(scoring, worker.is_scoring_current(submission, scoring),
-                                     is_pending)
+        loaded = shown.loaded
+        submission = loaded.submission
         refresh_timer.watch([lambda: worker.is_scoring_pending(submission.id)]
-                            if is_pending else [])
-        if reason is not None:
-            ui.label(reason).classes("muted" if is_pending else "error")
+                            if loaded.is_pending else [])
+        if loaded.unscored_reason is not None:
+            ui.label(loaded.unscored_reason).classes("muted" if loaded.is_pending else "error")
             return
-        models = [ScoredModel(submission, s) for s in scoring.evaluation_set_scores]
-        subset = attribute_filter.set_options(collect_scored_attributes(models))
-        if not models:  # E.g. a split without labels.
-            for note in scoring.notes:
+        if not loaded.models:  # E.g. a split without labels.
+            for note in loaded.scoring.notes:
                 ui.label(note).classes("muted")
             return
-        if not subset.selected:
+        if not shown.subset.selected:
             ui.label("Select at least one attribute.").classes("error")
             return
         split_use = submission.model_info.get_split_use(submission.split)
@@ -416,18 +507,14 @@ class _ModelPage:
         is_analysed = not context.config.is_protected_split(submission.split)
         can_see_class_scores = _can_see_class_scores(context.config, submission.split,
                                                      self.is_admin)
-        set_to_scores = {m.scores.evaluation_set: compute_method_scores(
-                             submission.label, [m], subset.selected) for m in models}
-        for name, scores in set_to_scores.items():
-            offsets = format_context_offsets(scores.models[0].scores.context_offsets)
+        for model in loaded.models:
+            name = model.scores.evaluation_set
+            offsets = format_context_offsets(model.scores.context_offsets)
             ui.label(EVALUATION_SET_LABELS[name] if name == ie.REFERENCE_SET_NAME
                      else f"{EVALUATION_SET_LABELS[name]}, context offsets {offsets}").classes(
                 "subsection-title")
-            ui.label(f"Averages over {subset.label}").classes("muted")
-            resamples = worker.get_method_resamples(scores, subset.selected,
-                                                    MODEL_SCORES_METRIC_NAMES)
-            ui.html(make_model_scores_html(scores, resamples, worker.settings.confidence),
-                    sanitize=False).classes("w-full")
+            ui.label(f"Averages over {shown.subset.label}").classes("muted")
+            ui.html(shown.set_to_tables_html[name], sanitize=False).classes("w-full")
             with ui.element("div").classes("form-row"):
                 ui.link("Download the scores over all attributes (JSON)",
                         get_scores_download_path(submission.id, name))
@@ -437,7 +524,7 @@ class _ModelPage:
                 if is_analysed:
                     ui.link("Open in Analysis", AnalysisView(
                         submission.dataset, submission.split, evaluation_set=name,
-                        model_id=submission.model.id).to_path(subset.to_query()))
+                        model_id=submission.model.id).to_path(shown.subset.to_query()))
         ui.label(make_interval_note(worker.settings, is_mean_over_models=False)).classes("muted")
 
     # Coding table and actions #####################################################################
