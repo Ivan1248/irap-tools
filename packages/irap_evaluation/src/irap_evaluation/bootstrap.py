@@ -1,11 +1,15 @@
 """Confidence intervals of methods and of their differences.
 
-Each resample draws road sequences with replacement, recomputes the metrics of each model from the
-per-sequence statistics (`EvaluationResult.statistics`), and adds the uncertainty of the mean
-over the models with a Student-t draw. `docs/evaluation.md#confidence-intervals` defines them.
+Each resample draws road sequences with replacement and recomputes the metrics of each model from
+the per-sequence statistics (`resample_model_metrics`). The resampled values of a method add the
+uncertainty of the mean over its models with a Student-t draw (`combine_model_resamples`).
+Intervals are percentiles of the resampled values (`compute_percentile_interval`), and comparisons
+are those of the differences of two methods on the same resamples
+(`compute_resampled_differences`). `docs/evaluation.md#confidence-intervals` defines them.
 """
 
 import dataclasses as dc
+import hashlib
 import math
 import typing as T
 
@@ -64,10 +68,18 @@ def draw_group_weights(num_groups: int, num_resamples: int,
     return rng.multinomial(num_groups, np.full(num_groups, 1 / num_groups), size=num_resamples)
 
 
-def _draw_model_t_values(num_models: int, num_resamples: int,
-                         rng: np.random.Generator) -> np.ndarray | None:
-    """(num_resamples,) Student-t(num_models - 1) values, or None for a single model."""
-    return None if num_models == 1 else rng.standard_t(num_models - 1, size=num_resamples)
+def _draw_model_t_values(num_models: int, num_resamples: int, method_name: str,
+                         seed: int) -> np.ndarray | None:
+    """(num_resamples,) Student-t(num_models - 1) values, or None for a single model.
+
+    They are drawn from a stream of `seed` and `method_name`, which is independent of the road
+    sequences (`draw_group_weights`) and of the draws of other methods.
+    """
+    if num_models == 1:
+        return None
+    method_key = int.from_bytes(hashlib.sha256(method_name.encode()).digest()[:8], "little")
+    rng = np.random.default_rng([seed, method_key])
+    return rng.standard_t(num_models - 1, size=num_resamples)
 
 
 def _compute_quantile(sorted_values: np.ndarray, quantile: float) -> float:
@@ -86,7 +98,15 @@ def _compute_quantile(sorted_values: np.ndarray, quantile: float) -> float:
     return (1 - fraction) * low + fraction * high
 
 
-def _compute_interval(values: np.ndarray, confidence: float) -> BootstrapInterval:
+def compute_percentile_interval(values: np.ndarray, confidence: float) -> BootstrapInterval:
+    """Computes the percentile interval of resampled values, e.g. of `combine_model_resamples`:
+    from the (1 - confidence) / 2 to the (1 + confidence) / 2 quantile of the values that are not
+    NaN (`docs/evaluation.md#confidence-intervals`).
+
+    Raises:
+        ValueError: If `confidence` is not in [0, 1].
+    """
+    _check_confidence(confidence)
     values = np.asarray(values, dtype=np.float64)
     is_undefined = np.isnan(values)
     num_undefined = int(is_undefined.sum())
@@ -130,6 +150,13 @@ def _have_same_metrics(values_a: MetricValues, values_b: MetricValues) -> bool:
         for n in values_a.per_attribute)
 
 
+def _check_model_values(model_values: T.Sequence[MetricValues]) -> None:
+    if not model_values:
+        raise ValueError("At least one model is required.")
+    if not all(_have_same_metrics(v, model_values[0]) for v in model_values[1:]):
+        raise ValueError("The models differ in metrics or attributes.")
+
+
 def _check_models(models: T.Sequence[EvaluationResult]) -> None:
     """Checks that `models` are results of the models of one method (see `check_method_models`),
     comparable with each other and with the same metrics."""
@@ -161,10 +188,7 @@ def compute_mean_metrics(model_metrics: T.Sequence[MetricValues[float]]) -> Metr
     Raises:
         ValueError: If `model_metrics` is empty, or the models differ in metrics or attributes.
     """
-    if not model_metrics:
-        raise ValueError("At least one model is required.")
-    if not all(_have_same_metrics(v, model_metrics[0]) for v in model_metrics[1:]):
-        raise ValueError("The models differ in metrics or attributes.")
+    _check_model_values(model_metrics)
     return map_metric_values(_compute_mean, *model_metrics)
 
 
@@ -184,20 +208,52 @@ def compute_method_metrics(models: T.Sequence[EvaluationResult]) -> MetricValues
     return compute_mean_metrics([r.metrics for r in models])
 
 
-def _resample_method_metrics(
-    models: T.Sequence[EvaluationResult],
-    metric_names: T.Sequence[str],
-    group_weights: np.ndarray,
-    model_t_values: np.ndarray | None,
-) -> MetricValues[np.ndarray]:
-    """Computes the resampled values of a method: (B,) arrays for the (B, G) `group_weights`.
+def resample_model_metrics(result: EvaluationResult,
+                           metric_names: T.Sequence[str] | None = None, *,
+                           num_resamples: int = 1000, seed: int = 0) -> MetricValues[np.ndarray]:
+    """Computes the metrics of a model in each resample of the road sequences of its evaluation
+    set: (num_resamples,) float arrays.
 
-    Each value is the mean over the models plus their standard deviation over sqrt(M) times
-    `model_t_values`, or just the value of the model for a single model. A value whose mean is
-    infinite is that mean.
+    The resamples depend only on `seed`, `num_resamples` and the number of road sequences, so
+    they are the same for all models on an evaluation set, which pairs comparisons of methods.
+
+    Args:
+        metric_names: None means the metrics of `result`.
+
+    Raises:
+        ValueError: If the evaluation set is empty, or `num_resamples` < 1.
     """
-    per_model = [compute_grouped_metrics(r.statistics, metric_names, group_weights)
-                 for r in models]
+    weights = draw_group_weights(len(result.evaluation_set.sequence_ids), num_resamples,
+                                 np.random.default_rng(seed))
+    return compute_grouped_metrics(
+        result.statistics, result.metrics.names if metric_names is None else metric_names,
+        weights)
+
+
+def _get_num_resamples(values: MetricValues[np.ndarray]) -> int:
+    """Returns the number of resamples of resampled values, which have at least one value."""
+    return len(next(values.iterate_values()))
+
+
+def combine_model_resamples(model_resamples: T.Sequence[MetricValues[np.ndarray]],
+                            method_name: str, *, seed: int = 0) -> MetricValues[np.ndarray]:
+    """Computes the resampled values of a method from those of its models
+    (`resample_model_metrics` with the same seed).
+
+    Each value is the mean over the models plus their standard deviation over sqrt(M) times a
+    Student-t(M - 1) draw per resample, or the value of the model for a single model. A value
+    whose mean is infinite is that mean. The t draws depend on `seed` and `method_name`, so they
+    are independent between methods, and the same for a method in every comparison.
+
+    Raises:
+        ValueError: If there are no models, or they differ in metrics, attributes or the number
+            of resamples.
+    """
+    _check_model_values(model_resamples)
+    if len(num_resamples := {_get_num_resamples(v) for v in model_resamples}) > 1:
+        raise ValueError(f"The models differ in the number of resamples: {sorted(num_resamples)}.")
+    model_t_values = _draw_model_t_values(len(model_resamples), num_resamples.pop(), method_name,
+                                          seed)
 
     def combine(*model_values) -> np.ndarray:
         values = np.stack([np.asarray(v, dtype=np.float64) for v in model_values])  # (M, B)
@@ -208,7 +264,15 @@ def _resample_method_metrics(
             uncertainty = values.std(0, ddof=1) / np.sqrt(len(values)) * model_t_values
         return np.where(np.isinf(mean), mean, mean + uncertainty)
 
-    return map_metric_values(combine, *per_model)
+    return map_metric_values(combine, *model_resamples)
+
+
+def _resample_method_metrics(models: T.Sequence[EvaluationResult], metric_names: T.Sequence[str],
+                             num_resamples: int, seed: int) -> MetricValues[np.ndarray]:
+    return combine_model_resamples(
+        [resample_model_metrics(r, metric_names, num_resamples=num_resamples, seed=seed)
+         for r in models],
+        models[0].model.method_name, seed=seed)
 
 
 def compute_bootstrap_intervals(
@@ -231,11 +295,8 @@ def compute_bootstrap_intervals(
     """
     _check_confidence(confidence)
     _check_models(models)
-    rng = np.random.default_rng(seed)
-    weights = draw_group_weights(len(models[0].evaluation_set.sequence_ids), num_resamples, rng)
-    resampled = _resample_method_metrics(models, models[0].metrics.names, weights,
-                                         _draw_model_t_values(len(models), num_resamples, rng))
-    return map_metric_values(lambda v: _compute_interval(v, confidence), resampled)
+    resampled = _resample_method_metrics(models, models[0].metrics.names, num_resamples, seed)
+    return map_metric_values(lambda v: compute_percentile_interval(v, confidence), resampled)
 
 
 def compare_methods(
@@ -271,18 +332,37 @@ def compare_methods(
     if missing := [n for n in metric_names if n not in common_names]:
         raise ValueError(f"Metrics not in both methods: {missing}. Method a has"
                          f" {list(metrics_a.names)}.")
-    rng = np.random.default_rng(seed)
-    weights = draw_group_weights(len(models_a[0].evaluation_set.sequence_ids), num_resamples, rng)
     resampled_a, resampled_b = (
-        _resample_method_metrics(models, metric_names, weights,
-                                 _draw_model_t_values(len(models), num_resamples, rng))
+        _resample_method_metrics(models, metric_names, num_resamples, seed)
         for models in (models_a, models_b))
+    return compute_resampled_differences(resampled_a, resampled_b,
+                                         compute_method_metrics(models_a),
+                                         compute_method_metrics(models_b), confidence)
+
+
+def compute_resampled_differences(resampled_a: MetricValues[np.ndarray],
+                                  resampled_b: MetricValues[np.ndarray],
+                                  metrics_a: MetricValues[float], metrics_b: MetricValues[float],
+                                  confidence: float) -> MetricValues[MetricDifference]:
+    """Computes the differences a - b of the metrics of two methods, for the metrics of
+    `resampled_a`, with the percentile intervals of the differences of their resampled values.
+
+    Args:
+        resampled_a: The resampled values of method a (`combine_model_resamples`).
+        resampled_b: Those of method b, on the same resamples, e.g. on the same evaluation set
+            with the same seed.
+        metrics_a: The metrics of method a, e.g. `compute_method_metrics`.
+        metrics_b: Those of method b.
+
+    Raises:
+        ValueError: If `confidence` is not in [0, 1].
+    """
+    _check_confidence(confidence)
 
     def get_difference(resampled_value_a, resampled_value_b, point_a, point_b
                        ) -> MetricDifference:
         return MetricDifference(float(point_a - point_b),
-                                _compute_interval(resampled_value_a - resampled_value_b,
-                                                  confidence))
+                                compute_percentile_interval(resampled_value_a - resampled_value_b,
+                                                            confidence))
 
-    return map_metric_values(get_difference, resampled_a, resampled_b,
-                             compute_method_metrics(models_a), compute_method_metrics(models_b))
+    return map_metric_values(get_difference, resampled_a, resampled_b, metrics_a, metrics_b)

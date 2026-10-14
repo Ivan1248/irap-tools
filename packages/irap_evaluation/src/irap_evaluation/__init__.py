@@ -19,10 +19,14 @@ Typical use::
 from .bootstrap import (
     BootstrapInterval,
     MetricDifference,
+    combine_model_resamples,
     compare_methods,
     compute_bootstrap_intervals,
     compute_mean_metrics,
     compute_method_metrics,
+    compute_percentile_interval,
+    compute_resampled_differences,
+    resample_model_metrics,
 )
 from .ensembling import ensemble_predictions, make_ensemble_method_name, make_ensemble_model_info
 from .evaluation import (
@@ -63,6 +67,7 @@ from .metrics import (
     is_lower_better,
     map_metric_values,
     select_metric_attributes,
+    select_metric_names,
     sum_statistics,
 )
 from .file_names import MAX_FILE_NAME_BYTES, shorten_file_name, to_valid_file_name

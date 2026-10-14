@@ -221,6 +221,13 @@ class MetricValues(T.Generic[V]):
     def names(self) -> tuple[str, ...]:
         return (*self.averages, *self.per_attribute)
 
+    def iterate_values(self) -> T.Iterator[V]:
+        """Iterates over the values of the averages, then those of each per-attribute metric and
+        attribute, in their order."""
+        yield from self.averages.values()
+        for attr_to_value in self.per_attribute.values():
+            yield from attr_to_value.values()
+
 
 def map_metric_values(f: T.Callable[..., U], *values: MetricValues) -> MetricValues[U]:
     """Applies `f` to the corresponding values of each argument, for the names and attributes of
@@ -555,12 +562,21 @@ def compute_grouped_metrics(
         {a: sum_statistics(s, group_weights) for a, s in statistics.items()}, metric_names)
 
 
-def select_metric_attributes(values: MetricValues[float],
-                             attributes: T.Collection[str]) -> MetricValues[float]:
+def select_metric_names(values: MetricValues[V], names: T.Container[str]) -> MetricValues[V]:
+    """Selects the values of the metrics in `names`."""
+    return MetricValues(
+        averages={n: v for n, v in values.averages.items() if n in names},
+        per_attribute={n: v for n, v in values.per_attribute.items() if n in names})
+
+
+def select_metric_attributes(values: MetricValues[V],
+                             attributes: T.Collection[str]) -> MetricValues[V]:
     """The metric values of a subset of the attributes, with the attribute averages computed
     again over the subset, as `compute_multi_attribute_metrics` computes them.
 
-    The values must have the per-attribute value of each average, e.g. 'mF1' for 'amF1' (see
+    The values are floats, or arrays of the same shape, e.g. resampled values
+    (`bootstrap.resample_model_metrics`), whose averages are computed elementwise. They must
+    have the per-attribute value of each average, e.g. 'mF1' for 'amF1' (see
     `add_per_attribute_metric_names`). The attributes keep the order of `values`, so that the
     averages equal those of scoring only the subset.
 
@@ -580,6 +596,6 @@ def select_metric_attributes(values: MetricValues[float],
     per_attribute = {name: {a: v for a, v in attr_to_value.items() if a in attributes}
                      for name, attr_to_value in values.per_attribute.items()}
     return MetricValues(
-        averages={name: average.item() for name, average
+        averages={name: average.item() if average.ndim == 0 else average for name, average
                   in _compute_attribute_averages(values.averages, per_attribute).items()},
         per_attribute=per_attribute)

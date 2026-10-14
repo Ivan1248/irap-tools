@@ -144,23 +144,23 @@ The intervals cover two sources of variation (`--bootstrap B`, `--seed`, default
 
 `compute_bootstrap_intervals(models)` computes them as follows:
 
-1. Each of the $B$ resamples draws the $G$ sequences of the set $G$ times with replacement. This gives multiplicities $w \sim \mathrm{Multinomial}(G; 1/G, \ldots, 1/G)$. All models share the resamples.
-2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$ and $\sum_g w_g s^{(g)}$, giving $m^*_i$. A sequence with weight 0 adds nothing, also if its NLL sum is infinite.
+1. Each of the $B$ resamples draws the $G$ sequences of the set $G$ times with replacement. This gives multiplicities $w \sim \mathrm{Multinomial}(G; 1/G, \ldots, 1/G)$. The draws depend only on the seed, $B$ and $G$, so all models on an evaluation set share the resamples.
+2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$ and $\sum_g w_g s^{(g)}$, giving $m^*_i$ (`resample_model_metrics`). A sequence with weight 0 adds nothing, also if its NLL sum is infinite. Averages over a subset of the attributes can be computed from the resampled per-attribute values (`select_metric_attributes`), as from the values themselves.
 3. The resampled value of the method is
    $$v^* = \bar m^* + \frac{\mathrm{sd}(m^*_1, \ldots, m^*_M)}{\sqrt M}\, t^*, \qquad t^* \sim t_{M-1},$$
-   with the sample standard deviation and one Student-t draw per resample. This is the posterior of the mean of normally distributed model values under the prior $p(\mu, \sigma) \propto 1/\sigma$. With one model, $v^* = m^*_1$, and the interval covers only the road sequences. If $\bar m^*$ is infinite, $v^*$ is $\bar m^*$.
-4. The interval at confidence $c$ (default 0.95) runs from the $(1-c)/2$ to the $(1+c)/2$ quantile of the $v^*$, with linear interpolation, as `numpy.quantile`. NaN values are left out, e.g. an MCC that is undefined in a resample, or the difference of two infinite values in a comparison. The interval then holds only for the resamples where the value is defined. Their number is reported (`BootstrapInterval.num_undefined`, `ci_num_undefined` in `summary_long.csv`, `num_undefined` in the JSON documents, the `undefined` column of `irap-eval compare`), and `irap-eval` prints the intervals that leave out some, but not all, resamples. Infinite values are kept, e.g. the NLL of a resample in which a label has probability 0. A bound interpolated between an infinite value and a finite or equal value is that infinite value.
+   with the sample standard deviation and one Student-t draw per resample, shared by the metrics of the method (`combine_model_resamples`). This is the posterior of the mean of normally distributed model values under the prior $p(\mu, \sigma) \propto 1/\sigma$. The t draws depend on the seed and the method name, so they are independent of the resamples and of the draws of other methods. With one model, $v^* = m^*_1$, and the interval covers only the road sequences. If $\bar m^*$ is infinite, $v^*$ is $\bar m^*$.
+4. The interval at confidence $c$ (default 0.95, `compute_percentile_interval`) runs from the $(1-c)/2$ to the $(1+c)/2$ quantile of the $v^*$, with linear interpolation, as `numpy.quantile`. NaN values are left out, e.g. an MCC that is undefined in a resample, or the difference of two infinite values in a comparison. The interval then holds only for the resamples where the value is defined. Their number is reported (`BootstrapInterval.num_undefined`, `ci_num_undefined` in `summary_long.csv`, `num_undefined` in the JSON documents, the `undefined` column of `irap-eval compare`), and `irap-eval` prints the intervals that leave out some, but not all, resamples. Infinite values are kept, e.g. the NLL of a resample in which a label has probability 0. A bound interpolated between an infinite value and a finite or equal value is that infinite value.
 
-Intervals are computed for every metric of a result. Per-class metrics have no intervals. The same seed gives the same draws for every method scored on the same set.
+Intervals are computed for every metric of a result. Per-class metrics have no intervals. The same seed gives the same draws for a method on the same set.
 
 ## Comparing methods
 
-`compare_methods(models_a, models_b)` (`irap-eval compare --a A --b B`, on the reference set, default $B = 1000$) recomputes the models of both methods on the same resamples, which pairs the comparison over road sequences:
+`compare_methods(models_a, models_b)` (`irap-eval compare --a A --b B`, on the reference set, default $B = 1000$) recomputes the models of both methods on the same resamples, which pairs the comparison over road sequences (`compute_resampled_differences`):
 
 - The point difference is $\Delta = \bar m_a - \bar m_b$.
-- Its interval is the percentile interval of the resampled differences $v^*_a - v^*_b$. The model terms of $a$ and $b$ use independent t draws.
+- Its interval is the percentile interval of the resampled differences $v^*_a - v^*_b$. The model terms of $a$ and $b$ use independent t draws (step 3 above).
 
-There are no p-values. A difference is significant at level $1 - c$ if its interval excludes 0.
+There are no p-values. A difference is significant at level $1 - c$ if its interval excludes 0. A one-sided test at level $\alpha$, e.g. whether $a$ is worse than $b$, uses the interval at $c = 1 - 2\alpha$.
 
 All models of both methods must have the same segments, sequences, attributes and null policy.
 

@@ -8,13 +8,14 @@ from irap_data.metadata import IGNORE_LABEL_INDEX
 from irap_evaluation.bootstrap import (
     BootstrapInterval,
     MetricDifference,
-    _compute_interval,
-    _resample_method_metrics,
+    combine_model_resamples,
     compare_methods,
     compute_bootstrap_intervals,
     compute_mean_metrics,
     compute_method_metrics,
+    compute_percentile_interval,
     draw_group_weights,
+    resample_model_metrics,
 )
 from irap_evaluation.evaluation import (
     align_to_evaluation_set,
@@ -412,18 +413,53 @@ def test_identical_models_add_no_uncertainty(metadata, reference_set):
         _to_bounds(compute_bootstrap_intervals([model], num_resamples=50, seed=4)), rtol=1e-12)
 
 
+def test_models_share_the_resamples_of_road_sequences(metadata, reference_set):
+    models = _evaluate_models(metadata, reference_set, "m", [0, 1])
+    weights = draw_group_weights(len(reference_set.sequence_ids), 20, np.random.default_rng(3))
+    for model in models:
+        np.testing.assert_array_equal(
+            resample_model_metrics(model, ["amF1"], num_resamples=20, seed=3).averages["amF1"],
+            compute_grouped_metrics(model.statistics, ["amF1"], weights).averages["amF1"])
+
+
+def test_resampled_averages_over_a_subset_equal_resampling_the_subset(reference_set,
+                                                                      predictions):
+    result = evaluate_predictions(predictions, reference_set)
+    subset = ["Curvature", "Number of lanes"]
+    np.testing.assert_equal(
+        dc.asdict(select_metric_attributes(resample_model_metrics(result, num_resamples=20),
+                                           subset)),
+        dc.asdict(resample_model_metrics(select_result_attributes(result, subset),
+                                         num_resamples=20)))
+
+
 def test_resampled_method_values_add_the_model_term(metadata, reference_set):
     models = _evaluate_models(metadata, reference_set, "m", [0, 1, 2])
-    rng = np.random.default_rng(0)
-    weights = draw_group_weights(len(reference_set.sequence_ids), 20, rng)
-    t_values = rng.standard_t(2, size=20)
-    resampled = _resample_method_metrics(models, ["amF1", "mF1"], weights, t_values)
-    model_values = np.stack([compute_grouped_metrics(r.statistics, ["amF1"], weights)
-                             .averages["amF1"] for r in models])
-    np.testing.assert_allclose(
-        resampled.averages["amF1"],
-        model_values.mean(0) + model_values.std(0, ddof=1) / np.sqrt(3) * t_values)
+    model_resamples = [resample_model_metrics(r, ["amF1", "mF1"], num_resamples=20)
+                       for r in models]
+    resampled = combine_model_resamples(model_resamples, "m")
     assert set(resampled.per_attribute["mF1"]) == set(models[0].attributes)
+
+    def compute_t_values(select):
+        model_values = np.stack([select(v) for v in model_resamples])
+        return ((select(resampled) - model_values.mean(0))
+                / (model_values.std(0, ddof=1) / np.sqrt(3)))
+
+    # One t draw per resample, shared by the metrics of the method.
+    attribute = models[0].attributes[0]
+    np.testing.assert_allclose(compute_t_values(lambda v: v.per_attribute["mF1"][attribute]),
+                               compute_t_values(lambda v: v.averages["amF1"]))
+    np.testing.assert_array_equal(
+        combine_model_resamples(model_resamples, "m").averages["amF1"],
+        resampled.averages["amF1"])
+    assert not np.allclose(combine_model_resamples(model_resamples, "other").averages["amF1"],
+                           resampled.averages["amF1"])
+    with pytest.raises(ValueError, match="At least one model"):
+        combine_model_resamples([], "m")
+    with pytest.raises(ValueError, match="number of resamples"):
+        combine_model_resamples(
+            [model_resamples[0], resample_model_metrics(models[1], ["amF1", "mF1"],
+                                                        num_resamples=10)], "m")
 
     point = compute_method_metrics(models)
     assert point.averages["amF1"] == pytest.approx(
@@ -473,14 +509,14 @@ def test_models_must_be_distinct_comparable_models_of_one_method(metadata, refer
     ([np.nan] * 5, (np.nan, np.nan)),
 ])
 def test_intervals_of_infinite_values(values, expected):
-    interval = _compute_interval(np.array(values), 0.95)
+    interval = compute_percentile_interval(np.array(values), 0.95)
     np.testing.assert_equal((interval.low, interval.high), expected)
     assert interval.num_undefined == np.isnan(values).sum()
 
 
 def test_intervals_of_finite_values_are_numpy_percentiles():
     values = np.random.default_rng(0).normal(size=101)
-    interval = _compute_interval(np.concatenate([values, [np.nan]]), 0.9)
+    interval = compute_percentile_interval(np.concatenate([values, [np.nan]]), 0.9)
     np.testing.assert_allclose((interval.low, interval.high), np.quantile(values, [0.05, 0.95]))
     assert interval.num_undefined == 1
 
