@@ -1,39 +1,44 @@
-"""Scores of the submissions, computed with irap_evaluation and cached in the database.
+"""Scores of the submissions, computed with irap_evaluation and cached in a database
+(`ScoreStore`).
 
 A submission is scored once on all its evaluation sets and all scored attributes
-(`SubmissionScoring`), and again only when its scoring is out of date. Means over the models of a
-method, also over a subset of the attributes, are computed from these scores when they are shown
-(`compute_method_scores`). Bootstrap intervals need the per-sequence statistics, which are too
-large to cache (about 11 MB per submission on Vietnam train), so they are computed from the
-prediction files and cached per set of submissions, evaluation set and subset of attributes
-(`IntervalRequest`, a `WorkRequest`).
+(`SubmissionScoring`), and again only when its scoring is out of date. The scoring also stores
+the metrics of the submission in each bootstrap resample of road sequences (`resample_result`).
+Means over the models of a method (`compute_method_scores`), and their resampled values, from
+which intervals and paired comparisons follow (`combine_method_resamples`), are computed from
+these when they are shown, also over a subset of the attributes.
 
-Cached values carry fingerprints of what they depend on: the scoring settings
-(`ScoringSettings.fingerprint`), the evaluation sets (`irap_evaluation.EvaluationSet.fingerprint`),
-and the prediction files (their SHA-256). A cached value whose fingerprints differ from the
-current ones is out of date.
+Scorings carry fingerprints of what they depend on: the scoring settings and code
+(`ScoringSettings.fingerprint`), and the evaluation sets
+(`irap_evaluation.EvaluationSet.fingerprint`). A scoring whose fingerprints differ from the current
+ones is out of date.
 
-`scoring_worker` computes the scores and intervals in the background.
+`scoring_worker` computes the scores in the background.
 """
 
 import dataclasses as dc
 import functools
 import hashlib
 import json
+import logging
 import sqlite3
 import typing as T
 from datetime import datetime
 from pathlib import Path
 
 import irap_evaluation as ie
+import numpy as np
 from irap_data.attrs import get_attrs_to_include
+from irap_data.metadata import IGNORE_LABEL_INDEX, ClassVocabulary
+from irap_evaluation.metrics import parse_metric_name
 from irap_evaluation.reports.evaluation_report import to_json_dict
 
+from .archive import DATABASE_FILE_NAME as ARCHIVE_DATABASE_FILE_NAME
 from .archive import ModelArchive, Submission
-from .database import begin_write, connect, get_utc_now
+from .database import begin_write, connect, get_utc_now, initialize_schema
 from .datasets import DatasetContext
 
-V = T.TypeVar("V")
+_logger = logging.getLogger(__name__)
 
 #: 'scored': the scores are stored (none for a split without labels, see
 #: `SubmissionScoring.notes`).
@@ -42,11 +47,26 @@ V = T.TypeVar("V")
 #: 'error': an unexpected error, e.g. a missing file. It is scored again at the next start.
 ScoringStatus = T.Literal["scored", "failed", "error"]
 
-#: The cached values of a submission are deleted with it: its scorings and scores by the foreign
-#: keys, and the results of requests of it (`result_submissions`) by the trigger.
+#: The attribute averages of the iRAP protocol, amF1 first. Hard predictions lack the
+#: probabilistic ones.
+IRAP_AVERAGE_METRIC_NAMES = tuple(n for n in ie.get_irap_metric_names(output_kind="probs")
+                                  if parse_metric_name(n).is_averaged)
+#: The metrics whose resampled values are stored (`resample_result`): `IRAP_AVERAGE_METRIC_NAMES`
+#: and their per-attribute values, from which the averages over a subset of the attributes are
+#: computed.
+RESAMPLED_METRIC_NAMES = ie.add_per_attribute_metric_names(IRAP_AVERAGE_METRIC_NAMES)
+
+#: The file of the score cache in the data directory, apart from the archive, so that a migration
+#: of the archive does not copy it to its backup.
+DATABASE_FILE_NAME = "scores.sqlite3"
+#: The version of the tables of the score cache (`_SCHEMA`, `PRAGMA user_version`). A cache of
+#: another version, e.g. of an older server, is created again, and the files are scored again,
+#: since the cache is computed from the files (`ScoreStore`).
+SCORE_CACHE_VERSION = 1
+
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS submission_scorings (
-    submission_id INTEGER PRIMARY KEY REFERENCES submissions (id) ON DELETE CASCADE,
+CREATE TABLE submission_scorings (
+    submission_id INTEGER PRIMARY KEY,
     status TEXT NOT NULL,
     message TEXT NOT NULL,
     notes TEXT NOT NULL,
@@ -54,8 +74,9 @@ CREATE TABLE IF NOT EXISTS submission_scorings (
     evaluation_sets_fingerprint TEXT NOT NULL,
     scored_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS submission_scores (
-    submission_id INTEGER NOT NULL REFERENCES submissions (id) ON DELETE CASCADE,
+CREATE TABLE submission_scores (
+    submission_id INTEGER NOT NULL REFERENCES submission_scorings (submission_id)
+        ON DELETE CASCADE,
     evaluation_set TEXT NOT NULL,
     context_offsets TEXT NOT NULL,
     evaluation_set_fingerprint TEXT NOT NULL,
@@ -64,25 +85,10 @@ CREATE TABLE IF NOT EXISTS submission_scores (
     num_invalid TEXT NOT NULL,
     missing_attributes TEXT NOT NULL,
     report TEXT NOT NULL,
+    -- `resamples_to_bytes` of `resample_result`.
+    resamples BLOB NOT NULL,
     PRIMARY KEY (submission_id, evaluation_set)
 );
-CREATE TABLE IF NOT EXISTS result_cache (
-    key TEXT PRIMARY KEY,
-    value TEXT,
-    message TEXT NOT NULL,
-    computed_at TEXT NOT NULL
-);
--- The submissions that each result is of (`WorkRequest.submission_ids`).
-CREATE TABLE IF NOT EXISTS result_submissions (
-    key TEXT NOT NULL REFERENCES result_cache (key) ON DELETE CASCADE,
-    submission_id INTEGER NOT NULL REFERENCES submissions (id),
-    PRIMARY KEY (key, submission_id)
-);
-CREATE INDEX IF NOT EXISTS result_submission ON result_submissions (submission_id);
-CREATE TRIGGER IF NOT EXISTS delete_submission_results AFTER DELETE ON submissions BEGIN
-    DELETE FROM result_cache
-    WHERE key IN (SELECT key FROM result_submissions WHERE submission_id = OLD.id);
-END;
 """
 
 
@@ -109,14 +115,16 @@ class ScoringSettings:
 
     @functools.cached_property
     def fingerprint(self) -> str:
-        """A SHA-256 of the settings and of what they select from the libraries, e.g. the
-        canonical attributes and the default metrics, so that a library update that changes them
-        makes cached values out of date."""
+        """A SHA-256 of the settings, of what they select from the libraries, e.g. the canonical
+        attributes and the default metrics, and of the output of the scoring code
+        (`compute_scoring_code_fingerprint`), so that a library update that changes them makes
+        stored scorings out of date."""
         return compute_json_sha256({
             **dc.asdict(self),
             "canonical_attributes": list(get_attrs_to_include()),
             "metric_names": {kind: list(ie.get_default_metric_names(kind))
-                             for kind in T.get_args(ie.OutputKind)}})
+                             for kind in T.get_args(ie.OutputKind)},
+            "scoring_code": compute_scoring_code_fingerprint(self)})
 
 
 SCORING_SETTINGS = ScoringSettings()
@@ -133,6 +141,77 @@ def score_predictions(predictions: ie.Predictions, evaluation_set: ie.Evaluation
         predictions, evaluation_set, attributes=select_scored_attributes(evaluation_set, settings),
         null_policy=settings.null_policy,
         missing_attribute_policy=settings.missing_attribute_policy)
+
+
+def resample_result(result: ie.EvaluationResult,
+                    settings: ScoringSettings) -> ie.MetricValues[np.ndarray]:
+    """Computes the metrics of `RESAMPLED_METRIC_NAMES` that a result has in each bootstrap
+    resample (`irap_evaluation.resample_model_metrics`): (num_resamples,) float32 arrays, which
+    are half the size of float64 ones and precise enough for intervals and differences."""
+    names = [n for n in RESAMPLED_METRIC_NAMES if n in result.metrics.names]
+    return _to_float32(ie.resample_model_metrics(result, names,
+                                                 num_resamples=settings.num_resamples,
+                                                 seed=settings.bootstrap_seed))
+
+
+def _to_float32(values: ie.MetricValues[np.ndarray]) -> ie.MetricValues[np.ndarray]:
+    """Converts resampled values to float32, in which they are stored (`resample_result`)."""
+    return ie.map_metric_values(lambda v: v.astype(np.float32), values)
+
+
+def _make_code_probe_predictions(
+        evaluation_set: ie.EvaluationSet) -> tuple[ie.Predictions, ie.Predictions]:
+    """Makes random probabilistic and hard predictions of a method for the segments of
+    `evaluation_set` (`compute_scoring_code_fingerprint`)."""
+    rng = np.random.default_rng(0)
+    header = ie.PredictionHeader(
+        dataset=evaluation_set.dataset, split=evaluation_set.split,
+        model=ie.ModelInfo("probe", training_splits=(), early_stopping_splits=(), seed=0),
+        context_offsets=evaluation_set.context_offsets)
+    attribute_to_irap_codes = evaluation_set.vocabulary.attribute_to_irap_codes
+    probabilistic = ie.Predictions.from_logits(
+        header, attribute_to_irap_codes, evaluation_set.segment_ids,
+        {a: 3 * rng.normal(size=(evaluation_set.num_segments, len(codes)))
+         for a, codes in attribute_to_irap_codes.items()})
+    hard = ie.Predictions.from_class_indices(header, attribute_to_irap_codes,
+                                             evaluation_set.segment_ids,
+                                             ie.to_class_indices(probabilistic))
+    return probabilistic, hard
+
+
+@functools.cache
+def compute_scoring_code_fingerprint(settings: ScoringSettings) -> str:
+    """Computes a SHA-256 of the scores and resampled values (`resample_result`, with 20
+    resamples) of random predictions on a small synthetic evaluation set, which changes if the
+    code of scoring or resampling, e.g. of irap_evaluation or of NumPy's random generator, gives
+    other values.
+
+    The values are rounded to 9 significant digits, so that rounding differences, e.g. of
+    another number of threads, do not change it. If they did, the scorings would only be scored
+    again.
+    """
+    rng = np.random.default_rng(0)
+    attributes = get_attrs_to_include()[:2]
+    num_sequences, sequence_length = 6, 4
+    segment_ids = tuple(f"{i:03d}" for i in range(num_sequences * sequence_length))
+    vocabulary = ClassVocabulary({a: {f"{a} {code}": code for code in (1, 2, 3)}
+                                  for a in attributes})
+    class_indices = {a: rng.integers(0, 3, len(segment_ids)) for a in attributes}
+    class_indices[attributes[1]][::5] = IGNORE_LABEL_INDEX
+    evaluation_set = ie.EvaluationSet(
+        dataset="vietnam", split="val", name=ie.REFERENCE_SET_NAME, context_offsets=(0,),
+        vocabulary=vocabulary, segment_ids=segment_ids, class_indices=class_indices,
+        segment_sequence_ids=tuple(f"sequence{i // sequence_length}"
+                                   for i in range(len(segment_ids))))
+    probe_settings = dc.replace(settings, num_resamples=20)
+    outputs = []
+    for predictions in _make_code_probe_predictions(evaluation_set):
+        result = score_predictions(predictions, evaluation_set, probe_settings)
+        outputs += [result.metrics, resample_result(result, probe_settings)]
+    return compute_json_sha256([
+        dc.asdict(ie.map_metric_values(
+            lambda v: np.char.mod("%.9g", np.asarray(v, dtype=np.float64)).tolist(), values))
+        for values in outputs])
 
 
 def _combine_evaluation_set_fingerprints(evaluation_sets: T.Iterable[ie.EvaluationSet]) -> str:
@@ -225,81 +304,37 @@ def make_unscored_scoring(submission_id: int, status: T.Literal["failed", "error
                              scored_at=get_utc_now())
 
 
-@dc.dataclass(frozen=True)
-class CachedResult(T.Generic[V]):
-    """The result of a request (`WorkRequest`), or why it cannot be computed.
-
-    Attributes:
-        value: None if the computation failed.
-        message: Why the computation failed, empty if it did not.
-    """
-
-    value: V | None
-    message: str
-    computed_at: datetime
-
-
-@dc.dataclass(frozen=True)
-class ResultState:
-    """The state of the result of a request (`WorkRequest`), e.g. the intervals of a row:
-    computed or failed (`cached`), being computed, or neither."""
-
-    cached: CachedResult | None = None
-    is_pending: bool = False
-
-
-class WorkRequest(T.Protocol[V]):
-    """A computation that pages request from the scoring worker (`ScoringWorker.request`), whose
-    result is cached in the database, e.g. intervals (`IntervalRequest`).
-
-    Its fields are the fingerprints of what the result depends on, so `key` identifies the
-    result in the cache.
-    """
-
-    @property
-    def key(self) -> str:
-        """A SHA-256 of the kind of request and its fields."""
-        ...
-
-    @property
-    def submission_ids(self) -> tuple[int, ...]:
-        """The submissions that the result is of, whose deletion deletes the cached result."""
-        ...
-
-    def compute(self, archive: ModelArchive,
-                dataset_contexts: T.Mapping[str, DatasetContext],
-                settings: ScoringSettings) -> V:
-        """Computes the result from the prediction files.
-
-        Raises:
-            ValueError: If it cannot be computed, e.g. since the request is out of date. The
-                message is cached instead of the result.
-        """
-        ...
-
-    def value_to_json(self, value: V) -> str: ...
-
-    def value_from_json(self, text: str) -> V: ...
-
-
-def metric_values_to_json(values: ie.MetricValues) -> str:
+def metric_values_to_json(values: ie.MetricValues[float]) -> str:
     """Encodes metric values as the JSON of the cache, which keeps NaN and infinite values,
-    unlike standard JSON and `evaluation_report.to_json_dict`. Dataclass values become JSON
-    objects."""
+    unlike standard JSON and `evaluation_report.to_json_dict`."""
     return json.dumps(dc.asdict(values))
 
 
-def metric_values_from_json(text: str, convert: T.Callable[[T.Any], T.Any] | None = None
-                            ) -> ie.MetricValues:
-    """Decodes the JSON of `metric_values_to_json`.
-
-    Args:
-        convert: Applied to each decoded value, e.g. to make a dataclass of a JSON object.
-    """
+def metric_values_from_json(text: str) -> ie.MetricValues[float]:
+    """Decodes the JSON of `metric_values_to_json`."""
     values = json.loads(text)
-    metric_values = ie.MetricValues(averages=values["averages"],
-                                    per_attribute=values["per_attribute"])
-    return metric_values if convert is None else ie.map_metric_values(convert, metric_values)
+    return ie.MetricValues(averages=values["averages"], per_attribute=values["per_attribute"])
+
+
+def resamples_to_bytes(resamples: ie.MetricValues[np.ndarray]) -> bytes:
+    """Encodes resampled values (`resample_result`) as a line of JSON with the metric names and
+    attributes, followed by the (K, B) little-endian float32 values in their order."""
+    names = {"averages": list(resamples.averages),
+             "per_attribute": {n: list(a) for n, a in resamples.per_attribute.items()}}
+    return (json.dumps(names).encode() + b"\n"
+            + np.stack(list(resamples.iterate_values())).astype("<f4").tobytes())
+
+
+def resamples_from_bytes(data: bytes) -> ie.MetricValues[np.ndarray]:
+    """Decodes `resamples_to_bytes` to read-only float32 arrays."""
+    header, values_data = data.split(b"\n", 1)
+    names = json.loads(header)
+    num_values = len(names["averages"]) + sum(len(a) for a in names["per_attribute"].values())
+    values = iter(np.frombuffer(values_data, dtype="<f4").reshape(num_values, -1))
+    return ie.MetricValues(
+        averages={n: next(values) for n in names["averages"]},
+        per_attribute={n: {a: next(values) for a in attributes}
+                       for n, attributes in names["per_attribute"].items()})
 
 
 def _to_evaluation_set_scores(row: sqlite3.Row) -> EvaluationSetScores:
@@ -329,13 +364,47 @@ _SCORES_COLUMNS = ("submission_id, evaluation_set, context_offsets, evaluation_s
 
 
 class ScoreStore:
-    """The cached scores and results of requests (`WorkRequest`), in the database of the
-    archive."""
+    """The cached scores of the submissions of the archive in a data directory, in their own
+    database (`DATABASE_FILE_NAME`).
 
-    def __init__(self, database_path: Path):
-        self.database_path = database_path
-        with connect(database_path) as connection:
-            connection.executescript(_SCHEMA)
+    A cache of another version than `SCORE_CACHE_VERSION` is created again, so that
+    `scoring_worker.ScoringWorker.update_all_submissions` scores all files again.
+
+    The scorings of deleted submissions are deleted by
+    `delete_scorings_of_deleted_submissions`, since a foreign key cannot refer to the archive
+    database.
+
+    Raises:
+        ValueError: If the tables of the cache differ from those of its version
+            (`database.check_schema`), e.g. since `_SCHEMA` was changed without a new version.
+    """
+
+    def __init__(self, data_dir: Path):
+        self.database_path = data_dir / DATABASE_FILE_NAME
+        self.archive_database_path = data_dir / ARCHIVE_DATABASE_FILE_NAME
+        if self.database_path.exists():
+            # Reading the version also rolls back an unfinished write, whose journal file would
+            # otherwise be applied to the new database.
+            with connect(self.database_path) as connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version != SCORE_CACHE_VERSION:
+                self.database_path.unlink()
+                _logger.warning("The score cache %s was of version %d, so it is created again"
+                                " with version %d, and all files are scored again.",
+                                self.database_path, version, SCORE_CACHE_VERSION)
+        initialize_schema(self.database_path, _SCHEMA, SCORE_CACHE_VERSION, "score cache", {})
+
+    def delete_scorings_of_deleted_submissions(self) -> None:
+        """Deletes the scorings of the submissions that are no longer in the archive, with their
+        scores.
+
+        One statement reads the archive and deletes, so a scoring that is stored before a
+        deletion of its submission is deleted either now or by a call after the deletion.
+        """
+        with connect(self.database_path) as connection:
+            connection.execute("ATTACH DATABASE ? AS archive", (str(self.archive_database_path),))
+            connection.execute("DELETE FROM submission_scorings WHERE submission_id NOT IN"
+                               " (SELECT id FROM archive.submissions)")
 
     def get_scorings(self, submission_ids: T.Iterable[int]) -> dict[int, SubmissionScoring]:
         """Returns submission id -> its stored scoring, for those of `submission_ids` that have
@@ -363,18 +432,20 @@ class ScoreStore:
         return self.get_scorings([submission_id]).get(submission_id)
 
     def set_scoring(self, scoring: SubmissionScoring,
-                    reports: T.Mapping[str, T.Mapping[str, T.Any]]) -> None:
-        """Stores a scoring, replacing the previous one of the submission.
+                    reports: T.Mapping[str, T.Mapping[str, T.Any]],
+                    resamples: T.Mapping[str, ie.MetricValues[np.ndarray]]) -> None:
+        """Stores a scoring, replacing the previous one of the submission. If the submission has
+        been deleted, e.g. while it was scored, the scoring is deleted again
+        (`delete_scorings_of_deleted_submissions`).
 
         Args:
             reports: Evaluation set name -> its `evaluation_report.to_json_dict` document, for
                 each of `scoring.evaluation_set_scores`.
-
-        Raises:
-            sqlite3.IntegrityError: If the submission has been deleted, e.g. while it was scored.
+            resamples: Evaluation set name -> its resampled values (`resample_result`), the same.
         """
-        if set(reports) != {s.evaluation_set for s in scoring.evaluation_set_scores}:
-            raise ValueError("Each evaluation set of the scores needs a report.")
+        set_names = {s.evaluation_set for s in scoring.evaluation_set_scores}
+        if set(reports) != set_names or set(resamples) != set_names:
+            raise ValueError("Each evaluation set of the scores needs a report and resamples.")
         with begin_write(self.database_path) as connection:
             connection.execute("DELETE FROM submission_scores WHERE submission_id = ?",
                                (scoring.submission_id,))
@@ -389,14 +460,16 @@ class ScoreStore:
                 connection.execute(
                     "INSERT INTO submission_scores (submission_id, evaluation_set,"
                     " context_offsets, evaluation_set_fingerprint, attributes, metrics,"
-                    " num_invalid, missing_attributes, report)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " num_invalid, missing_attributes, report, resamples)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (scoring.submission_id, scores.evaluation_set,
                      json.dumps(list(scores.context_offsets)),
                      scores.evaluation_set_fingerprint, json.dumps(list(scores.attributes)),
                      metric_values_to_json(scores.metrics), json.dumps(scores.num_invalid),
                      json.dumps(list(scores.missing_attributes)),
-                     json.dumps(reports[scores.evaluation_set])))
+                     json.dumps(reports[scores.evaluation_set]),
+                     resamples_to_bytes(resamples[scores.evaluation_set])))
+        self.delete_scorings_of_deleted_submissions()
 
     def get_score_report(self, submission_id: int,
                          evaluation_set: str) -> dict[str, T.Any] | None:
@@ -408,32 +481,23 @@ class ScoreStore:
                 " evaluation_set = ?", (submission_id, evaluation_set)).fetchone()
         return None if row is None else json.loads(row["report"])
 
-    def get_result(self, request: WorkRequest[V]) -> CachedResult[V] | None:
-        with connect(self.database_path) as connection:
-            row = connection.execute("SELECT * FROM result_cache WHERE key = ?",
-                                     (request.key,)).fetchone()
-        if row is None:
-            return None
-        return CachedResult(
-            value=None if row["value"] is None else request.value_from_json(row["value"]),
-            message=row["message"], computed_at=datetime.fromisoformat(row["computed_at"]))
+    def get_resamples(self, submission_id: int, evaluation_set: str,
+                      evaluation_set_fingerprint: str) -> ie.MetricValues[np.ndarray]:
+        """Returns the resampled values (`resample_result`) of a submission on an evaluation set.
 
-    def set_result(self, request: WorkRequest[V], cached: CachedResult[V]) -> None:
-        """
         Raises:
-            sqlite3.IntegrityError: If a submission of the request has been deleted.
+            LookupError: If they are not stored for the set with this fingerprint, e.g. since the
+                submission has been deleted or scored again since its scores were read.
         """
-        key = request.key
-        with begin_write(self.database_path) as connection:
-            # A replaced row's `result_submissions` are deleted with it, and inserted again.
-            connection.execute(
-                "INSERT OR REPLACE INTO result_cache (key, value, message, computed_at)"
-                " VALUES (?, ?, ?, ?)",
-                (key, None if cached.value is None else request.value_to_json(cached.value),
-                 cached.message, cached.computed_at.isoformat()))
-            connection.executemany(
-                "INSERT INTO result_submissions (key, submission_id) VALUES (?, ?)",
-                [(key, i) for i in set(request.submission_ids)])
+        with connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT resamples FROM submission_scores WHERE submission_id = ? AND"
+                " evaluation_set = ? AND evaluation_set_fingerprint = ?",
+                (submission_id, evaluation_set, evaluation_set_fingerprint)).fetchone()
+        if row is None:
+            raise LookupError(f"File #{submission_id} has no resamples on the {evaluation_set}"
+                              f" set that it was scored on.")
+        return resamples_from_bytes(row["resamples"])
 
 
 def remove_class_scores(report: T.Mapping[str, T.Any]) -> dict[str, T.Any]:
@@ -457,56 +521,38 @@ def is_scoring_current(scoring: SubmissionScoring, submission: Submission,
     return scoring.evaluation_sets_fingerprint == sets_fingerprint
 
 
-def get_scored_evaluation_set(context: DatasetContext, submission: Submission,
-                              evaluation_set: str, fingerprint: str) -> ie.EvaluationSet:
-    """Returns the evaluation set of a submission with this name, checking that it is the set
-    that the scores are of (`fingerprint`).
-
-    Raises:
-        ValueError: If the submission has no such set, or the set has changed since the scoring
-            (its fingerprint differs).
-    """
-    name_to_set = context.get_submission_evaluation_sets(submission.split,
-                                                         submission.context_offsets)
-    if evaluation_set not in name_to_set:
-        raise ValueError(f"File #{submission.id} of {submission.label} has no evaluation set"
-                         f" {evaluation_set!r}.")
-    if name_to_set[evaluation_set].fingerprint != fingerprint:
-        raise ValueError(f"The {evaluation_set} set of file #{submission.id} of"
-                         f" {submission.label} has changed since it was scored.")
-    return name_to_set[evaluation_set]
-
-
-def score_submission(archive: ModelArchive, context: DatasetContext, submission: Submission,
-                     settings: ScoringSettings
-                     ) -> tuple[SubmissionScoring, dict[str, dict[str, T.Any]]]:
+def score_submission(
+        archive: ModelArchive, context: DatasetContext, submission: Submission,
+        settings: ScoringSettings
+) -> tuple[SubmissionScoring, dict[str, dict[str, T.Any]], dict[str, ie.MetricValues[np.ndarray]]]:
     """Scores a stored submission on its evaluation sets.
 
     A `ValueError`, e.g. of a file that lacks segments of a new metadata build or of a split that
     is not in the metadata, gives a 'failed' scoring with its message. Other errors are raised.
 
     Returns:
-        The scoring and the reports for `ScoreStore.set_scoring`.
+        The scoring, the reports and the resampled values for `ScoreStore.set_scoring`.
     """
     scored_at = get_utc_now()
     try:
         sets_fingerprint = get_evaluation_sets_fingerprint(context, submission.split,
                                                            submission.context_offsets)
     except ValueError as e:  # The split is not in the metadata, so the scoring is not current.
-        return make_unscored_scoring(submission.id, "failed", str(e), settings), {}
+        return make_unscored_scoring(submission.id, "failed", str(e), settings), {}, {}
     try:
         predictions = ie.read_predictions(archive.get_predictions_path(submission.id))
         evaluation_sets, notes = context.select_evaluation_sets(predictions)
         results = [score_predictions(predictions, s, settings) for s in evaluation_sets]
+        resamples = {r.evaluation_set.name: resample_result(r, settings) for r in results}
     except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
         return make_unscored_scoring(submission.id, "failed", str(e), settings,
-                                     sets_fingerprint), {}
+                                     sets_fingerprint), {}, {}
     scoring = SubmissionScoring(
         submission_id=submission.id, status="scored", message="", notes=tuple(notes),
         settings_fingerprint=settings.fingerprint, evaluation_sets_fingerprint=sets_fingerprint,
         scored_at=scored_at,
         evaluation_set_scores=tuple(EvaluationSetScores.from_result(r) for r in results))
-    return scoring, {r.evaluation_set.name: to_json_dict(r) for r in results}
+    return scoring, {r.evaluation_set.name: to_json_dict(r) for r in results}, resamples
 
 
 # Methods ##########################################################################################
@@ -524,11 +570,19 @@ def get_model_evaluation_set(context: DatasetContext,
     """Returns the evaluation set that the scores of a model are of.
 
     Raises:
-        ValueError: See `get_scored_evaluation_set`.
+        ValueError: If the submission no longer has the set, or the set has changed since the
+            scoring (its fingerprint differs).
     """
-    return get_scored_evaluation_set(context, scored_model.submission,
-                                     scored_model.scores.evaluation_set,
-                                     scored_model.scores.evaluation_set_fingerprint)
+    submission, scores = scored_model.submission, scored_model.scores
+    name_to_set = context.get_submission_evaluation_sets(submission.split,
+                                                         submission.context_offsets)
+    if scores.evaluation_set not in name_to_set:
+        raise ValueError(f"File #{submission.id} of {submission.label} has no evaluation set"
+                         f" {scores.evaluation_set!r}.")
+    if name_to_set[scores.evaluation_set].fingerprint != scores.evaluation_set_fingerprint:
+        raise ValueError(f"The {scores.evaluation_set} set of file #{submission.id} of"
+                         f" {submission.label} has changed since it was scored.")
+    return name_to_set[scores.evaluation_set]
 
 
 @dc.dataclass(frozen=True)
@@ -590,12 +644,18 @@ def group_scored_models_by_method(
     return method_to_models
 
 
+def are_scored_on_same_set(models: T.Iterable[ScoredModel]) -> bool:
+    """Checks whether models are scored on the same evaluation set (the same fingerprint), so
+    that their resampled values are paired: of the same resamples of the same road sequences."""
+    return len({m.scores.evaluation_set_fingerprint for m in models}) <= 1
+
+
 def get_combination_error(models: T.Sequence[ScoredModel]) -> str | None:
-    """Returns why the models cannot be combined in means (`compute_method_scores`) or intervals
-    (`make_interval_request`), or None if they can."""
+    """Returns why the models cannot be combined in means (`compute_method_scores`) or resampled
+    values (`combine_method_resamples`), or None if they can."""
     if not models:
         return "At least one model is required."
-    if len({m.scores.evaluation_set_fingerprint for m in models}) > 1:
+    if not are_scored_on_same_set(models):
         offsets = ", ".join(f"{m.submission.label}: {m.scores.context_offsets}" for m in models)
         return (f"The models are scored on different segments (context offsets {offsets}), so"
                 f" they cannot be combined.")
@@ -603,22 +663,6 @@ def get_combination_error(models: T.Sequence[ScoredModel]) -> str | None:
         return ("The models differ in metrics or attributes, e.g. hard and probabilistic"
                 " predictions, so they cannot be combined.")
     return None
-
-
-def check_attributes(attributes: T.Collection[str]) -> None:
-    """Checks the attributes of means or a request.
-
-    Raises:
-        ValueError: If there is none.
-    """
-    if not attributes:
-        raise ValueError("At least one attribute is required.")
-
-
-def to_submission_fingerprints(models: T.Iterable[ScoredModel]) -> tuple[tuple[int, str], ...]:
-    """Returns the sorted (submission id, file SHA-256) of the models, which identify their
-    predictions in a request (see `WorkRequest`)."""
-    return tuple(sorted((m.submission.id, m.submission.file_sha256) for m in models))
 
 
 def compute_method_scores(method_name: str, models: T.Sequence[ScoredModel],
@@ -631,7 +675,8 @@ def compute_method_scores(method_name: str, models: T.Sequence[ScoredModel],
     Raises:
         ValueError: If `attributes` is empty.
     """
-    check_attributes(attributes)
+    if not attributes:
+        raise ValueError("At least one attribute is required.")
     models = tuple(sorted(models, key=lambda m: m.submission.id))
     unpredicted = {a for m in models for a in m.scores.missing_attributes}
     error = get_combination_error(models)
@@ -645,94 +690,34 @@ def compute_method_scores(method_name: str, models: T.Sequence[ScoredModel],
                         missing_attributes=tuple(a for a in attributes if a in unpredicted))
 
 
-# Intervals ########################################################################################
+# Resampled values #################################################################################
 
-@dc.dataclass(frozen=True)
-class IntervalRequest:
-    """Bootstrap intervals of the metrics of a method (the means over its models, or a single
-    model) on an evaluation set, over a subset of the attributes.
+def combine_method_resamples(method_name: str,
+                             model_resamples: T.Sequence[ie.MetricValues[np.ndarray]],
+                             attributes: T.Sequence[str], metric_names: T.Collection[str],
+                             seed: int) -> ie.MetricValues[np.ndarray]:
+    """Computes the resampled values of a method over `attributes` from those of its models
+    (`ScoreStore.get_resamples`): their averages over the attributes
+    (`irap_evaluation.select_metric_attributes`), combined with the variation between the models
+    (`irap_evaluation.combine_model_resamples`). The values are float32, like the stored ones.
 
-    Its fields are the fingerprints of what the intervals depend on, so `key` identifies them in
-    the cache.
+    Args:
+        metric_names: The metrics to compute, e.g. those that a page shows, since all metrics of
+            all attributes take tens of milliseconds per method. Those that the models lack are
+            left out.
+        seed: `ScoringSettings.bootstrap_seed`.
 
-    Attributes:
-        submissions: (submission id, file SHA-256) of each model, sorted.
-        evaluation_set: The name of the set (`datasets.EVALUATION_SET_NAMES`).
-        attributes: Sorted.
-    """
-
-    submissions: tuple[tuple[int, str], ...]
-    evaluation_set: str
-    evaluation_set_fingerprint: str
-    attributes: tuple[str, ...]
-    settings_fingerprint: str
-
-    @functools.cached_property
-    def key(self) -> str:
-        return compute_json_sha256({"kind": "intervals", **dc.asdict(self)})
-
-    @property
-    def submission_ids(self) -> tuple[int, ...]:
-        return tuple(submission_id for submission_id, _ in self.submissions)
-
-    def compute(self, archive: ModelArchive,
-                dataset_contexts: T.Mapping[str, DatasetContext],
-                settings: ScoringSettings) -> ie.MetricValues[ie.BootstrapInterval]:
-        """See `WorkRequest.compute`. The submissions are scored again (`evaluate_models`).
-
-        Raises:
-            ValueError: See `evaluate_models`, and if `irap_evaluation.compute_bootstrap_intervals`
-                refuses the models.
-        """
-        return ie.compute_bootstrap_intervals(
-            self.evaluate_models(archive, dataset_contexts, settings),
-            num_resamples=settings.num_resamples, confidence=settings.confidence,
-            seed=settings.bootstrap_seed)
-
-    def evaluate_models(self, archive: ModelArchive,
-                        dataset_contexts: T.Mapping[str, DatasetContext],
-                        settings: ScoringSettings) -> list[ie.EvaluationResult]:
-        """Scores the submissions again from their files, restricted to `attributes`, since their
-        per-sequence statistics are not cached.
-
-        Raises:
-            ValueError: If the request is out of date: other settings, files or evaluation set.
-            LookupError: If a submission has been deleted.
-        """
-        if self.settings_fingerprint != settings.fingerprint:
-            raise ValueError("The request is of other scoring settings.")
-        results = []
-        for submission_id, file_sha256 in self.submissions:
-            submission = archive.get_submission(submission_id)
-            if submission.file_sha256 != file_sha256:
-                raise ValueError(f"File #{submission_id} has other contents than requested.")
-            scored_set = get_scored_evaluation_set(
-                dataset_contexts[submission.dataset], submission, self.evaluation_set,
-                self.evaluation_set_fingerprint)
-            predictions = ie.read_predictions(archive.get_predictions_path(submission_id))
-            results.append(ie.select_result_attributes(
-                score_predictions(predictions, scored_set, settings), self.attributes))
-        return results
-
-    def value_to_json(self, value: ie.MetricValues[ie.BootstrapInterval]) -> str:
-        return metric_values_to_json(value)
-
-    def value_from_json(self, text: str) -> ie.MetricValues[ie.BootstrapInterval]:
-        return metric_values_from_json(text, lambda d: ie.BootstrapInterval(**d))
-
-
-def make_interval_request(models: T.Sequence[ScoredModel], attributes: T.Collection[str],
-                          settings: ScoringSettings) -> IntervalRequest:
-    """
     Raises:
-        ValueError: If the models cannot be combined (`get_combination_error`), or `attributes`
-            is empty.
+        ValueError: If `metric_names` has metrics that are not stored (`RESAMPLED_METRIC_NAMES`),
+            `attributes` is empty or has attributes without values, or the models differ in
+            metrics or attributes.
     """
-    if (error := get_combination_error(models)) is not None:
-        raise ValueError(error)
-    check_attributes(attributes)
-    return IntervalRequest(
-        submissions=to_submission_fingerprints(models),
-        evaluation_set=models[0].scores.evaluation_set,
-        evaluation_set_fingerprint=models[0].scores.evaluation_set_fingerprint,
-        attributes=tuple(sorted(attributes)), settings_fingerprint=settings.fingerprint)
+    if unstored := [n for n in metric_names if n not in RESAMPLED_METRIC_NAMES]:
+        raise ValueError(f"The resampled values of {unstored} are not stored.")
+    # The averages need their per-attribute values.
+    needed_names = ie.add_per_attribute_metric_names(list(metric_names))
+    return _to_float32(ie.combine_model_resamples(
+        [ie.select_metric_names(
+            ie.select_metric_attributes(ie.select_metric_names(r, needed_names), attributes),
+            metric_names)
+         for r in model_resamples], method_name, seed=seed))

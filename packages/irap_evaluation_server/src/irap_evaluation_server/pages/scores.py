@@ -36,9 +36,8 @@ from ..components.view_queries import (
     parse_per_attribute_metric,
     select_matching_names,
 )
-from ..components.work_requests import WorkRequester
 from ..datasets import DatasetContext
-from ..method_comparison import list_comparable_methods, make_comparison_request
+from ..method_comparison import compare_with_reference, list_comparable_methods
 from ..method_ranking import (
     DEFAULT_SORT_METRIC,
     RANKING_METRIC_NAMES,
@@ -48,15 +47,7 @@ from ..method_ranking import (
     rank_methods,
     select_shown_methods,
 )
-from ..scoring import (
-    MethodScores,
-    ResultState,
-    ScoredModel,
-    ScoringSettings,
-    WorkRequest,
-    make_interval_request,
-    select_scored_models,
-)
+from ..scoring import ScoredModel, select_scored_models
 from ..scoring_worker import ScoringWorker
 
 #: Plural for the model-compatible sets, since each method is scored on its own.
@@ -155,15 +146,9 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
 
     def on_subset_changed(subset: AttributeSubset) -> None:
         ui.navigate.history.replace(view.to_path(subset.to_query()))
-        requester.delay_requests()
         show_table.refresh()
 
-    def on_method_pattern_changed(method_pattern: str) -> None:
-        requester.delay_requests()
-        on_view_changed(method_pattern=method_pattern)
-
     context = dataset_contexts[view.dataset]
-    requester = WorkRequester(worker)
 
     def show_methods(models: T.Sequence[ScoredModel], subset: AttributeSubset,
                      matching_method_names: T.AbstractSet[str]) -> None:
@@ -195,20 +180,28 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
         if num_hidden:
             ui.label(f"Number of hidden methods trained on {view.split}: {num_hidden}.").classes(
                 "muted")
-        method_to_intervals, comparisons, comparison_errors = _request_results(
-            requester, shown, reference, subset.selected, worker.settings)
         if not shown:
             if not num_hidden:  # Otherwise, the label above says that the matches are hidden.
                 ui.label("The filter matches no method.").classes("muted")
             return
+        confidence = worker.settings.confidence
+        metric_names = (view.metric_name,) if view.metric_name else RANKING_METRIC_NAMES
+        method_to_resamples = {
+            r.method_name: worker.get_method_resamples(r, subset.selected, metric_names)
+            for r in shown}
+        comparisons, comparison_errors = None, []
+        if reference is not None:
+            method_to_differences, comparison_errors = compare_with_reference(
+                shown, method_to_resamples, reference, confidence)
+            comparisons = ReferenceComparisons(reference.method_name, method_to_differences)
         if view.metric_name:
-            table_html = make_per_attribute_table_html(shown, method_to_intervals,
-                                                       view.metric_name, subset.selected,
-                                                       view.split, comparisons)
+            table_html = make_per_attribute_table_html(
+                shown, method_to_resamples, confidence, view.metric_name, subset.selected,
+                view.split, comparisons)
         else:
             table_html = make_method_table_html(
-                shown, method_to_intervals, view.sort_metric, view.split, subset.to_query(),
-                view.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME, comparisons)
+                shown, method_to_resamples, confidence, view.sort_metric, view.split,
+                subset.to_query(), comparisons)
         ui.html(table_html, sanitize=False).classes("w-full overflow-x-auto").on(
             "click", lambda e: on_view_changed(sort_metric=e.args),
             js_handler="(e) => { const th = e.target.closest('th[data-sort]');"
@@ -220,9 +213,6 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
                      ).classes("muted")
         for error in comparison_errors:
             ui.label(error).classes("error")
-        if view.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME:
-            ui.label("Each method is scored on the segments that its context offsets"
-                     " select, so the rows cover different segments.").classes("muted")
 
     @ui.refreshable
     def show_table() -> None:
@@ -257,9 +247,7 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
                                          if s in matching_shown_names}
             except ValueError as e:
                 ui.label(str(e)).classes("error")
-        if matching_method_names is None:
-            requester.update({})  # Withdraws the requests of an earlier render.
-        else:
+        if matching_method_names is not None:
             show_methods(models, subset, matching_method_names)
 
         unlisted = [(s, reason) for s in submissions
@@ -270,8 +258,7 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
             ui.html("".join(f"<div>{make_model_link_html(s.model.id, s.shown_label, s.split)}"
                             f": {html.escape(reason)}</div>"
                             for s, reason in unlisted), sanitize=False)
-        refresh_timer.watch([*(lambda i=i: worker.is_scoring_pending(i) for i in pending_ids),
-                             *requester.get_pending_checks()])
+        refresh_timer.watch([lambda i=i: worker.is_scoring_pending(i) for i in pending_ids])
 
     with ui.element("section").classes("panel"):
         with ui.element("div").classes("form-row"):
@@ -288,50 +275,12 @@ def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: Sco
             create_native_select("View", VIEW_OPTIONS, view.metric_name,
                                  lambda v: on_view_changed(metric_name=v))
             create_native_input("Method filter (regex)", view.method_pattern,
-                                on_method_pattern_changed, placeholder="all", size=24)
+                                lambda v: on_view_changed(method_pattern=v), placeholder="all",
+                                size=24)
         attribute_filter = AttributeFilter(attribute_query, on_subset_changed)
     with ui.element("section").classes("panel"):
         refresh_timer = RefreshTimer(show_table.refresh)
         show_table()
-
-
-def _request_results(requester: WorkRequester, rows: T.Sequence[MethodScores],
-                     reference: MethodScores | None, attributes: T.Sequence[str],
-                     settings: ScoringSettings
-                     ) -> tuple[dict[str, ResultState], ReferenceComparisons | None, list[str]]:
-    """Requests the intervals of the rows, and their comparisons with the reference method, row
-    by row, so that the worker computes them in the order of the rows.
-
-    Args:
-        reference: The reference method, without an error, or None.
-
-    Returns:
-        Method name -> the state of its intervals, the comparisons (None without a reference),
-        and the errors of the rows that cannot be compared with the reference.
-    """
-    key_to_request: dict[tuple[str, str], WorkRequest] = {}
-    comparison_errors = []
-    for row in rows:
-        if row.error is not None:
-            continue
-        key_to_request["intervals", row.method_name] = make_interval_request(
-            row.models, attributes, settings)
-        if reference is None or row.method_name == reference.method_name:
-            continue
-        try:
-            key_to_request["comparison", row.method_name] = make_comparison_request(
-                row.models, reference.models, attributes, settings)
-        except ValueError as e:
-            comparison_errors.append(f"{row.shown_method_name} cannot be compared with"
-                                     f" {reference.shown_method_name}: {e}")
-    key_to_state = requester.update(key_to_request)
-
-    def select_states(kind: str) -> dict[str, ResultState]:
-        return {name: state for (k, name), state in key_to_state.items() if k == kind}
-
-    comparisons = (None if reference is None
-                   else ReferenceComparisons(reference, select_states("comparison")))
-    return select_states("intervals"), comparisons, comparison_errors
 
 
 def _has_model_compatible_scores(worker: ScoringWorker, view: _ScoresView) -> bool:

@@ -1,10 +1,12 @@
+import dataclasses as dc
 import math
 
 import irap_evaluation as ie
 import pytest
+from irap_evaluation.reports.evaluation_report import to_labeled_metric_values
 from run_helpers import (
     add_model,
-    assert_close,
+    assert_intervals_close,
     make_model,
     score_and_get_models,
     score_submission_again,
@@ -12,11 +14,15 @@ from run_helpers import (
 from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server.method_comparison import (
-    COMPARED_METRIC_NAMES,
+    compare_with_reference,
     get_better_method,
-    make_comparison_request,
+    get_comparison_error,
 )
-from irap_evaluation_server.scoring import group_scored_models_by_method
+from irap_evaluation_server.scoring import (
+    RESAMPLED_METRIC_NAMES,
+    compute_method_scores,
+    group_scored_models_by_method,
+)
 
 
 @pytest.fixture
@@ -32,50 +38,59 @@ def method_to_models(archive, dataset_contexts, worker):
         score_and_get_models(worker, [s.id for s in submissions]))
 
 
+def _compare(worker, method_to_models, name_a, name_b, attributes):
+    """Compares method a with the reference b from their stored resampled values, as the Scores
+    page does."""
+    row_a, row_b = (compute_method_scores(n, method_to_models[n], attributes)
+                    for n in (name_a, name_b))
+    method_to_resamples = {r.method_name: worker.get_method_resamples(r, attributes,
+                                                                      RESAMPLED_METRIC_NAMES)
+                           for r in (row_a, row_b)}
+    method_to_differences, errors = compare_with_reference(
+        [row_a, row_b], method_to_resamples, row_b, worker.settings.confidence)
+    assert errors == [] and list(method_to_differences) == [name_a]
+    return method_to_differences[name_a]
+
+
 def test_comparison_equals_compare_methods(dataset_contexts, worker, method_to_models):
-    models_a, models_b = method_to_models["a"], method_to_models["b"]
-    subset = models_a[0].scores.attributes[1:]
-    request = make_comparison_request(models_a, models_b, subset, worker.settings)
-    assert worker.request(request) is None and worker.is_pending(request)
-    worker.run_pending()
-    cached = worker.get_result(request)
-    assert cached.message == ""
+    subset = method_to_models["a"][0].scores.attributes[1:]
+    differences = _compare(worker, method_to_models, "a", "b", subset)
 
     reference_set = dataset_contexts["vietnam"].get_reference_set(SPLIT)
     results_a, results_b = (
         [ie.select_result_attributes(score_submission_again(worker, m.submission, reference_set),
-                                     subset) for m in models]
-        for models in (models_a, models_b))
-    expected = ie.compare_methods(results_a, results_b, COMPARED_METRIC_NAMES,
-                                  num_resamples=worker.settings.num_resamples, seed=0)
-    assert_close(cached.value, expected)
-    # The subset order does not matter, but the side does.
-    assert make_comparison_request(models_a, models_b, subset[::-1], worker.settings).key \
-           == request.key
-    assert make_comparison_request(models_b, models_a, subset, worker.settings).key \
-           != request.key
+                                     subset) for m in method_to_models[name]]
+        for name in ("a", "b"))
+    expected = ie.compare_methods(
+        results_a, results_b, differences.names, num_resamples=worker.settings.num_resamples,
+        seed=0)
+    expected_differences = to_labeled_metric_values(expected)
+    for label, difference in to_labeled_metric_values(differences).items():
+        assert difference.difference == pytest.approx(expected_differences[label].difference,
+                                                      rel=1e-12)
+
+    def select_intervals(values):
+        return ie.map_metric_values(lambda d: d.interval, values)
+
+    assert_intervals_close(select_intervals(differences), select_intervals(expected))
 
 
 def test_hard_predictions_are_compared_on_the_common_metrics(worker, method_to_models):
     attributes = method_to_models["a"][0].scores.attributes
-    request = make_comparison_request(method_to_models["a"], method_to_models["hard"],
-                                      attributes, worker.settings)
-    worker.request(request)
-    worker.run_pending()
-    differences = worker.get_result(request).value
-    assert "amF1" in differences.averages and "aNLL" not in differences.averages
-    assert "mF1" in differences.per_attribute
+    for names in [("a", "hard"), ("hard", "a")]:
+        differences = _compare(worker, method_to_models, *names, attributes)
+        assert "amF1" in differences.averages and "aNLL" not in differences.averages
+        assert "mF1" in differences.per_attribute
 
 
-def test_comparison_requests_are_checked(worker, method_to_models):
+def test_get_comparison_error(method_to_models):
     attributes = method_to_models["a"][0].scores.attributes
-    with pytest.raises(ValueError, match="Method B: .*differ in metrics"):
-        make_comparison_request(method_to_models["a"],
-                                [*method_to_models["b"], *method_to_models["hard"]], attributes,
-                                worker.settings)
-    with pytest.raises(ValueError, match="At least one attribute"):
-        make_comparison_request(method_to_models["a"], method_to_models["b"], (),
-                                worker.settings)
+    row_a, row_b = (compute_method_scores(n, method_to_models[n], attributes) for n in "ab")
+    assert get_comparison_error(row_a, row_b) is None
+    [model_b] = row_b.models
+    other_set = dc.replace(row_b, models=(dc.replace(model_b, scores=dc.replace(
+        model_b.scores, evaluation_set_fingerprint="other")),))
+    assert "different evaluation sets" in get_comparison_error(row_a, other_set)
 
 
 def test_get_better_method():

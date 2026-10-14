@@ -53,7 +53,7 @@ def settings() -> ScoringSettings:
 
 @pytest.fixture
 def store(archive) -> ScoreStore:
-    return ScoreStore(archive.database_path)
+    return ScoreStore(archive.data_dir)
 
 
 @pytest.fixture

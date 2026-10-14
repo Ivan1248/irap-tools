@@ -1,50 +1,42 @@
-"""The background thread that scores submissions and computes the results of requests, e.g.
-intervals (see `scoring`).
+"""The background thread that scores submissions (see `scoring`).
 
-Tasks run one at a time, by priority: scoring first, then requests that a page waits for, then
-the intervals of the default views (all scored attributes), which are computed in advance so
-that pages show them at once. A task can be queued at several priorities, e.g. default intervals
-that a page waits for. It runs once, at the first of them, and withdrawing the request of a page
-(`ScoringWorker.set_requests`) leaves it queued at the others.
+Submissions are scored one at a time, in the order of queuing. Pages read the scores from the
+store, and the resampled values through `ScoringWorker.get_method_resamples`, which keeps them in
+memory.
 """
 
-import enum
+import functools
 import logging
 import threading
 import typing as T
 
+import irap_evaluation as ie
+import numpy as np
+
 from .archive import Model, ModelArchive, Submission
-from .database import get_utc_now
-from .datasets import EVALUATION_SET_NAMES, DatasetContext
+from .datasets import DatasetContext
 from .scoring import (
     SCORING_SETTINGS,
-    CachedResult,
+    MethodScores,
     ScoreStore,
     ScoringSettings,
     SubmissionScoring,
-    WorkRequest,
-    get_combination_error,
+    combine_method_resamples,
     is_scoring_current,
-    make_interval_request,
     make_unscored_scoring,
     score_submission,
-    select_scored_models,
 )
 
 _logger = logging.getLogger(__name__)
 
-TaskKey = tuple[T.Any, ...]
-V = T.TypeVar("V")
-
-
-class TaskPriority(enum.IntEnum):
-    SCORING = 0
-    REQUESTED = 1
-    DEFAULT_INTERVALS = 2
-
-
-def _get_request_task_key(request: WorkRequest) -> TaskKey:
-    return ("request", request.key)
+#: The number of resampled values of a model on an evaluation set (`ScoreStore.get_resamples`)
+#: that the worker keeps in memory, about 1.7 MB each on iRAP-Vietnam.
+NUM_CACHED_MODEL_RESAMPLES = 200
+#: The number of resampled values of a method over a subset of the attributes
+#: (`ScoringWorker.get_method_resamples`) that the worker keeps in memory, so that a page renders
+#: again at once, e.g. after sorting. On iRAP-Vietnam, they take about 0.05 MB each for the
+#: attribute averages, 0.14 MB for a per-attribute metric and 0.6 MB for the Model page.
+NUM_CACHED_METHOD_RESAMPLES = 1000
 
 
 def _format_unexpected_error(e: Exception) -> str:
@@ -52,12 +44,11 @@ def _format_unexpected_error(e: Exception) -> str:
 
 
 class ScoringWorker:
-    """Scores submissions and computes the results of requests in a background thread (`start`),
-    or in the calling thread (`run_pending`, e.g. in tests).
+    """Scores submissions in a background thread (`start`), or in the calling thread
+    (`run_pending`, e.g. in tests).
 
-    Pages read the scorings from the store and the results of requests with `get_result`, ask for
-    missing results with `set_requests`, and report changed submissions with
-    `update_model_submissions`.
+    Pages read the scorings from the store and the resampled values of methods with
+    `get_method_resamples`, and report changed submissions with `update_model_submissions`.
     """
 
     def __init__(self, archive: ModelArchive, store: ScoreStore,
@@ -68,63 +59,56 @@ class ScoringWorker:
         self.dataset_contexts = dataset_contexts
         self.settings = settings
         self._condition = threading.Condition()
-        #: Priority -> the tasks queued at it, in the order of queuing.
-        self._priority_to_tasks: dict[TaskPriority, dict[TaskKey, T.Callable[[], None]]] = {
-            priority: {} for priority in TaskPriority}
-        self._running_keys: set[TaskKey] = set()
-        #: Request key -> an unexpected error of computing its result, which is not cached, so
-        #: that the next start computes the result again.
-        self._request_key_to_error: dict[str, CachedResult] = {}
-        #: Owner -> the task keys of the requests that it waits for (see `set_requests`).
-        self._owner_to_task_keys: dict[T.Hashable, set[TaskKey]] = {}
+        #: The ids of the submissions queued for scoring, in the order of queuing (an ordered set).
+        self._queued_ids: dict[int, None] = {}
+        self._running_ids: set[int] = set()
         self._is_stopping = False
         self._thread: threading.Thread | None = None
+        # The resampled values of a submission on a set with a fingerprint do not change while
+        # the server runs, since the settings and the code are the same.
+        self._get_model_resamples = functools.lru_cache(maxsize=NUM_CACHED_MODEL_RESAMPLES)(
+            store.get_resamples)
+        self._get_cached_method_resamples = functools.lru_cache(
+            maxsize=NUM_CACHED_METHOD_RESAMPLES)(self._compute_method_resamples)
 
     # Queue ########################################################################################
 
-    def _enqueue(self, key: TaskKey, priority: TaskPriority,
-                 function: T.Callable[[], None]) -> None:
+    def _enqueue(self, submission_id: int) -> None:
         with self._condition:
-            self._priority_to_tasks[priority].setdefault(key, function)
+            self._queued_ids.setdefault(submission_id)
             self._condition.notify_all()
 
-    def _pop_task(self, block: bool) -> tuple[TaskKey, T.Callable[[], None]] | None:
-        """Pops the next task and marks it as running. Returns None if there is none (`block`
-        False) or the worker is stopping (`block` True)."""
+    def _pop_queued_id(self, block: bool) -> int | None:
+        """Pops the id of the next submission to score and marks it as running. Returns None if
+        there is none (`block` False) or the worker is stopping (`block` True)."""
         with self._condition:
             while not (block and self._is_stopping):
-                for tasks in self._priority_to_tasks.values():
-                    if tasks:
-                        key, function = next(iter(tasks.items()))
-                        for queued in self._priority_to_tasks.values():
-                            queued.pop(key, None)
-                        self._running_keys.add(key)
-                        return key, function
+                if self._queued_ids:
+                    submission_id = next(iter(self._queued_ids))
+                    del self._queued_ids[submission_id]
+                    self._running_ids.add(submission_id)
+                    return submission_id
                 if not block:
                     return None
                 self._condition.wait()
             return None
 
-    def _run_task(self, key: TaskKey, function: T.Callable[[], None]) -> None:
+    def _score_queued(self, submission_id: int) -> None:
         try:
-            function()
+            self._score(submission_id)
         except Exception:
-            # Tasks record expected errors themselves. The thread keeps running.
-            _logger.exception("Task %s failed.", key)
+            # Scoring records expected errors itself. The thread keeps running.
+            _logger.exception("Scoring submission #%d failed, and the failure is not stored.",
+                              submission_id)
         finally:
             with self._condition:
-                self._running_keys.discard(key)
+                self._running_ids.discard(submission_id)
                 self._condition.notify_all()
 
-    def _is_task_pending(self, key: TaskKey) -> bool:
-        with self._condition:
-            return (key in self._running_keys
-                    or any(key in tasks for tasks in self._priority_to_tasks.values()))
-
     def run_pending(self) -> None:
-        """Runs the queued tasks, also those that they queue, in the calling thread."""
-        while (task := self._pop_task(block=False)) is not None:
-            self._run_task(*task)
+        """Scores the queued submissions in the calling thread."""
+        while (submission_id := self._pop_queued_id(block=False)) is not None:
+            self._score_queued(submission_id)
 
     def start(self) -> None:
         """Starts the background thread."""
@@ -134,11 +118,11 @@ class ScoringWorker:
         self._thread.start()
 
     def _run_thread(self) -> None:
-        while (task := self._pop_task(block=True)) is not None:
-            self._run_task(*task)
+        while (submission_id := self._pop_queued_id(block=True)) is not None:
+            self._score_queued(submission_id)
 
     def stop(self, timeout_s: float | None = None) -> None:
-        """Stops the background thread after its current task."""
+        """Stops the background thread after the current scoring."""
         with self._condition:
             self._is_stopping = True
             self._condition.notify_all()
@@ -146,11 +130,10 @@ class ScoringWorker:
             self._thread.join(timeout_s)
 
     def wait_until_idle(self, timeout_s: float | None = None) -> bool:
-        """Waits until no task is queued or running. Returns False on timeout."""
+        """Waits until no submission is queued or being scored. Returns False on timeout."""
         with self._condition:
             return self._condition.wait_for(
-                lambda: not any(self._priority_to_tasks.values()) and not self._running_keys,
-                timeout_s)
+                lambda: not self._queued_ids and not self._running_ids, timeout_s)
 
     # Scoring ######################################################################################
 
@@ -199,7 +182,8 @@ class ScoringWorker:
                 self.select_current_scorings(submissions, submission_id_to_scoring))
 
     def is_scoring_pending(self, submission_id: int) -> bool:
-        return self._is_task_pending(("score", submission_id))
+        with self._condition:
+            return submission_id in self._queued_ids or submission_id in self._running_ids
 
     def _score(self, submission_id: int) -> None:
         try:
@@ -212,126 +196,70 @@ class ScoringWorker:
                                                       self.store.get_scoring(submission_id)):
             return
         try:
-            scoring, reports = score_submission(self.archive, context, submission, self.settings)
+            scoring, reports, resamples = score_submission(self.archive, context, submission,
+                                                           self.settings)
         except Exception as e:
             _logger.exception("Scoring submission #%d failed.", submission_id)
-            scoring, reports = make_unscored_scoring(
-                submission_id, "error", _format_unexpected_error(e), self.settings), {}
-        # Raises `sqlite3.IntegrityError` if the submission was deleted meanwhile.
-        self.store.set_scoring(scoring, reports)
-        self._enqueue_default_intervals(submission.dataset, submission.split,
-                                        submission.model.method_name)
+            scoring, reports, resamples = make_unscored_scoring(
+                submission_id, "error", _format_unexpected_error(e), self.settings), {}, {}
+        self.store.set_scoring(scoring, reports, resamples)
 
     def update_submissions(self, submissions: T.Collection[Submission]) -> None:
-        """Queues the work that follows when submissions are added: the scoring of those whose
-        scoring is not current, and the default intervals of their methods.
+        """Deletes the scorings of deleted submissions
+        (`ScoreStore.delete_scorings_of_deleted_submissions`), and queues the scoring of the
+        submissions whose scoring is not current, e.g. after they are added.
 
         Args:
             submissions: As they are in the archive after the change.
         """
+        self.store.delete_scorings_of_deleted_submissions()
         current = self.get_current_scorings(submissions)
         for submission in submissions:
-            if self._get_context(submission) is None:
-                continue
-            if submission.id not in current:
-                self._enqueue(("score", submission.id), TaskPriority.SCORING,
-                              lambda i=submission.id: self._score(i))
-            else:  # Scoring queues them otherwise.
-                self._enqueue_default_intervals(submission.dataset, submission.split,
-                                                submission.model.method_name)
+            if self._get_context(submission) is not None and submission.id not in current:
+                self._enqueue(submission.id)
 
     def update_model_submissions(self, model: Model) -> None:
         """Calls `update_submissions` with all submissions of a model after a change, e.g. an
-        upload that replaced some of them, and queues the default intervals of its method on
-        every split, also those of deleted submissions or a deleted model."""
+        upload that replaced some of them."""
         self.update_submissions(self.archive.list_model_submissions(model.id))
-        if (context := self.dataset_contexts.get(model.dataset)) is not None:
-            for split in context.split_names:
-                self._enqueue_default_intervals(model.dataset, split, model.method_name)
 
     def update_all_submissions(self) -> None:
         """Calls `update_submissions` with every submission, e.g. at the start of the
-        server, since the metadata or the settings may have changed."""
+        server, since the metadata, the settings or the scoring code may have changed."""
         self.update_submissions(self.archive.list_submissions())
 
-    # Requests #####################################################################################
+    # Resampled values #############################################################################
 
-    def get_result(self, request: WorkRequest[V]) -> CachedResult[V] | None:
-        """Returns the cached result of a request, or an unexpected error of computing it, or
-        None if it is not computed."""
-        return self._request_key_to_error.get(request.key) or self.store.get_result(request)
+    def get_method_resamples(self, row: MethodScores, attributes: T.Sequence[str],
+                             metric_names: T.Collection[str]
+                             ) -> ie.MetricValues[np.ndarray] | None:
+        """Returns the resampled values of a method over `attributes`
+        (`scoring.combine_method_resamples`), or None if the method has an error, or the
+        resampled values of a model are no longer stored, e.g. since it was deleted after its
+        scores were read. The values are cached in memory, and must not be changed.
 
-    def is_pending(self, request: WorkRequest) -> bool:
-        return self._is_task_pending(_get_request_task_key(request))
-
-    def _compute(self, request: WorkRequest) -> None:
-        if self.store.get_result(request) is not None:
-            return
-        try:
-            value = request.compute(self.archive, self.dataset_contexts, self.settings)
-            cached = CachedResult(value=value, message="", computed_at=get_utc_now())
-        except ValueError as e:
-            cached = CachedResult(value=None, message=str(e), computed_at=get_utc_now())
-        except Exception as e:
-            _logger.exception("Computing %s of submissions %s failed.", type(request).__name__,
-                              request.submission_ids)
-            self._request_key_to_error[request.key] = CachedResult(
-                value=None, message=_format_unexpected_error(e), computed_at=get_utc_now())
-            return
-        # Raises `sqlite3.IntegrityError` if a submission was deleted meanwhile.
-        self.store.set_result(request, cached)
-
-    def request(self, request: WorkRequest[V],
-                priority: TaskPriority = TaskPriority.REQUESTED) -> CachedResult[V] | None:
-        """Returns the cached result (see `get_result`), or queues its computation and returns
-        None."""
-        if (cached := self.get_result(request)) is not None:
-            return cached
-        self._enqueue(_get_request_task_key(request), priority, lambda: self._compute(request))
-        return None
-
-    def set_requests(self, owner: T.Hashable, requests: T.Iterable[WorkRequest]) -> None:
-        """Requests the results that `owner`, e.g. a page, waits for, instead of those that it
-        requested before.
-
-        Earlier requests that no other owner waits for are withdrawn, e.g. those of an attribute
-        subset that the user has left: they leave the queue, unless they are also queued
-        otherwise, e.g. as default intervals. A running computation finishes.
+        Args:
+            row: `scoring.compute_method_scores` over `attributes`.
+            metric_names: See `scoring.combine_method_resamples`.
         """
-        task_key_to_request = {_get_request_task_key(r): r for r in requests}
-        with self._condition:
-            earlier_keys = self._owner_to_task_keys.pop(owner, set())
-            if task_key_to_request:
-                self._owner_to_task_keys[owner] = set(task_key_to_request)
-            held_keys = set().union(*self._owner_to_task_keys.values())
-            queued = self._priority_to_tasks[TaskPriority.REQUESTED]
-            for key in earlier_keys - held_keys:
-                queued.pop(key, None)
-        for request in task_key_to_request.values():
-            self.request(request)
+        if row.error is not None:
+            return None
+        models = tuple((m.submission.id, m.scores.evaluation_set,
+                        m.scores.evaluation_set_fingerprint) for m in row.models)
+        return self._get_cached_method_resamples(row.method_name, models, tuple(attributes),
+                                                 tuple(metric_names))
 
-    def _enqueue_default_intervals(self, dataset: str, split: str, method_name: str) -> None:
-        self._enqueue(("default intervals", dataset, split, method_name),
-                      TaskPriority.DEFAULT_INTERVALS,
-                      lambda: self._request_default_intervals(dataset, split, method_name))
+    def _compute_method_resamples(self, method_name: str, models: tuple[tuple[int, str, str], ...],
+                                  attributes: tuple[str, ...], metric_names: tuple[str, ...]
+                                  ) -> ie.MetricValues[np.ndarray] | None:
+        """See `get_method_resamples`.
 
-    def _request_default_intervals(self, dataset: str, split: str, method_name: str) -> None:
-        """Queues the intervals over all scored attributes of the method and of each of its
-        models, of their submissions of the split, on each evaluation set."""
-        submissions = [s for s in self.archive.list_submissions()
-                       if (s.dataset, s.split, s.model.method_name)
-                       == (dataset, split, method_name)]
-        current = self.get_current_scorings(submissions)
-        for evaluation_set in EVALUATION_SET_NAMES:
-            models = sorted(select_scored_models(submissions, current, evaluation_set),
-                            key=lambda m: m.submission.id)
-            if not models:
-                continue
-            model_groups = [[model] for model in models]
-            # Models that can be combined have the same attributes.
-            if len(models) > 1 and get_combination_error(models) is None:
-                model_groups.append(models)
-            for model_group in model_groups:
-                self.request(make_interval_request(model_group, model_group[0].scores.attributes,
-                                                   self.settings),
-                             TaskPriority.DEFAULT_INTERVALS)
+        Args:
+            models: The arguments of `ScoreStore.get_resamples` of each model.
+        """
+        try:
+            model_resamples = [self._get_model_resamples(*m) for m in models]
+        except LookupError:
+            return None
+        return combine_method_resamples(method_name, model_resamples, attributes, metric_names,
+                                        self.settings.bootstrap_seed)

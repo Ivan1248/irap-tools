@@ -6,11 +6,11 @@ from nicegui import ui
 
 
 class RefreshTimer:
-    """Refreshes a view while work that it shows is pending, e.g. scorings and intervals of the
-    scoring worker: each time some of the work is done, so that results appear one by one.
+    """Refreshes a view while work that it shows is pending, e.g. scorings of the scoring worker:
+    each time some of the work is done, so that results appear one by one.
 
     After each render, the view passes the pending work to `watch`. The refresh renders again,
-    which may watch new work, e.g. intervals after a scoring.
+    which may watch new work.
     """
 
     def __init__(self, on_progress: T.Callable[[], None], interval_s: float = 1.0):

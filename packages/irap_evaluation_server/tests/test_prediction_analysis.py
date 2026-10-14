@@ -46,8 +46,8 @@ def test_confusion_matrix_is_that_of_the_scores(archive, dataset_contexts, refer
     result = ie.evaluate_predictions(predictions, reference_set, null_policy="first_class",
                                      missing_attribute_policy="invalid")
     class_metrics = ie.compute_class_metrics(result, ["F1"])
-    _, reports = score_submission(archive, dataset_contexts["vietnam"], aligned.submission,
-                                  SCORING_SETTINGS)
+    _, reports, _ = score_submission(archive, dataset_contexts["vietnam"], aligned.submission,
+                                     SCORING_SETTINGS)
     for attribute in result.attributes:
         matrix = compute_attribute_outcomes(aligned, attribute).confusion_matrix
         merged = matrix[:, :-1].copy()

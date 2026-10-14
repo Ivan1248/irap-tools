@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
     archive = ModelArchive(config.data_dir)
     if num_removed := archive.remove_uploads():
         print(f"Removed {num_removed} unfinished uploads.")
-    scoring_worker = ScoringWorker(archive, ScoreStore(archive.database_path), dataset_contexts)
+    scoring_worker = ScoringWorker(archive, ScoreStore(config.data_dir), dataset_contexts)
     # Scores what is new or out of date, e.g. after a metadata update, in the background.
     scoring_worker.update_all_submissions()
     scoring_worker.start()

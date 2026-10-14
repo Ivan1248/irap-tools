@@ -2,7 +2,6 @@ import dataclasses as dc
 import hashlib
 import io
 import os
-import sqlite3
 
 import irap_evaluation as ie
 import pytest
@@ -18,6 +17,7 @@ from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server import archive as archive_module
 from irap_evaluation_server.archive import ModelArchive, NewSubmission, make_label_file_name
+from irap_evaluation_server.database import connect
 from irap_evaluation_server.uploads import apply_upload, plan_upload
 
 
@@ -452,12 +452,35 @@ def test_seed_must_fit_64_bits(archive, dataset_contexts, model_seed, seed):
     assert path.exists()
 
 
-def test_a_database_of_another_version_is_refused(tmp_path):
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    with sqlite3.connect(data_dir / "archive.sqlite3") as connection:
-        connection.execute("CREATE TABLE submissions (id INTEGER PRIMARY KEY)")
-    with pytest.raises(ValueError, match="another version of the archive.*new data directory"):
-        ModelArchive(data_dir)
-    ModelArchive(tmp_path / "new")
-    ModelArchive(tmp_path / "new")  # Opening it again.
+#: The objects of the score cache in the archive database of version 1 (commit c084f1a, the first
+#: in production), without the columns that do not matter for the migration.
+_SCORE_CACHE_OF_VERSION_1 = """
+CREATE TABLE submission_scorings (
+    submission_id INTEGER PRIMARY KEY REFERENCES submissions (id) ON DELETE CASCADE
+);
+CREATE TABLE result_cache (key TEXT PRIMARY KEY);
+CREATE TABLE result_submissions (
+    key TEXT NOT NULL REFERENCES result_cache (key) ON DELETE CASCADE,
+    submission_id INTEGER NOT NULL REFERENCES submissions (id)
+);
+CREATE TRIGGER delete_submission_results AFTER DELETE ON submissions BEGIN
+    DELETE FROM result_cache
+    WHERE key IN (SELECT key FROM result_submissions WHERE submission_id = OLD.id);
+END;
+"""
+
+
+def test_the_score_cache_is_dropped_from_an_archive_of_version_1(archive, dataset_contexts):
+    submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
+    with connect(archive.database_path) as connection:
+        connection.executescript(_SCORE_CACHE_OF_VERSION_1)
+        connection.execute("INSERT INTO submission_scorings VALUES (?)", (submission.id,))
+        connection.execute("INSERT INTO result_cache VALUES ('k')")
+        connection.execute("INSERT INTO result_submissions VALUES ('k', ?)", (submission.id,))
+        connection.execute("PRAGMA user_version = 1")
+    ModelArchive(archive.data_dir)
+    with connect(archive.database_path) as connection:
+        names = {r["name"] for r in connection.execute("SELECT name FROM sqlite_master")}
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert not names & {"submission_scorings", "result_cache", "result_submissions",
+                        "delete_submission_results"}

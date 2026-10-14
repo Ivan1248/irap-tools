@@ -74,19 +74,16 @@ from ..components.routes import (
     get_scores_download_path,
     make_query_path,
 )
-from ..components.score_tables import make_interval_note, make_model_scores_html
-from ..components.work_requests import WorkRequester
+from ..components.score_tables import (
+    MODEL_SCORES_METRIC_NAMES,
+    make_interval_note,
+    make_model_scores_html,
+)
 from ..config import DatasetConfig
 from ..datasets import DatasetContext
 from ..method_ranking import collect_scored_attributes, get_unscored_reason
 from ..model_listing import ModelSummary
-from ..scoring import (
-    ResultState,
-    ScoredModel,
-    compute_method_scores,
-    make_interval_request,
-    remove_class_scores,
-)
+from ..scoring import ScoredModel, compute_method_scores, remove_class_scores
 from ..scoring_worker import ScoringWorker
 
 
@@ -353,15 +350,12 @@ class _ModelPage:
 
         def on_subset_changed(subset: AttributeSubset) -> None:
             update_url(subset)
-            interval_requester.delay_requests()
             show_scores.refresh()
 
         def update_url(subset: AttributeSubset | None = None) -> None:
             subset = subset or attribute_filter.subset
             ui.navigate.history.replace(get_model_path(self.model_id, state["split"],
                                                        subset.to_query()))
-
-        interval_requester = WorkRequester(self.worker)
 
         @ui.refreshable
         def show_scores() -> None:
@@ -385,8 +379,7 @@ class _ModelPage:
                 create_native_select("Split", {s: s for s in splits}, state["split"],
                                      on_split_changed)
             submission = split_to_submission[state["split"]]
-            self._show_submission_scores(context, submission, attribute_filter,
-                                         interval_requester, refresh_timer)
+            self._show_submission_scores(context, submission, attribute_filter, refresh_timer)
 
         with ui.element("section").classes("panel"):
             ui.label("Scores").classes("section-title")
@@ -397,7 +390,6 @@ class _ModelPage:
 
     def _show_submission_scores(self, context: DatasetContext, submission: Submission,
                                 attribute_filter: AttributeFilter,
-                                interval_requester: WorkRequester,
                                 refresh_timer: RefreshTimer) -> None:
         worker = self.worker
         scoring = worker.store.get_scoring(submission.id)
@@ -426,16 +418,15 @@ class _ModelPage:
                                                      self.is_admin)
         set_to_scores = {m.scores.evaluation_set: compute_method_scores(
                              submission.label, [m], subset.selected) for m in models}
-        set_to_state = interval_requester.update(
-            {name: make_interval_request(s.models, subset.selected, worker.settings)
-             for name, s in set_to_scores.items() if s.error is None})
         for name, scores in set_to_scores.items():
             offsets = format_context_offsets(scores.models[0].scores.context_offsets)
             ui.label(EVALUATION_SET_LABELS[name] if name == ie.REFERENCE_SET_NAME
                      else f"{EVALUATION_SET_LABELS[name]}, context offsets {offsets}").classes(
                 "subsection-title")
             ui.label(f"Averages over {subset.label}").classes("muted")
-            ui.html(make_model_scores_html(scores, set_to_state.get(name, ResultState())),
+            resamples = worker.get_method_resamples(scores, subset.selected,
+                                                    MODEL_SCORES_METRIC_NAMES)
+            ui.html(make_model_scores_html(scores, resamples, worker.settings.confidence),
                     sanitize=False).classes("w-full")
             with ui.element("div").classes("form-row"):
                 ui.link("Download the scores over all attributes (JSON)",
@@ -448,7 +439,6 @@ class _ModelPage:
                         submission.dataset, submission.split, evaluation_set=name,
                         model_id=submission.model.id).to_path(subset.to_query()))
         ui.label(make_interval_note(worker.settings, is_mean_over_models=False)).classes("muted")
-        refresh_timer.watch(interval_requester.get_pending_checks())
 
     # Coding table and actions #####################################################################
 

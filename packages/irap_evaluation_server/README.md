@@ -1,6 +1,6 @@
 # iRAP evaluation server
 
-An web app that keeps an archive of model predictions, scores them, and compares, analyses and ensembles them. It is built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/).
+A web app that keeps an archive of model predictions, scores them, and compares, analyses and ensembles them. It is built with [NiceGUI](https://nicegui.io) on [`irap_evaluation`](../irap_evaluation/).
 
 | Page | Path | Content |
 |---|---|---|
@@ -52,14 +52,15 @@ The image paths in the metadata (`segment_id_to_data_paths_rel.json`) are relati
 
 The data directory holds:
 
-- `archive.sqlite3`: the index of models and files, the action log and the score cache,
+- `archive.sqlite3`: the index of models and files, and the action log,
 - `submissions/<id>/predictions.parquet`: the stored files, removed when they are [deleted](#deletion) (or at a later deletion if a file is open, e.g. on Windows),
+- `scores.sqlite3`: the [scores](#scoring), which the server computes again from the files if the file is missing, so backups can leave it out,
 - `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
 - `vendor/`: the map libraries,
 - `accounts.sqlite3`: the [accounts](#accounts),
 - `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie. Keep them, and backups of the data directory, private. Deleting the key signs out all users.
 
-The databases have a schema version and no migrations: the server refuses a data directory of another version, so start with a new `data_dir`.
+The databases have a schema version. At start, the server migrates an archive or accounts database of an older version, after copying it to a backup next to it, e.g. `archive.v1.2026-10-12T150000Z.backup.sqlite3`. It refuses a database of a newer version, or one whose tables differ from those of its version. A score cache of another version is created again, and all files are scored again, which takes a few minutes, during which the Scores page lists the files that are being scored.
 
 ## Accounts
 
@@ -185,26 +186,29 @@ A `.zip` archive uploads the files of one model on several splits at once. Every
 
 ### Deletion
 
-Deletion is permanent. The Model page deletes a file, or the whole model with all its files, after a confirmation. An upload or an ensemble also deletes the files that it replaces, after a confirmation. A deleted file is removed with its scores and the cached intervals computed from it, and it cannot be restored, only uploaded again. The last file of a model is deleted only with the model, so every model has a file. Deleting the last model of a method also removes the method's display name. The action log keeps the actions on deleted models and files, and their ids are not reused.
+Deletion is permanent. The Model page deletes a file, or the whole model with all its files, after a confirmation. An upload or an ensemble also deletes the files that it replaces, after a confirmation. A deleted file is removed with its scores, and it cannot be restored, only uploaded again. The last file of a model is deleted only with the model, so every model has a file. Deleting the last model of a method also removes the method's display name. The action log keeps the actions on deleted models and files, and their ids are not reused.
 
 To keep a copy, the Model page downloads the files of a model, e.g. an ensemble, as one `.zip` archive (`/api/models/<id>/predictions.zip`), which can be uploaded again.
 
 ## Scoring
 
-A background thread scores each new file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all models are scored on the same attributes. It then computes the intervals of each model and of the mean over the models of each method.
+A background thread scores each new file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all models are scored on the same attributes.
 
-The database caches the attribute averages and per-attribute values, from which the means over models are computed, also over any subset of attributes. Intervals and comparisons need per-sequence statistics, which are too large to cache, so the thread recomputes them from the files when a page asks for them, and caches the results.
+`scores.sqlite3` stores the attribute averages and per-attribute values, and their values in each bootstrap resample of road sequences (`irap_evaluation.resample_model_metrics`), as float32 (about 1.7 MB per file and evaluation set on Vietnam). Resampling adds 0.1 s per file on Vietnam val and 0.4 s on train. All files on an evaluation set share the resamples, so the pages compute means over models, intervals and paired comparisons of methods from the stored values, also over any subset of attributes, as `irap-eval evaluate` and `irap-eval compare` compute them (see [confidence intervals](../irap_evaluation/docs/evaluation.md#confidence-intervals)).
 
-Cached values are out of date when the scoring settings, the evaluation sets (e.g. after a metadata update) or the files of a method's models change. At start, the server rescores the files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason.
+Stored scores are out of date when the scoring settings or the evaluation sets (e.g. after a metadata update) change. To catch changes of the scoring code, the settings fingerprint also includes the scores and resampled values of random predictions on a small synthetic set (2 attributes, 3 classes, 24 segments), computed at start. A change of `irap_evaluation` or NumPy that changes these values, e.g. of the random generator, makes all scores out of date, but one that changes only cases outside the set, e.g. attributes with more classes, does not. After such a change, increase `scoring.SCORE_CACHE_VERSION`, or delete `scores.sqlite3` while the server is stopped.
+
+At start, the server rescores the files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one that lacks segments of a new metadata build, is marked as failed with the reason.
 
 ## Scores
 
 The Scores page shows the means over each method's models with their bootstrap intervals.
 
+- A value is bold if it is the best of its column (or row, in the per-attribute view), or not significantly worse than it: a one-sided paired bootstrap test at 5 %, whose 90 % interval of the difference from the best reaches 0 (`method_ranking.is_not_significantly_worse`). The test needs the methods on the same segments, so on the model-compatible sets values are bold only if all shown methods have the same context offsets.
 - Methods trained on the shown split are hidden by default, since their scores are not of held-out data. Methods that used the split for early stopping, or whose training splits are unknown, are marked.
 - The Method filter is a case-insensitive regular expression that matches any part of the name, e.g. `foo`, or `^(foo|bar)$` for exactly these two.
-- On the reference set, "Compare with" adds each method's difference from a reference method, with its interval (`irap_evaluation.compare_methods`, as in `irap-eval compare`). See [comparing methods](../irap_evaluation/docs/evaluation.md#comparing-methods) for how to read them.
-- The attribute filter, here and on the Model page, chooses the attributes that the averages cover. Intervals over a subset are computed a second after the last change and take about 0.4 s per model on Vietnam val and 1–2 s on train.
+- On the reference set, "Compare with" adds each method's difference from a reference method, with its interval, as `irap-eval compare` computes it. See [comparing methods](../irap_evaluation/docs/evaluation.md#comparing-methods) for how to read them.
+- The attribute filter, here and on the Model page, chooses the attributes that the averages cover. The attribute averages of a method over a new subset take about 12 ms to compute on Vietnam (34 attributes), and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
 
 The URL keeps the view, so it can be shared as a link. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`). For a [protected split](#protected-splits), only admins get its per-class scores (`classes`).
 
@@ -241,14 +245,14 @@ One table is made at a time, in a separate process (NiceGUI's `run.cpu_bound`, s
 irap_evaluation_server/
 ├─ config.py                ServerConfig, DatasetConfig, load_server_config
 ├─ datasets.py              DatasetContext: the metadata of a dataset and its evaluation sets
-├─ database.py              Connections to the SQLite databases
+├─ database.py              Connections to the SQLite databases and the migrations of their schemas
 ├─ archive.py               ModelArchive: models, their files, the SQLite index and action log
 ├─ accounts.py              AccountStore: the accounts, their permissions and password hashes
 ├─ uploads.py               The checks of uploaded files and .zip archives, and their planned updates
 ├─ model_listing.py         The models of the Models page, grouped by method
-├─ scoring.py               Scoring settings, the score cache, means over models and intervals
-├─ scoring_worker.py        The background thread that scores and computes requested results
-├─ method_ranking.py        The rows of the method table, their order, and the marks of used splits
+├─ scoring.py               Scoring settings, the score cache, means over models and resampled values
+├─ scoring_worker.py        The background thread that scores, and the resampled values in memory
+├─ method_ranking.py        The rows of the method table, their order, highlights and marks of used splits
 ├─ method_comparison.py     Comparisons with a reference method
 ├─ prediction_analysis.py   Outcomes of segments, confusion matrices, segment details
 ├─ map_libraries.py         The download of the map libraries
@@ -264,6 +268,8 @@ The logic modules (all but `components`, `pages` and `server`) do not import Nic
 ```bash
 uv run --project packages/irap_evaluation_server --extra test python -m pytest packages/irap_evaluation_server/tests
 ```
+
+A data directory is in production since 2026-10-12, so a change of a database schema needs a new schema version and a migration from the previous one: `SCHEMA_VERSION` and `_MIGRATIONS` in `archive.py` and `accounts.py` (see `database.initialize_schema`). A change of the score cache tables needs only a new `scoring.SCORE_CACHE_VERSION`. The server refuses tables that differ from those of their version, so a forgotten version shows at the next start.
 
 [`scripts/add_synthetic_predictions.py`](scripts/add_synthetic_predictions.py) fills an archive with synthetic Vietnam predictions and those of an ensemble, e.g. to try the pages:
 

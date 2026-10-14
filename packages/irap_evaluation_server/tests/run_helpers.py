@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 import irap_evaluation as ie
+import numpy as np
 import pytest
 from irap_evaluation.reports.evaluation_report import to_labeled_metric_values
 from synthetic_vietnam import SPLIT, make_predictions
@@ -42,6 +43,17 @@ def assert_close(a, b, label=""):
         assert isinstance(b, float) and math.isnan(b), label
     else:
         assert a == pytest.approx(b, rel=1e-12, abs=0), label
+
+
+def assert_intervals_close(actual, expected):
+    """Asserts that intervals from the stored float32 resamples equal those of irap_evaluation,
+    up to the float32 rounding, for the metrics of `actual`."""
+    expected = to_labeled_metric_values(expected)
+    for label, interval in to_labeled_metric_values(actual).items():
+        assert interval.num_undefined == expected[label].num_undefined, label
+        np.testing.assert_allclose([interval.low, interval.high],
+                                   [expected[label].low, expected[label].high],
+                                   rtol=1e-6, atol=1e-6, err_msg=label)
 
 
 def score_and_get_models(worker, submission_ids, evaluation_set="reference"):

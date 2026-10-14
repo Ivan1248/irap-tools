@@ -6,9 +6,11 @@ import math
 import typing as T
 
 import irap_evaluation as ie
+import numpy as np
 from irap_evaluation.metrics import IRAP_MAIN_METRIC, parse_metric_name
 
 from .scoring import (
+    IRAP_AVERAGE_METRIC_NAMES,
     MethodScores,
     ScoredModel,
     SubmissionScoring,
@@ -16,13 +18,16 @@ from .scoring import (
     group_scored_models_by_method,
 )
 
-#: The columns of the method table: the attribute averages of the iRAP protocol, amF1 first.
-#: Hard predictions lack the probabilistic ones.
-RANKING_METRIC_NAMES = tuple(n for n in ie.get_irap_metric_names(output_kind="probs")
-                                 if parse_metric_name(n).is_averaged)
+#: The columns of the method table.
+RANKING_METRIC_NAMES = IRAP_AVERAGE_METRIC_NAMES
 DEFAULT_SORT_METRIC = f"a{IRAP_MAIN_METRIC}"
 #: The per-attribute metrics of the columns, e.g. mF1 of amF1, for the per-attribute view.
 PER_ATTRIBUTE_METRIC_NAMES = tuple(parse_metric_name(n).name for n in RANKING_METRIC_NAMES)
+
+
+#: The level of the one-sided test of whether a value is worse than the best
+#: (`CellHighlight.is_not_significantly_worse`).
+NOT_WORSE_SIGNIFICANCE_LEVEL = 0.05
 
 
 @dc.dataclass(frozen=True)
@@ -31,20 +36,31 @@ class CellHighlight:
 
     Attributes:
         strength: 0 for the worst value, 1 for the best (min–max over the compared values).
-        is_best_or_tied: Whether the value is the best, or its interval overlaps that of a best
-            value.
+        is_not_significantly_worse: Whether the value is the best, or not significantly worse
+            than a best value (`is_not_significantly_worse`).
     """
 
     strength: float
-    is_best_or_tied: bool
+    is_not_significantly_worse: bool
 
 
-def _has_finite_bounds(interval: ie.BootstrapInterval | None) -> bool:
-    return interval is not None and math.isfinite(interval.low) and math.isfinite(interval.high)
+def is_not_significantly_worse(resampled_advantages: np.ndarray) -> bool:
+    """Tests whether a value is not significantly worse than another, by a one-sided paired
+    bootstrap test at `NOT_WORSE_SIGNIFICANCE_LEVEL`: whether the upper bound of the percentile
+    interval of the resampled advantages at confidence 1 - 2α reaches 0. If the interval is
+    undefined, the value is not tested to be not worse.
+
+    Args:
+        resampled_advantages: The resampled values of the value minus those of the other, on
+            the same resamples, with the sign that makes a better value positive.
+    """
+    interval = ie.compute_percentile_interval(resampled_advantages,
+                                              1 - 2 * NOT_WORSE_SIGNIFICANCE_LEVEL)
+    return interval.high >= 0  # Also false for NaN bounds.
 
 
 def compute_highlights(values: T.Sequence[float | None],
-                       intervals: T.Sequence[ie.BootstrapInterval | None] | None,
+                       resamples: T.Sequence[np.ndarray | None] | None,
                        is_lower_better: bool) -> list[CellHighlight | None]:
     """Computes the highlights of values that are compared with each other, e.g. of the methods
     in a method table column.
@@ -53,28 +69,30 @@ def compute_highlights(values: T.Sequence[float | None],
     None.
 
     Args:
-        intervals: The interval of each value (None if it lacks one), or None for no
-            `CellHighlight.is_best_or_tied`. A value is tied with the best if both intervals have
-            finite bounds and overlap, a rough criterion that is not a statistical test.
+        resamples: The resampled values of each value (None if it lacks them), all on the same
+            resamples, e.g. of methods on the same evaluation set, or None for no
+            `CellHighlight.is_not_significantly_worse`. A value without them is not compared
+            with the best.
     """
-    is_tie_shown = intervals is not None
-    pairs = list(zip(values, intervals if is_tie_shown else [None] * len(values), strict=True))
+    is_test_shown = resamples is not None
+    pairs = list(zip(values, resamples if is_test_shown else [None] * len(values), strict=True))
     finite = [v for v in values if v is not None and math.isfinite(v)]
     if len(finite) < 2:
         return [None] * len(values)
     best, worst = (min(finite), max(finite)) if is_lower_better else (max(finite), min(finite))
-    best_intervals = [i for v, i in pairs if v == best and _has_finite_bounds(i)]
+    best_resamples = [r for v, r in pairs if v == best and r is not None]
+    sign = -1 if is_lower_better else 1
 
-    def highlight(value: float | None, interval: ie.BootstrapInterval | None
+    def highlight(value: float | None, value_resamples: np.ndarray | None
                   ) -> CellHighlight | None:
         if value is None or not math.isfinite(value):
             return None
         strength = 1.0 if best == worst else (value - worst) / (best - worst)
-        is_tied = _has_finite_bounds(interval) and any(
-            interval.low <= b.high and interval.high >= b.low for b in best_intervals)
-        return CellHighlight(strength, is_best_or_tied=is_tie_shown and (value == best or is_tied))
+        is_not_worse = value == best or value_resamples is not None and any(
+            is_not_significantly_worse(sign * (value_resamples - b)) for b in best_resamples)
+        return CellHighlight(strength, is_not_significantly_worse=is_test_shown and is_not_worse)
 
-    return [highlight(v, i) for v, i in pairs]
+    return [highlight(v, r) for v, r in pairs]
 
 
 def collect_scored_attributes(models: T.Iterable[ScoredModel]) -> tuple[str, ...]:

@@ -4,11 +4,12 @@ log.
 A model (`Model`) is one model of a method on a dataset, e.g. one trained network, identified by
 its dataset, method name and seed. Its submissions (`Submission`) are its prediction files, at most
 one per split. A submission of a split that the model already has replaces the old one, which is
-deleted. Deletion is permanent: deleting a submission removes its row, its file and its cached
-scores (`scoring.ScoreStore`), and deleting a model removes it with all its submissions. The last
-submission of a model is deleted only with the model, so each model has a submission. The action
-log keeps the actions on deleted models and submissions. Each action records who did it, the name
-of an account that can write (`accounts`).
+deleted. Deletion is permanent: deleting a submission removes its row and its file, and the score
+cache then deletes its scores (`scoring.ScoreStore.delete_scorings_of_deleted_submissions`).
+Deleting a model removes it with all its submissions. The last submission of a model is deleted
+only with the model, so each model has a submission. The action log keeps the actions on deleted
+models and submissions. Each action records who did it, the name of an account that can write
+(`accounts`).
 
 A method on a dataset can have a display name, which the pages show instead of the method name.
 An update sets it, given with the update or from the files that have one
@@ -17,7 +18,7 @@ An update sets it, given with the update or from the files that have one
 The data directory holds:
 
 - `archive.sqlite3`: the index of the models and submissions, the method display names, and the
-  action log (and the score cache of `scoring.ScoreStore`),
+  action log,
 - `submissions/<id>/predictions.parquet`: the stored files, which are not modified until they are
   deleted,
 - `uploads/`: files that are not stored yet: uploaded files and .zip archives, the files
@@ -43,7 +44,7 @@ from pathlib import Path
 
 import irap_evaluation as ie
 
-from .database import begin_write, connect, get_utc_now, initialize_schema
+from .database import Migration, begin_write, connect, get_utc_now, initialize_schema
 
 _logger = logging.getLogger(__name__)
 
@@ -54,9 +55,27 @@ ADDING_ACTION_KINDS: tuple[str, ...] = T.get_args(AddingActionKind)
 ActionKind = AddingActionKind | T.Literal[
     "delete", "delete_model", "edit_description", "edit_method_display_name"]
 
-#: The version of the database schema (`PRAGMA user_version`). A database of another version is
-#: refused, since there is no migration.
-SCHEMA_VERSION = 1
+DATABASE_FILE_NAME = "archive.sqlite3"
+#: The version of the database schema (`PRAGMA user_version`). A database of an older version is
+#: migrated (`_MIGRATIONS`). Version 1 is the schema of commit c084f1a (2026-10-12), the first in
+#: production.
+SCHEMA_VERSION = 2
+
+
+def _drop_score_cache(connection: sqlite3.Connection) -> None:
+    """Migrates version 1 to 2: drops the score cache, which is now in its own database
+    (`scoring.ScoreStore`), and its trigger, which would make deletions fail."""
+    for statement in ["DROP TRIGGER IF EXISTS delete_submission_results",
+                      "DROP TABLE IF EXISTS result_submissions",
+                      "DROP TABLE IF EXISTS result_cache",
+                      "DROP TABLE IF EXISTS submission_scores",
+                      "DROP TABLE IF EXISTS submission_scorings",
+                      "DROP TABLE IF EXISTS score_cache_version"]:
+        connection.execute(statement)
+
+
+#: Version v -> the migration from v to v + 1 (`database.initialize_schema`).
+_MIGRATIONS: dict[int, Migration] = {1: _drop_score_cache}
 
 #: SQLite stores integers as signed 64-bit values.
 _SQLITE_INTEGER_RANGE = range(-2**63, 2**63)
@@ -529,8 +548,7 @@ def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind, 
 
 def _delete_submission_row(connection: sqlite3.Connection, submission: Submission, actor: str,
                            details: T.Mapping[str, T.Any]) -> None:
-    """Deletes a submission from the index, which also deletes its cached scores (see
-    `scoring`), and logs it."""
+    """Deletes a submission from the index and logs it."""
     connection.execute("DELETE FROM submissions WHERE id = ?", (submission.id,))
     _log_action(connection, actor, "delete", submission.model, submission.id,
                 {"split": submission.split, **details})
@@ -659,20 +677,22 @@ class ModelArchive:
     Each operation opens its own database connection, so the archive can be used from several
     threads.
 
+    A database of an older schema version is migrated (`database.initialize_schema`).
+
     Raises:
-        ValueError: If the database of the directory has another schema version
-            (`SCHEMA_VERSION`).
+        ValueError: If the database cannot be migrated to `SCHEMA_VERSION`, or its tables differ
+            from those of its version (see `database.initialize_schema`).
     """
 
     def __init__(self, data_dir: str | Path):
         self.data_dir = Path(data_dir)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.submissions_dir.mkdir(exist_ok=True)
-        initialize_schema(self.database_path, _SCHEMA, SCHEMA_VERSION, "archive")
+        initialize_schema(self.database_path, _SCHEMA, SCHEMA_VERSION, "archive", _MIGRATIONS)
 
     @property
     def database_path(self) -> Path:
-        return self.data_dir / "archive.sqlite3"
+        return self.data_dir / DATABASE_FILE_NAME
 
     @property
     def uploads_dir(self) -> Path:
@@ -898,7 +918,7 @@ class ModelArchive:
 
     def apply_model_update(self, update: ModelUpdate, *, submitter: str) -> list[Submission]:
         """Stores the new submissions of an update, moved from their `file_path`, deletes the
-        submissions that they replace, with their files and cached scores, and logs the actions:
+        submissions that they replace, with their files, and logs the actions:
         the action of each new submission (`ModelUpdate.action`), with the id of the submission
         that it replaces ('replaced_submission_id'), the deletion of each replaced submission,
         also of other splits (`ModelUpdate.replaced_other_splits`), and the changes of the
@@ -1020,7 +1040,7 @@ class ModelArchive:
     # Other changes ################################################################################
 
     def delete_submission(self, submission_id: int, *, actor: str) -> Submission:
-        """Deletes a submission permanently, with its file and cached scores, and logs it.
+        """Deletes a submission permanently, with its file, and logs it.
         Returns it as it was.
 
         Raises:
@@ -1041,9 +1061,9 @@ class ModelArchive:
         return submission
 
     def delete_model(self, model_id: int, *, actor: str) -> list[Submission]:
-        """Deletes a model permanently, with all its submissions, their files and cached scores,
-        and logs it. Also deletes the display name of its method if no other model of the method
-        on the dataset remains. Returns the deleted submissions.
+        """Deletes a model permanently, with all its submissions and their files, and logs it.
+        Also deletes the display name of its method if no other model of the method on the
+        dataset remains. Returns the deleted submissions.
 
         Raises:
             LookupError: If there is no such model, e.g. since another user deleted it.

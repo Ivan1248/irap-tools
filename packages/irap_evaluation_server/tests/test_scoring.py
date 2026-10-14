@@ -1,7 +1,6 @@
 import dataclasses as dc
 import json
 import math
-import sqlite3
 
 import irap_evaluation as ie
 import numpy as np
@@ -11,26 +10,36 @@ from irap_evaluation.reports.evaluation_report import to_json_dict
 from run_helpers import (
     add_model,
     assert_close,
+    assert_intervals_close,
     make_model,
     score_and_get_models,
     score_submission_again,
 )
 from synthetic_vietnam import SPLIT
 
+from irap_evaluation_server import scoring as scoring_module
 from irap_evaluation_server import scoring_worker as scoring_worker_module
 from irap_evaluation_server.config import DatasetConfig
+from irap_evaluation_server.database import connect
 from irap_evaluation_server.datasets import load_dataset_contexts
 from irap_evaluation_server.scoring import (
-    SCORING_SETTINGS,
+    RESAMPLED_METRIC_NAMES,
     ScoreStore,
     ScoringSettings,
     compute_method_scores,
+    compute_scoring_code_fingerprint,
     group_scored_models_by_method,
     is_scoring_current,
-    make_interval_request,
     remove_class_scores,
 )
-from irap_evaluation_server.scoring_worker import ScoringWorker, TaskPriority
+from irap_evaluation_server.scoring_worker import ScoringWorker
+
+
+def get_method_intervals(worker, row, attributes):
+    """Computes the intervals of a method from its stored resampled values, as the pages do."""
+    return ie.map_metric_values(
+        lambda v: ie.compute_percentile_interval(v, worker.settings.confidence),
+        worker.get_method_resamples(row, attributes, RESAMPLED_METRIC_NAMES))
 
 
 def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker):
@@ -56,13 +65,6 @@ def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker
     assert compatible_scores.context_offsets == (0, -1)
     assert_close(compatible_scores.metrics,
                  score_submission_again(worker, submission, model_compatible_set).metrics)
-
-    # The default intervals of the model are computed after the scoring.
-    request = make_interval_request([model], model.scores.attributes, worker.settings)
-    cached = worker.get_result(request)
-    assert cached.value is not None
-    assert_close(cached.value, ie.compute_bootstrap_intervals(
-        [result], num_resamples=worker.settings.num_resamples, seed=0))
 
 
 def test_remove_class_scores(archive, dataset_contexts, store, worker):
@@ -97,44 +99,17 @@ def test_method_scores_and_intervals_over_a_subset(archive, dataset_contexts, wo
                for s in submissions[:2]]
     assert_close(method_scores.metrics, ie.compute_method_metrics(results))
 
-    # Intervals over the subset are computed on request.
-    request = make_interval_request(method_to_models["m"], subset, worker.settings)
-    assert worker.request(request) is None
-    assert worker.is_pending(request)
-    worker.run_pending()
-    assert not worker.is_pending(request)
-    assert_close(worker.request(request).value, ie.compute_bootstrap_intervals(
-        results, num_resamples=worker.settings.num_resamples, seed=0))
-    # The order of the subset does not matter.
-    assert make_interval_request(method_to_models["m"], subset[::-1],
-                                 worker.settings).key == request.key
-
-
-def test_set_requests_withdraws_left_subsets(archive, dataset_contexts, worker):
-    submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
-    [model] = score_and_get_models(worker, [submission.id])
-    attributes = model.scores.attributes
-    first, second, default = (make_interval_request([model], subset, worker.settings)
-                              for subset in (attributes[:2], attributes[1:3], attributes[2:4]))
-
-    worker.set_requests("page 1", [first])
-    assert worker.is_pending(first)
-    # The page leaves the first subset.
-    worker.set_requests("page 1", [second])
-    assert not worker.is_pending(first) and worker.is_pending(second)
-    # A request that another page waits for is kept.
-    worker.set_requests("page 2", [second])
-    worker.set_requests("page 1", [])
-    assert worker.is_pending(second)
-    # A withdrawn request that is also queued otherwise stays queued.
-    worker.request(default, TaskPriority.DEFAULT_INTERVALS)
-    worker.set_requests("page 1", [default])
-    worker.set_requests("page 1", [])
-    assert worker.is_pending(default)
-    worker.run_pending()
-    assert worker.get_result(second).value is not None
-    assert worker.get_result(default).value is not None
-    assert worker.get_result(first) is None
+    # Intervals over the subset, from the stored resampled values of the models.
+    assert_intervals_close(
+        get_method_intervals(worker, method_scores, subset),
+        ie.compute_bootstrap_intervals(results, num_resamples=worker.settings.num_resamples,
+                                       seed=0))
+    # Only the requested metrics.
+    assert worker.get_method_resamples(method_scores, subset, ["amF1", "mF1"]).names == (
+        "amF1", "mF1")
+    assert worker.get_method_resamples(
+        compute_method_scores("m", method_to_models["m"], ["unscored"]), ["unscored"],
+        ["amF1"]) is None
 
 
 def test_missing_attribute(archive, dataset_contexts, worker):
@@ -162,43 +137,37 @@ def test_models_that_cannot_be_combined(archive, dataset_contexts, worker):
 
 def test_deletion_deletes_the_cached_values(archive, dataset_contexts, store, worker):
     submissions = [add_model(archive, dataset_contexts, make_model(dataset_contexts, "m", seed))
-                   for seed in (1, 2, 3)]
+                   for seed in (1, 2)]
     models = score_and_get_models(worker, [s.id for s in submissions])
     attributes = models[0].scores.attributes
-    [deleted_model, *remaining] = sorted(models, key=lambda m: m.submission.id)
-    deleted = deleted_model.submission
-    method_request = make_interval_request(models, attributes, worker.settings)
-    kept_request = make_interval_request(remaining[:1], attributes, worker.settings)
-    assert store.get_result(method_request) and store.get_result(kept_request)
+    deleted = models[0].submission
+    row = compute_method_scores("m", models, attributes)
+    assert worker.get_method_resamples(row, attributes, ["amF1"]) is not None
 
     archive.delete_model(deleted.model.id, actor="Bo")
+    worker.update_model_submissions(deleted.model)  # As the pages do after a change.
     assert store.get_scoring(deleted.id) is None
     assert store.get_score_report(deleted.id, "reference") is None
-    assert store.get_result(method_request) is None
-    assert store.get_result(kept_request) is not None
-
-    # The intervals of the remaining models of the method are computed in advance.
-    remaining_request = make_interval_request(remaining, attributes, worker.settings)
-    assert store.get_result(remaining_request) is None
-    worker.update_model_submissions(deleted.model)
-    worker.run_pending()
-    assert store.get_result(remaining_request) is not None
+    with pytest.raises(LookupError):
+        store.get_resamples(deleted.id, "reference", models[0].scores.evaluation_set_fingerprint)
+    # A page that read the scores before the deletion, with a cold cache.
+    new_worker = ScoringWorker(archive, store, dataset_contexts, worker.settings)
+    assert new_worker.get_method_resamples(row, attributes, ["amF1"]) is None
 
 
 def test_values_of_deleted_submissions_are_not_stored(archive, dataset_contexts, store, worker):
     submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
-    [model] = score_and_get_models(worker, [submission.id])
+    score_and_get_models(worker, [submission.id])
     scoring = store.get_scoring(submission.id)
-    request = make_interval_request([model], model.scores.attributes, worker.settings)
-    cached = worker.get_result(request)
+    resamples = {s.evaluation_set: store.get_resamples(submission.id, s.evaluation_set,
+                                                       s.evaluation_set_fingerprint)
+                 for s in scoring.evaluation_set_scores}
     archive.delete_model(submission.model.id, actor="Bo")
 
     # E.g. values computed while the submission was deleted.
-    with pytest.raises(sqlite3.IntegrityError):
-        store.set_scoring(scoring, {s.evaluation_set: {} for s in scoring.evaluation_set_scores})
-    with pytest.raises(sqlite3.IntegrityError):
-        store.set_result(request, cached)
-    assert store.get_scoring(submission.id) is None and store.get_result(request) is None
+    store.set_scoring(scoring, {s.evaluation_set: {} for s in scoring.evaluation_set_scores},
+                      resamples)
+    assert store.get_scoring(submission.id) is None
     worker._score(submission.id)  # Queued before the deletion.
     assert store.get_scoring(submission.id) is None
 
@@ -270,18 +239,51 @@ def test_scoring_errors(archive, dataset_contexts, store, worker):
     worker.run_pending()
 
 
-def test_requested_intervals_refuse_changed_files(archive, dataset_contexts, worker):
+def test_scorings_of_other_scoring_code_are_out_of_date(archive, dataset_contexts, worker,
+                                                        monkeypatch):
     submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
-    [model] = score_and_get_models(worker, [submission.id])
-    request = make_interval_request([model], model.scores.attributes, worker.settings)
-    with pytest.raises(ValueError, match="other scoring settings"):
-        request.compute(archive, dataset_contexts, SCORING_SETTINGS)
-    changed = dc.replace(request, submissions=((submission.id, "0" * 64),))
-    with pytest.raises(ValueError, match="other contents than requested"):
-        changed.compute(archive, dataset_contexts, worker.settings)
-    changed = dc.replace(request, evaluation_set_fingerprint="0" * 64)
-    with pytest.raises(ValueError, match="has changed since it was scored"):
-        changed.compute(archive, dataset_contexts, worker.settings)
+    score_and_get_models(worker, [submission.id])
+    compute_uncached = compute_scoring_code_fingerprint.__wrapped__
+    assert compute_uncached(worker.settings) == compute_uncached(worker.settings)
+
+    resample_result = scoring_module.resample_result
+    monkeypatch.setattr(scoring_module, "resample_result", lambda result, settings: (
+        ie.map_metric_values(lambda v: v + 1, resample_result(result, settings))))
+    compute_scoring_code_fingerprint.cache_clear()
+    try:
+        # A new instance, since the fingerprint is cached.
+        new_worker = ScoringWorker(archive, worker.store, dataset_contexts,
+                                   dc.replace(worker.settings))
+        assert new_worker.get_current_scorings([submission]) == {}
+    finally:
+        compute_scoring_code_fingerprint.cache_clear()
+
+
+def test_a_score_cache_of_another_version_is_created_again(archive, dataset_contexts, store,
+                                                           worker, caplog):
+    submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
+    score_and_get_models(worker, [submission.id])
+    with connect(store.database_path) as connection:
+        connection.execute("PRAGMA user_version = 99")
+
+    new_store = ScoreStore(archive.data_dir)
+    assert "version 99, so it is created again with version 1" in caplog.text
+    assert new_store.get_scoring(submission.id) is None
+    new_worker = ScoringWorker(archive, new_store, dataset_contexts, worker.settings)
+    new_worker.update_all_submissions()
+    new_worker.run_pending()
+    assert new_store.get_scoring(submission.id).status == "scored"
+    # The cache of the current version is kept.
+    caplog.clear()
+    assert ScoreStore(archive.data_dir).get_scoring(submission.id).status == "scored"
+    assert not caplog.text
+
+    # A cache whose tables changed without a new version.
+    with connect(store.database_path) as connection:
+        connection.execute("ALTER TABLE submission_scores ADD COLUMN extra TEXT")
+    with pytest.raises(ValueError, match="submission_scores'] of the score cache"):
+        ScoreStore(archive.data_dir)
+
 
 
 def test_worker_thread(archive, dataset_contexts, store, worker):
@@ -302,10 +304,16 @@ def test_store_keeps_undefined_and_infinite_values(archive, dataset_contexts, st
     scores = scoring.get_scores("reference")
     metrics = dc.replace(scores.metrics, averages={**scores.metrics.averages,
                                                    "amF1": math.nan, "aNLL": math.inf})
+    resamples = store.get_resamples(submission.id, "reference", scores.evaluation_set_fingerprint)
+    special = np.resize([math.nan, math.inf, -math.inf, 0.25], len(resamples.averages["aNLL"]))
+    resamples = dc.replace(resamples, averages={**resamples.averages, "aNLL": special})
     store.set_scoring(
         dc.replace(scoring, evaluation_set_scores=(dc.replace(scores, metrics=metrics),)),
-        {"reference": {}})
-    stored = ScoreStore(archive.database_path).get_scoring(submission.id)
-    averages = stored.get_scores("reference").metrics.averages
+        {"reference": {}}, {"reference": resamples})
+    new_store = ScoreStore(archive.data_dir)
+    averages = new_store.get_scoring(submission.id).get_scores("reference").metrics.averages
     assert math.isnan(averages["amF1"]) and averages["aNLL"] == math.inf
     assert np.isfinite(averages["aA"])
+    stored = new_store.get_resamples(submission.id, "reference",
+                                     scores.evaluation_set_fingerprint)
+    np.testing.assert_equal(dc.asdict(stored), dc.asdict(resamples))

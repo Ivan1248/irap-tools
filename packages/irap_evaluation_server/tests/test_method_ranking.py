@@ -3,6 +3,7 @@ import math
 from datetime import datetime, timezone
 
 import irap_evaluation as ie
+import numpy as np
 import pytest
 from irap_evaluation.metrics import IRAP_ATTRIBUTE_METRIC_NAMES
 
@@ -17,6 +18,7 @@ from irap_evaluation_server.method_ranking import (
     CellHighlight,
     compute_highlights,
     get_unscored_reason,
+    is_not_significantly_worse,
     rank_methods,
     select_model_metrics,
     select_shown_methods,
@@ -25,10 +27,8 @@ from irap_evaluation_server.method_ranking import (
 )
 from irap_evaluation_server.model_listing import summarize_models_by_method
 from irap_evaluation_server.scoring import (
-    CachedResult,
     EvaluationSetScores,
     MethodScores,
-    ResultState,
     ScoredModel,
     SubmissionScoring,
 )
@@ -209,7 +209,7 @@ def test_compute_highlights_strength():
     lower_better = compute_highlights(values, None, True)
     assert [h and h.strength for h in lower_better] == [1.0, None, 0.0, None, pytest.approx(0.5),
                                                        None]
-    assert not any(h and h.is_best_or_tied for h in lower_better)  # Without intervals.
+    assert not any(h and h.is_not_significantly_worse for h in lower_better)  # Without tests.
     assert compute_highlights([0.5, 0.5], None, False) == [CellHighlight(1.0, False)] * 2
     # Nothing to compare with.
     assert compute_highlights([0.5, None, math.nan], None, False) == [None] * 3
@@ -217,20 +217,34 @@ def test_compute_highlights_strength():
         compute_highlights([0.5, 0.6], [None], False)
 
 
-def test_compute_highlights_ties():
-    def interval(low, high):
-        return ie.BootstrapInterval(low=low, high=high, num_undefined=0)
+def test_compute_highlights_tests_paired_differences_with_the_best():
+    rng = np.random.default_rng(0)
+    roads = rng.normal(0.7, 0.1, size=1000)  # The variation that the methods share.
+    values = [0.7, 0.69, 0.69, 0.5, 0.6, 0.65]
+    resamples = [
+        roads,
+        roads - 0.01,  # Worse in every resample, despite overlapping intervals.
+        roads - 0.01 + rng.normal(0, 0.05, size=1000),  # A noisy near-tie.
+        roads - 0.2, None,  # Without resamples.
+        np.full(1000, np.nan)]  # Undefined.
+    is_not_worse = [h.is_not_significantly_worse
+                    for h in compute_highlights(values, resamples, False)]
+    assert is_not_worse == [True, False, True, False, False, False]
+    # Lower is better.
+    is_not_worse = [h.is_not_significantly_worse for h in compute_highlights(
+        [-v for v in values], [None if r is None else -r for r in resamples], True)]
+    assert is_not_worse == [True, False, True, False, False, False]
+    # Without resamples of the best, only the best.
+    is_not_worse = [h.is_not_significantly_worse
+                    for h in compute_highlights(values, [None, *resamples[1:]], False)]
+    assert is_not_worse == [True, False, False, False, False, False]
 
-    values = [0.5, 0.8, 0.7, 0.75, 0.6]
-    intervals = [interval(0.45, 0.55), interval(0.75, 0.85), interval(0.6, 0.75), None,
-                 interval(math.nan, math.nan)]
-    ties = [h.is_best_or_tied for h in compute_highlights(values, intervals, False)]
-    # The best, and the overlapping one. Values without a usable interval are not tied.
-    assert ties == [False, True, True, False, False]
-    # Without a usable interval of the best, only the best.
-    best_unknown = [None, None, *intervals[2:]]
-    ties = [h.is_best_or_tied for h in compute_highlights(values, best_unknown, False)]
-    assert ties == [False, True, False, False, False]
+
+def test_is_not_significantly_worse_is_a_one_sided_test():
+    # 5 % of the resampled advantages are not negative: the boundary of the test at 5 %.
+    advantages = np.arange(-950, 51) / 1000
+    assert is_not_significantly_worse(advantages)
+    assert not is_not_significantly_worse(advantages - 0.01)
 
 
 def test_method_tables_escape_names():
@@ -238,14 +252,10 @@ def test_method_tables_escape_names():
                                 missing_attributes=("y",))]
     rows = [*rank_methods(models, ["x", "y"], "amF1"),
             make_method_scores("<n>", {}, error="Models <differ>.")]
-    interval = ie.BootstrapInterval(low=0.1, high=0.3, num_undefined=2)
-    cached = CachedResult(
-        value=ie.MetricValues(averages={"amF1": interval}, per_attribute={}),
-        message="", computed_at=_TIME)
-    table = make_method_table_html(rows, {"<m>": ResultState(cached=cached)}, "amF1", "val",
-                                   ["x"], is_model_compatible_view=False)
+    resamples = ie.MetricValues(averages={"amF1": np.linspace(0.1, 0.3, 20)}, per_attribute={})
+    table = make_method_table_html(rows, {"<m>": resamples}, 0.95, "amF1", "val", ["x"])
     assert "&lt;m&gt;" in table and "<m>" not in table
     assert "Models &lt;differ&gt;." in table
 
-    per_attribute = make_per_attribute_table_html(rows, {}, "mF1", ["x", "y"], "val")
+    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", ["x", "y"], "val")
     assert "<m>" not in per_attribute and "<n>" not in per_attribute

@@ -1,93 +1,72 @@
-"""The comparison of two methods on the reference set of a dataset split
-(`irap_evaluation.compare_methods`): the differences of their means over models, with bootstrap
-intervals over the same resampled road sequences, which include the variation between models (see
-`irap_evaluation/docs/evaluation.md`, "Comparing methods").
+"""The comparison of two methods on the reference set of a dataset split, as
+`irap_evaluation.compare_methods` compares them: the differences of their means over models, with
+bootstrap intervals over the same resampled road sequences, which include the variation between
+models (see `irap_evaluation/docs/evaluation.md`, "Comparing methods").
 
-Like intervals, comparisons need the per-sequence statistics, so the scoring worker computes them
-from the files on request and caches them (`ComparisonRequest`, a `scoring.WorkRequest`).
+The comparisons are computed from the resampled values of the methods
+(`scoring_worker.ScoringWorker.get_method_resamples`).
 """
 
-import dataclasses as dc
-import functools
 import typing as T
 
 import irap_evaluation as ie
+import numpy as np
 
-from .archive import ModelArchive
-from .datasets import DatasetContext
-from .method_ranking import PER_ATTRIBUTE_METRIC_NAMES, RANKING_METRIC_NAMES
-from .scoring import (
-    IntervalRequest,
-    MethodScores,
-    ScoredModel,
-    ScoringSettings,
-    check_attributes,
-    compute_json_sha256,
-    make_interval_request,
-    metric_values_from_json,
-    metric_values_to_json,
-)
-
-#: The compared metrics: the attribute averages of the method table and their per-attribute
-#: values. Hard predictions lack the probabilistic ones.
-COMPARED_METRIC_NAMES = (*RANKING_METRIC_NAMES, *PER_ATTRIBUTE_METRIC_NAMES)
-
-
-@dc.dataclass(frozen=True)
-class ComparisonRequest:
-    """The differences of the metrics of method A minus method B on the reference set, over a
-    subset of the attributes, with their intervals.
-
-    Its fields are the fingerprints of what the comparison depends on, so `key` identifies it in
-    the cache.
-
-    Attributes:
-        intervals_a: The request of the intervals of A, whose fields the comparison depends on.
-        intervals_b: The same of B, on the same evaluation set and attributes.
-    """
-
-    intervals_a: IntervalRequest
-    intervals_b: IntervalRequest
-
-    @functools.cached_property
-    def key(self) -> str:
-        return compute_json_sha256({"kind": "comparison", **dc.asdict(self)})
-
-    @property
-    def submission_ids(self) -> tuple[int, ...]:
-        return (*self.intervals_a.submission_ids, *self.intervals_b.submission_ids)
-
-    def compute(self, archive: ModelArchive,
-                dataset_contexts: T.Mapping[str, DatasetContext],
-                settings: ScoringSettings) -> ie.MetricValues[ie.MetricDifference]:
-        """See `scoring.WorkRequest.compute`. The models are scored again
-        (`scoring.IntervalRequest.evaluate_models`), and the metrics of `COMPARED_METRIC_NAMES`
-        that both methods have are compared.
-
-        Raises:
-            ValueError: See `scoring.IntervalRequest.evaluate_models`, and if
-                `irap_evaluation.compare_methods` refuses the models.
-        """
-        results_a, results_b = (r.evaluate_models(archive, dataset_contexts, settings)
-                                for r in (self.intervals_a, self.intervals_b))
-        common_names = set(results_a[0].metrics.names) & set(results_b[0].metrics.names)
-        return ie.compare_methods(
-            results_a, results_b, [n for n in COMPARED_METRIC_NAMES if n in common_names],
-            num_resamples=settings.num_resamples, confidence=settings.confidence,
-            seed=settings.bootstrap_seed)
-
-    def value_to_json(self, value: ie.MetricValues[ie.MetricDifference]) -> str:
-        return metric_values_to_json(value)
-
-    def value_from_json(self, text: str) -> ie.MetricValues[ie.MetricDifference]:
-        return metric_values_from_json(text, lambda d: ie.MetricDifference(
-            d["difference"], ie.BootstrapInterval(**d["interval"])))
+from .scoring import MethodScores, are_scored_on_same_set
 
 
 def list_comparable_methods(rows: T.Iterable[MethodScores]) -> list[MethodScores]:
     """Lists the methods that can be compared, those without `MethodScores.error`, in their
     order."""
     return [r for r in rows if r.error is None]
+
+
+def get_comparison_error(row: MethodScores, reference: MethodScores) -> str | None:
+    """Returns why a method cannot be compared with the reference method, or None if it can.
+
+    Both are means over the same attributes (`scoring.compute_method_scores`) without an error.
+    """
+    if not are_scored_on_same_set((*row.models, *reference.models)):
+        return "The methods are scored on different evaluation sets."
+    return None
+
+
+def compare_with_reference(
+        rows: T.Iterable[MethodScores],
+        method_to_resamples: T.Mapping[str, ie.MetricValues[np.ndarray] | None],
+        reference: MethodScores, confidence: float
+) -> tuple[dict[str, ie.MetricValues[ie.MetricDifference]], list[str]]:
+    """Computes the differences of the methods minus the reference method
+    (`irap_evaluation.compute_resampled_differences`), for the metrics that both have, e.g.
+    without the probabilistic ones if one has hard predictions.
+
+    Args:
+        rows: Means over the same attributes as `reference` (`scoring.compute_method_scores`).
+        method_to_resamples: Method name -> the resampled values of the method over the
+            attributes, or None, e.g. for a method with an error, for the rows and the reference.
+        reference: The reference method, without an error.
+
+    Returns:
+        Method name -> its differences from the reference, for the rows with resampled values,
+        and the errors of the rows that cannot be compared with the reference
+        (`get_comparison_error`).
+    """
+    method_to_differences, errors = {}, []
+    if (reference_resamples := method_to_resamples[reference.method_name]) is None:
+        return method_to_differences, errors
+    for row in rows:
+        row_resamples = method_to_resamples[row.method_name]
+        if row.method_name == reference.method_name or row_resamples is None:
+            continue
+        if (error := get_comparison_error(row, reference)) is not None:
+            errors.append(f"{row.shown_method_name} cannot be compared with"
+                          f" {reference.shown_method_name}: {error}")
+            continue
+        common_names = set(row_resamples.names) & set(reference_resamples.names)
+        method_to_differences[row.method_name] = ie.compute_resampled_differences(
+            ie.select_metric_names(row_resamples, common_names), reference_resamples, row.metrics,
+            reference.metrics, confidence)
+    return method_to_differences, errors
 
 
 def get_better_method(interval: ie.BootstrapInterval | None,
@@ -101,31 +80,3 @@ def get_better_method(interval: ie.BootstrapInterval | None,
         return None
     is_a_higher = interval.low > 0
     return "A" if is_a_higher != ie.is_lower_better(metric_name) else "B"
-
-
-def make_comparison_request(models_a: T.Sequence[ScoredModel], models_b: T.Sequence[ScoredModel],
-                            attributes: T.Collection[str],
-                            settings: ScoringSettings) -> ComparisonRequest:
-    """
-    Args:
-        models_a: The models of method A, scored on the reference set.
-        models_b: The models of method B, the same.
-
-    Raises:
-        ValueError: If `attributes` is empty, the models of a method cannot be combined
-            (`scoring.make_interval_request`), a model is not scored on the reference set, or A
-            and B are scored on different sets.
-    """
-    check_attributes(attributes)
-    interval_requests = []
-    for name, models in (("A", models_a), ("B", models_b)):
-        try:
-            interval_requests.append(make_interval_request(models, attributes, settings))
-        except ValueError as e:
-            raise ValueError(f"Method {name}: {e}") from None
-    if any(m.scores.evaluation_set != ie.REFERENCE_SET_NAME for m in (*models_a, *models_b)):
-        raise ValueError("Methods are compared on the reference set.")
-    intervals_a, intervals_b = interval_requests
-    if intervals_a.evaluation_set_fingerprint != intervals_b.evaluation_set_fingerprint:
-        raise ValueError("The methods are scored on different reference sets.")
-    return ComparisonRequest(intervals_a, intervals_b)
