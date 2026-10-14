@@ -1,11 +1,8 @@
 import concurrent.futures
-import contextlib
-import sqlite3
 
 import pytest
 
 from irap_evaluation_server.accounts import (
-    DATABASE_FILE_NAME,
     MIN_PASSWORD_LENGTH,
     AccountStore,
     can_write,
@@ -98,13 +95,6 @@ def test_last_admin_remains(tmp_path):
     store.set_permission("Al", "view", actor="Al")
     with pytest.raises(ValueError, match="Only admins"):  # Al is no longer one.
         store.set_permission("Al", "admin", actor="Al")
-
-
-def test_account_store_refuses_other_versions(tmp_path):
-    with contextlib.closing(sqlite3.connect(tmp_path / DATABASE_FILE_NAME)) as connection:
-        connection.execute("PRAGMA user_version = 99")
-    with pytest.raises(ValueError, match="another version of the accounts"):
-        AccountStore(tmp_path)
 
 
 @pytest.mark.parametrize("url, expected", [

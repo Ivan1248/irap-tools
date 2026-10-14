@@ -20,7 +20,7 @@ import typing as T
 from datetime import datetime
 from pathlib import Path
 
-from .database import begin_write, connect, get_utc_now, initialize_schema
+from .database import Migration, begin_write, connect, get_utc_now, initialize_schema
 
 Permission = T.Literal["view", "write", "admin"]
 #: From the least to the most.
@@ -36,8 +36,11 @@ PERMISSION_DESCRIPTIONS: T.Mapping[Permission, str] = {
 DATABASE_FILE_NAME = "accounts.sqlite3"
 MIN_PASSWORD_LENGTH = 8
 MAX_ACCOUNT_NAME_LENGTH = 64
-#: The version of the database schema (`PRAGMA user_version`).
+#: The version of the database schema (`PRAGMA user_version`). A database of an older version is
+#: migrated (`_MIGRATIONS`).
 SCHEMA_VERSION = 1
+#: Version v -> the migration from v to v + 1 (`database.initialize_schema`).
+_MIGRATIONS: dict[int, Migration] = {}
 # The scrypt costs (RFC 7914), about 16 MiB and 50 ms per hash.
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
 _SCRYPT_MAX_MEMORY = 64 * 2 ** 20
@@ -191,13 +194,16 @@ class AccountStore:
     Each operation opens its own database connection, so the store can be used from several
     threads.
 
+    A database of an older schema version is migrated (`database.initialize_schema`).
+
     Raises:
-        ValueError: If the database has another schema version (`SCHEMA_VERSION`).
+        ValueError: If the database cannot be migrated to `SCHEMA_VERSION`, or its tables differ
+            from those of its version (see `database.initialize_schema`).
     """
 
     def __init__(self, data_dir: Path):
         self.database_path = data_dir / DATABASE_FILE_NAME
-        initialize_schema(self.database_path, _SCHEMA, SCHEMA_VERSION, "accounts")
+        initialize_schema(self.database_path, _SCHEMA, SCHEMA_VERSION, "accounts", _MIGRATIONS)
 
     def list_accounts(self) -> list[Account]:
         """Returns the accounts in the order of registration."""
