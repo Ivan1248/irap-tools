@@ -114,7 +114,8 @@ class AttributeOutcomes:
         confusion_matrix: (K, K + 1) int64 counts of the labeled segments for the first model:
             rows are labels, columns are predicted classes, and the last column counts invalid
             predictions. Added to the first column, the last one gives the matrix of
-            `null_policy='first_class'`, which scores an invalid cell as class 0.
+            `null_policy='first_class'`, which scores an invalid attribute prediction as class
+            0.
     """
 
     outcome_names: tuple[str, ...]

@@ -74,7 +74,7 @@ def test_round_trip(tmp_path, make_predictions):
     _assert_equal(read_predictions(tmp_path / "m.predictions.parquet"), predictions)
 
 
-def test_file_marks_invalid_cells_as_null():
+def test_file_marks_invalid_attribute_predictions_as_null():
     table = to_arrow_table(_predictions())
     assert table.column("a").null_count == 1
     assert "output_kind" not in json.loads(table.schema.metadata[HEADER_METADATA_KEY])
@@ -128,8 +128,8 @@ def test_arrays_are_read_only_views():
     assert probs.flags.writeable
 
 
-def test_nan_in_a_valid_cell_is_an_error():
-    with pytest.raises(PredictionFormatError, match="valid cell contains NaN"):
+def test_nan_in_a_valid_attribute_prediction_is_an_error():
+    with pytest.raises(PredictionFormatError, match="valid attribute prediction contains NaN"):
         Predictions.from_probabilities(HEADER, {"b": (1, 2)}, ["s1"],
                                        {"b": np.array([[np.nan, np.nan]])})
 
@@ -280,7 +280,7 @@ def _set_column(table, name, column):
 
 
 @pytest.mark.parametrize("make_predictions", [_predictions, _hard_predictions])
-def test_reading_accepts_a_null_typed_column_of_invalid_cells(make_predictions):
+def test_reading_accepts_a_null_typed_column_of_invalid_attribute_predictions(make_predictions):
     predictions = make_predictions()
     loaded = from_arrow_table(_set_column(to_arrow_table(predictions), "a", pa.nulls(3)))
     assert loaded.output_kind == predictions.output_kind
@@ -306,7 +306,7 @@ def test_reading_accepts_other_column_types(make_predictions, attr, column_type)
      "all hold class indices"),
     (lambda: _set_column(to_arrow_table(_hard_predictions()), "a",
                          pa.array([2, IGNORE_LABEL_INDEX, 0])),
-     "invalid cell is null"),
+     "invalid attribute prediction is null"),
     (lambda: _set_column(to_arrow_table(_hard_predictions()), "a", pa.array([3, None, 0])),
      r"class indices must be in \[0, 3\)"),
     (lambda: _set_column(_set_column(to_arrow_table(_predictions()), "a", pa.nulls(3)),

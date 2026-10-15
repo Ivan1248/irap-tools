@@ -214,9 +214,9 @@ def get_common_dataset_and_split(headers: T.Iterable[PredictionHeader]) -> tuple
 class Predictions:
     """Per-attribute class distributions predicted for road segments.
 
-    A cell is the prediction of one attribute for one segment, a row of `probs[attribute]`. It is
-    invalid if the model gave no usable prediction, e.g. an unparseable VLM answer. The row of an
-    invalid cell is NaN.
+    An attribute prediction is the prediction of one attribute for one segment, a row of
+    `probs[attribute]`. It is invalid if the model gave no usable prediction, e.g. an unparseable
+    VLM answer. The row of an invalid attribute prediction is NaN.
 
     Attributes:
         header: See `PredictionHeader`.
@@ -259,7 +259,7 @@ class Predictions:
 
     @functools.cached_property
     def is_valid(self) -> dict[str, np.ndarray]:
-        """Attribute -> (N,) read-only bool, False for an invalid cell."""
+        """Attribute -> (N,) read-only bool, False for an invalid attribute prediction."""
         return _to_read_only_views({attr: ~np.isnan(self.probs[attr][:, 0])
                                     for attr in self.attributes})
 
@@ -279,8 +279,9 @@ class Predictions:
             probs: Attribute -> (N, K) distributions in the class order of
                 `attribute_to_irap_codes`.
             is_valid: Attribute -> (N,) bool, or None if all predictions are valid. The rows of
-                invalid cells are ignored. A NaN in a valid row is an error, so that a numerical
-                failure of the model does not pass for an invalid cell.
+                invalid attribute predictions are ignored. A NaN in a valid row is an error, so
+                that a numerical failure of the model does not pass for an invalid attribute
+                prediction.
         """
         _check_attributes(probs, "probs", attribute_to_irap_codes)
         if is_valid is not None:
@@ -291,8 +292,8 @@ class Predictions:
             attr_is_valid = (np.ones(len(values), dtype=bool) if is_valid is None
                              else np.asarray(is_valid[attr], dtype=bool))
             if np.isnan(values[attr_is_valid]).any():
-                raise PredictionFormatError(f"{attr!r}: the distribution of a valid cell contains"
-                                            f" NaN.")
+                raise PredictionFormatError(f"{attr!r}: the distribution of a valid attribute"
+                                            f" prediction contains NaN.")
             return _fill_invalid_rows(values, attr_is_valid)
 
         return cls(header, "probs", attribute_to_irap_codes, tuple(segment_ids),
@@ -436,8 +437,8 @@ def _validate_predictions(predictions: Predictions) -> None:
         is_nan = np.isnan(probs)
         is_invalid = is_nan.all(1)
         if (is_nan.any(1) & ~is_invalid).any():
-            raise PredictionFormatError(f"{attr!r}: a row must be either NaN (an invalid cell) or"
-                                        f" a distribution without NaN.")
+            raise PredictionFormatError(f"{attr!r}: a row must be either NaN (an invalid attribute"
+                                        f" prediction) or a distribution without NaN.")
         valid_probs = probs[~is_invalid]
         if not (np.isfinite(valid_probs).all() and (valid_probs >= 0).all()):
             raise PredictionFormatError(f"{attr!r}: probabilities must be finite and >= 0.")
@@ -450,7 +451,8 @@ def _validate_predictions(predictions: Predictions) -> None:
 
 def _replace_unvalidated(predictions: Predictions, **changes) -> Predictions:
     """`dataclasses.replace` without `_validate_predictions`, for changes that keep the
-    invariants: selecting segments or attributes, reordering classes, and adding invalid cells.
+    invariants: selecting segments or attributes, reordering classes, and adding invalid attribute
+    predictions.
     The checks scan every probability, which takes about a second for 100k segments and 50
     attributes."""
     if "probs" in changes:
@@ -554,7 +556,7 @@ def add_invalid_attributes(predictions: Predictions,
                            attribute_to_irap_codes: T.Mapping[str, T.Sequence[int]]
                            ) -> Predictions:
     """The predictions with the attributes of `attribute_to_irap_codes` that they do not predict
-    added, with every cell invalid. Predicted attributes are kept as they are.
+    added, with every attribute prediction invalid. Predicted attributes are kept as they are.
 
     `docs/evaluation.md#missing-attributes` gives the reasons for scoring missing attributes so.
 

@@ -142,7 +142,8 @@ def run_validate(args: argparse.Namespace) -> None:
               f" trained on {_format_training_splits(header.model)},"
               f" early stopped on {list(header.model.early_stopping_splits)},"
               f" {predictions.output_kind}, {predictions.num_segments} segments,"
-              f" {len(predictions.attributes)} attributes, {num_invalid} invalid cells.")
+              f" {len(predictions.attributes)} attributes, {num_invalid} invalid attribute"
+              f" predictions.")
 
 
 def _score(predictions: Predictions, evaluation_set: EvaluationSet, *, null_policy: NullPolicy,
@@ -385,10 +386,12 @@ def make_argument_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--missing-attribute-policy", choices=MISSING_ATTRIBUTE_POLICIES,
                           default="error",
                           help="How a selected attribute that a file does not predict is scored."
-                               " error: not at all, the command fails. invalid: as if every cell"
-                               " of it were invalid (see --null-policy). Default: error.")
+                               " error: not at all, the command fails. invalid: as if every"
+                               " attribute prediction of it were invalid (see --null-policy)."
+                               " Default: error.")
     evaluate.add_argument("--null-policy", choices=NULL_POLICIES, default="first_class",
-                          help="How the results of the models score invalid cells. first_class:"
+                          help="How the results of the models score invalid attribute"
+                               " predictions. first_class:"
                                " as class 0 in the metrics of the predicted classes and as the"
                                " uniform distribution in NLL and Brier. exclude: not scored, so"
                                " each model is scored on its own segments and no means over the"
@@ -400,7 +403,8 @@ def make_argument_parser() -> argparse.ArgumentParser:
     compare = commands.add_parser(
         "compare", help="Compare two methods, each with one or more models, on the reference set,"
                         " with a bootstrap over road sequences and the spread of the models."
-                        " Invalid cells are scored with the null policy first_class.")
+                        " Invalid attribute predictions are scored with the null policy"
+                        " first_class.")
     compare.add_argument("metadata_dir", type=Path)
     compare.add_argument("files", nargs="+", type=Path,
                          help="The prediction files of the models of both methods.")

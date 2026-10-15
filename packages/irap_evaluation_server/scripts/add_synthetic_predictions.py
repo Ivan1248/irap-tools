@@ -43,7 +43,7 @@ class SyntheticMethod:
     label_strength: float
     #: Std. dev. of the per-sequence log-multiplier of `label_strength`.
     sequence_difficulty_std_dev: float
-    #: Probability of an invalid cell (hard models only).
+    #: Probability of an invalid attribute prediction (hard models only).
     invalid_rate: float = 0.0
     output_kind: ie.OutputKind = "probs"
     display_name: str | None = None

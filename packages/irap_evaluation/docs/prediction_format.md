@@ -34,7 +34,7 @@ Header types are Python types of the parsed JSON. `?` marks optional fields. Col
 | Column | Type | Content |
 |---|---|---|
 | `segment_id` | `string \| large_string` | Segment identifier. |
-| `<attribute>` | `list<float32>` or `int64`, nullable | Probability vector or class index, `null` for an [invalid cell](evaluation.md#invalid-cells). |
+| `<attribute>` | `list<float32>` or `int64`, nullable | Probability vector or class index, `null` for an [invalid attribute prediction](evaluation.md#invalid-attribute-predictions). |
 
 There is one `<attribute>` column for each key of `attribute_to_irap_codes`, named as in `attribute_metadata.json`.
 All attribute columns share the same output kind:
@@ -136,4 +136,4 @@ metadata = {"irap_predictions": json.dumps(header)}
 predictions.write_parquet("resnet-seq_seed3.val.predictions.parquet", metadata=metadata)
 ```
 
-For hard predictions, attribute columns are `pl.Int64` class indices, with `None` for invalid cells.
+For hard predictions, attribute columns are `pl.Int64` class indices, with `None` for invalid attribute predictions.

@@ -57,7 +57,7 @@ Run `irap-eval <command> --help` for all options.
 
 ### Outputs of `evaluate`
 
-`evaluate` scores each file on two [evaluation sets](docs/evaluation.md#evaluation-sets): `reference`, the same for all models, and `compatible`, which matches the model's context offsets. Nulls in a file are scored according to `--null-policy` ([invalid cells](docs/evaluation.md#invalid-cells)). It also takes the files of a model on several splits, which must agree in the model's training and early stopping splits.
+`evaluate` scores each file on two [evaluation sets](docs/evaluation.md#evaluation-sets): `reference`, the same for all models, and `compatible`, which matches the model's context offsets. Nulls in a file are scored according to `--null-policy` ([invalid attribute predictions](docs/evaluation.md#invalid-attribute-predictions)). It also takes the files of a model on several splits, which must agree in the model's training and early stopping splits.
 
 Models are labeled `<method>` or `<method>/seed<seed>`. Every output records `split_use`: whether the model was trained on the scored split, used it for early stopping, may have been trained on it, or held it out ([terms](docs/evaluation.md#terms)). `evaluate` writes to `--out`:
 

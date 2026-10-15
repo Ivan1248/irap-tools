@@ -138,9 +138,9 @@ def _check_comparable(result_a: EvaluationResult, result_b: EvaluationResult) ->
                          f" {result_a.null_policy!r} and {result_b.null_policy!r}.")
     if result_a.null_policy == "exclude" and any(
             n > 0 for r in (result_a, result_b) for n in r.num_invalid.values()):
-        raise ValueError("With null_policy='exclude', the invalid cells of each model are left"
-                         " out, so the models are scored on different segments. Use"
-                         " null_policy='first_class'.")
+        raise ValueError("With null_policy='exclude', the invalid attribute predictions of each"
+                         " model are left out, so the models are scored on different segments."
+                         " Use null_policy='first_class'.")
 
 
 def _have_same_metrics(values_a: MetricValues, values_b: MetricValues) -> bool:
@@ -202,7 +202,8 @@ def compute_method_metrics(models: T.Sequence[EvaluationResult]) -> MetricValues
         ValueError: If `models` is empty, the results are not of the models of one method that
             `check_method_models` accepts, with the same metrics, or two models are not
             comparable: they differ in segments, sequences, attributes or null policy, or use
-            `null_policy='exclude'` with invalid cells, which scores them on different segments.
+            `null_policy='exclude'` with invalid attribute predictions, which scores them on
+            different segments.
     """
     _check_models(models)
     return compute_mean_metrics([r.metrics for r in models])

@@ -100,7 +100,8 @@ def make_ensemble_model_info(members: T.Iterable[ModelInfo], method_name: str | 
 
 
 def _compute_weighted_mean(probs: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """The weighted mean of (M, N, K) distributions with (M, N) weights, 0 for invalid cells.
+    """The weighted mean of (M, N, K) distributions with (M, N) weights, 0 for invalid attribute
+    predictions.
 
     Returns:
         (N, K) distributions, NaN in rows with no weight.
@@ -124,8 +125,9 @@ def ensemble_predictions(
     the same attributes, release and split. For hard predictions, it gives weighted vote shares.
 
     Classes are matched by iRAP code, and the output uses the class order of the first member.
-    A cell that is invalid in a member is left out of that cell's mean, and it is invalid in the
-    ensemble only if it is invalid in every member. The ensemble uses whatever its members use:
+    An attribute prediction that is invalid in a member is left out of the mean for that attribute
+    and segment, and it is invalid in the ensemble only if it is invalid in every member. The
+    ensemble uses whatever its members use:
     - Its context offsets are the union of the members' offsets, since it reads every frame a
       member reads, or None if the offsets of a member are unknown.
     - Its training and early stopping splits are those of `make_ensemble_model_info`.

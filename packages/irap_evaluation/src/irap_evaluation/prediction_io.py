@@ -142,7 +142,7 @@ def _to_probability_column(probs: np.ndarray, is_valid: np.ndarray) -> pa.ListAr
 
 def _get_output_kind(attr: str, data_type: pa.DataType) -> OutputKind | None:
     """The output kind that a column type stores, None for the null type, which dataframe
-    libraries give to a column with only null cells."""
+    libraries give to a column with only null values."""
     if pa.types.is_null(data_type):
         return None
     if pa.types.is_integer(data_type):
@@ -157,7 +157,7 @@ def _get_output_kind(attr: str, data_type: pa.DataType) -> OutputKind | None:
 
 def _read_probabilities(attr: str, column: pa.Array, num_classes: int,
                         is_valid: np.ndarray) -> np.ndarray:
-    """(N, K) float32 distributions of a list column, NaN in the rows of null cells."""
+    """(N, K) float32 distributions of a list column, NaN in the rows of null values."""
     column = column.cast(pa.list_(pa.float32()))
     lengths = column.value_lengths().to_numpy(zero_copy_only=False)
     if not (lengths[is_valid] == num_classes).all():
@@ -169,11 +169,11 @@ def _read_probabilities(attr: str, column: pa.Array, num_classes: int,
 
 
 def _read_class_indices(attr: str, column: pa.Array, is_valid: np.ndarray) -> np.ndarray:
-    """(N,) int64 class indices of an integer column, `IGNORE_LABEL_INDEX` for null cells."""
+    """(N,) int64 class indices of an integer column, `IGNORE_LABEL_INDEX` for null values."""
     indices = column.cast(pa.int64()).fill_null(IGNORE_LABEL_INDEX).to_numpy(zero_copy_only=False)
     if (indices[is_valid] == IGNORE_LABEL_INDEX).any():
-        raise PredictionFormatError(f"{attr!r}: a non-null cell holds {IGNORE_LABEL_INDEX}. An"
-                                    f" invalid cell is null.")
+        raise PredictionFormatError(f"{attr!r}: a non-null value is {IGNORE_LABEL_INDEX}. An"
+                                    f" invalid attribute prediction is null.")
     return indices
 
 
@@ -181,7 +181,7 @@ def _read_class_indices(attr: str, column: pa.Array, is_valid: np.ndarray) -> np
 
 def to_arrow_table(predictions: Predictions) -> pa.Table:
     """The table of `predictions`: list columns of probabilities, or integer columns of class
-    indices for hard predictions, null for invalid cells."""
+    indices for hard predictions, null for invalid attribute predictions."""
     attributes, is_valid = predictions.attributes, predictions.is_valid
     if SEGMENT_ID_COLUMN in attributes:
         raise PredictionFormatError(f"An attribute cannot be named {SEGMENT_ID_COLUMN!r}.")

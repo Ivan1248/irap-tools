@@ -160,7 +160,7 @@ def test_means_over_models_need_the_first_class_null_policy(metadata_dir, metada
     for model_seed in range(2):
         predictions = make_predictions(metadata.vocabulary, segments, name="vlm", seed=model_seed,
                                        model_seed=model_seed, context_offsets=None)
-        # The models have invalid cells in different segments.
+        # The models have invalid attribute predictions in different segments.
         is_valid = np.arange(len(segments)) % 2 == model_seed
         probs = np.where(is_valid[:, None], predictions.probs["Lane width"], np.nan)
         paths.append(str(tmp_path / f"vlm_{model_seed}.predictions.parquet"))

@@ -34,19 +34,21 @@ from .predictions import (
     to_class_indices,
 )
 
-#: How an invalid cell (`Predictions.is_valid` False) is scored:
+#: How an invalid attribute prediction (`Predictions.is_valid` False) is scored:
 #: - 'first_class': as class 0 in the metrics of the predicted classes and as the uniform
 #:   distribution in NLL and Brier.
-#: - 'exclude': not scored, like a missing label. Results with invalid cells are then scored on
-#:   different segments, so the means over models and the comparisons of `bootstrap` refuse them.
-#: `docs/evaluation.md#invalid-cells` gives the reasons.
+#: - 'exclude': not scored, like a missing label. Results with invalid attribute predictions are
+#:   then scored on different segments, so the means over models and the comparisons of
+#:   `bootstrap` refuse them.
+#: `docs/evaluation.md#invalid-attribute-predictions` gives the reasons.
 NullPolicy = T.Literal["first_class", "exclude"]
 NULL_POLICIES: tuple[str, ...] = T.get_args(NullPolicy)
 
 #: How an evaluated attribute that the predictions lack is scored:
 #: - 'error': not at all, `evaluate_predictions` raises an error.
-#: - 'invalid': as if every cell of it were invalid, so that models that lack attributes are scored
-#:   on the same attributes as the others and are not rewarded for leaving out attributes.
+#: - 'invalid': as if every attribute prediction of it were invalid, so that models that lack
+#:   attributes are scored on the same attributes as the others and are not rewarded for leaving
+#:   out attributes.
 #: `docs/evaluation.md#missing-attributes` gives the reasons.
 MissingAttributePolicy = T.Literal["error", "invalid"]
 MISSING_ATTRIBUTE_POLICIES: tuple[str, ...] = T.get_args(MissingAttributePolicy)
@@ -112,8 +114,8 @@ class EvaluationResult:
             the sampling of road sequences but not of models (see
             `bootstrap.compute_bootstrap_intervals`), or None.
         missing_attributes: The evaluated attributes that the predictions lack, scored as
-            invalid cells (`MissingAttributePolicy` 'invalid'). `num_invalid` counts their cells
-            too.
+            invalid attribute predictions (`MissingAttributePolicy` 'invalid'). `num_invalid`
+            counts them too.
     """
 
     model: ModelInfo
@@ -239,8 +241,8 @@ def evaluate_predictions(
     Raises:
         ValueError: For probabilistic metrics of hard predictions, per-class metric names, if
             there is no attribute to score, if `null_policy='exclude'` would leave an attribute
-            without scored segments, since every labeled cell of it is invalid or, with
-            `missing_attribute_policy='invalid'`, it is not predicted, and as
+            without scored segments, since its attribute predictions are invalid on every labeled
+            segment or, with `missing_attribute_policy='invalid'`, it is not predicted, and as
             `align_to_evaluation_set` does.
         PredictionFormatError: See `align_to_evaluation_set`.
     """
@@ -266,9 +268,9 @@ def evaluate_predictions(
         attr_to_num_labeled = evaluation_set.attr_to_num_labeled
         if all_invalid := [a for a in attributes
                            if 0 < num_invalid[a] == attr_to_num_labeled[a]]:
-            raise ValueError(f"Every labeled cell of {all_invalid} is invalid or not predicted,"
-                             f" so null_policy='exclude' would leave them without scored"
-                             f" segments. Use null_policy='first_class'.")
+            raise ValueError(f"The attribute predictions of {all_invalid} are invalid or missing"
+                             f" on every labeled segment, so null_policy='exclude' would leave"
+                             f" them without scored segments. Use null_policy='first_class'.")
     has_probabilities = predictions.output_kind == "probs"
     attr_to_predicted_indices = to_class_indices(aligned)
 

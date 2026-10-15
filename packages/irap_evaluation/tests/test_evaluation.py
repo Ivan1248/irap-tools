@@ -212,12 +212,12 @@ def test_null_policies(reference_set, predictions):
            num_labeled - excluded.num_invalid["Lane width"]
     assert excluded.num_invalid["Lane width"] > 0
     all_invalid = _invalidate(predictions, "Lane width", np.zeros(predictions.num_segments, bool))
-    with pytest.raises(ValueError, match=r"\['Lane width'\] is invalid"):
+    with pytest.raises(ValueError, match=r"\['Lane width'\] are invalid"):
         evaluate_predictions(all_invalid, reference_set, null_policy="exclude")
 
 
-def test_first_class_scores_invalid_cells_as_uniform_distributions(metadata, reference_set,
-                                                                   predictions):
+def test_first_class_scores_invalid_attribute_predictions_as_uniform_distributions(
+        metadata, reference_set, predictions):
     invalid = _invalidate(predictions, "Lane width", np.zeros(predictions.num_segments, bool))
     metrics = evaluate_predictions(invalid, reference_set,
                                    null_policy="first_class").metrics.per_attribute
@@ -225,7 +225,7 @@ def test_first_class_scores_invalid_cells_as_uniform_distributions(metadata, ref
     # Finite, unlike the NLL of a one-hot distribution of class 0.
     assert metrics["NLL"]["Lane width"] == pytest.approx(np.log(num_classes))
     assert metrics["Brier"]["Lane width"] == pytest.approx(1 - 1 / num_classes)
-    # Every invalid cell counts as a prediction of class 0.
+    # Every invalid attribute prediction counts as a prediction of class 0.
     labels = reference_set.class_indices["Lane width"]
     assert metrics["A"]["Lane width"] == pytest.approx(
         np.mean(labels[labels != IGNORE_LABEL_INDEX] == 0))
@@ -265,7 +265,8 @@ def test_evaluation_requires_every_segment_and_attribute(metadata, reference_set
            ("Curvature",)
 
 
-def test_missing_attributes_score_as_invalid_cells(metadata, reference_set, predictions):
+def test_missing_attributes_score_as_invalid_attribute_predictions(metadata, reference_set,
+                                                                   predictions):
     without = dc.replace(predictions, attribute_to_irap_codes={
         a: c for a, c in predictions.attribute_to_irap_codes.items() if a != "Lane width"},
         probs={a: p for a, p in predictions.probs.items() if a != "Lane width"})

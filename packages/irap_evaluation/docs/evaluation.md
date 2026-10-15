@@ -5,7 +5,7 @@ This document defines what `irap_evaluation` computes when it scores a predictio
 Scoring a file on an evaluation set (`evaluate_predictions`) has these steps:
 
 1. Select the segments and attributes ([evaluation sets](#evaluation-sets), [attributes](#attributes)).
-2. Match the predictions to the labels, and score the invalid cells according to the null policy ([matching](#matching), [invalid cells](#invalid-cells)). Attributes that the file does not predict are an error, or count as invalid cells ([missing attributes](#missing-attributes)).
+2. Match the predictions to the labels, and score the invalid attribute predictions according to the null policy ([matching](#matching), [invalid attribute predictions](#invalid-attribute-predictions)). Attributes that the file does not predict are an error, or their attribute predictions count as invalid ([missing attributes](#missing-attributes)).
 3. Accumulate statistics per road sequence ([statistics](#statistics)).
 4. Compute the metrics from the summed statistics ([metrics](#metrics)).
 
@@ -23,7 +23,7 @@ The models of a method are then combined by their mean ([methods](#methods)). `c
   `irap-eval evaluate` and `compare` print a note for the first three. `summary_long.csv`, `averages_*.csv`, `method_averages_*.csv` and the JSON documents of `irap-eval evaluate` have a `split_use` column or field.
 - **Road sequence**: the segments of one road in driving order, one entry of `road_id_to_segment_id_sequence.json`.
 - **Class index**: the position of a value in `attribute_value_to_irap_number` of `attribute_metadata.json`. It need not follow iRAP code order. Class 0 is the first value.
-- **Cell**: the predicted distribution of one attribute for one segment. It is invalid if the model gave no usable prediction (null in the file, see [Invalid cells](#invalid-cells)).
+- **Attribute prediction**: the predicted distribution of one attribute for one segment. It is invalid if the model gave no usable prediction (null in the file, see [Invalid attribute predictions](#invalid-attribute-predictions)).
 
 ## Evaluation sets
 
@@ -55,29 +55,29 @@ The scored attributes are the canonical iRAP subset (`irap_data.attrs.get_attrs_
 A scored attribute that the file does not predict is handled according to `missing_attribute_policy` (`MissingAttributePolicy`, `--missing-attribute-policy`):
 
 - **`error`** (default): scoring fails.
-- **`invalid`**: every cell of the attribute counts as invalid ([invalid cells](#invalid-cells)). All files are then scored on the same attributes, so their averages are comparable, and a method does not gain by leaving out attributes that it predicts poorly. `EvaluationResult.missing_attributes` (`missing_attributes` in the JSON documents) lists such attributes, and `num_invalid` counts their cells. With `first_class`, the attribute is scored as a constant prediction of class 0, which can score above 0, e.g. in accuracy if class 0 is common. With `exclude`, it would have no scored segments, which is an error ([invalid cells](#invalid-cells)).
+- **`invalid`**: every attribute prediction of the attribute counts as invalid ([invalid attribute predictions](#invalid-attribute-predictions)). All files are then scored on the same attributes, so their averages are comparable, and a method does not gain by leaving out attributes that it predicts poorly. `EvaluationResult.missing_attributes` (`missing_attributes` in the JSON documents) lists such attributes, and `num_invalid` counts their attribute predictions. With `first_class`, the attribute is scored as a constant prediction of class 0, which can score above 0, e.g. in accuracy if class 0 is common. With `exclude`, it would have no scored segments, which is an error ([invalid attribute predictions](#invalid-attribute-predictions)).
 
 ## Matching
 
 - Every segment of the set must have a prediction. Extra predictions are ignored.
 - Classes are matched by iRAP code. The file must predict exactly the dataset's codes of each attribute, in any order.
-- The predicted class of a cell is the argmax of its distribution. On ties, it is the first maximum in dataset class order.
+- The predicted class of an attribute prediction is the argmax of its distribution. On ties, it is the first maximum in dataset class order.
 
-## Invalid cells
+## Invalid attribute predictions
 
-An invalid cell is a null in the file: the method gave no usable prediction of the attribute for the segment. The producer of the file decides what is usable. For VLMs, `vidlu_irap_gaim` (`is_usable_prediction`) marks a cell invalid if the response leaves out the attribute or names a value that matches none of its classes. Both cases are one category, since the boundary between them depends on the response parser. An invalid cell is not the same as:
+An invalid attribute prediction is a null in the file: the method gave no usable prediction of the attribute for the segment. The producer of the file decides what is usable. For VLMs, `vidlu_irap_gaim` (`is_usable_prediction`) marks an attribute prediction invalid if the response leaves out the attribute or names a value that matches none of its classes. Both cases are one category, since the boundary between them depends on the response parser. An invalid attribute prediction is not the same as:
 
 - an unlabeled segment, which has no label and is not scored for the attribute,
 - a missing row, i.e. a segment without a prediction, which makes the file incomplete (see [Evaluation sets](#evaluation-sets)).
 
-The null policy (`NullPolicy`) selects how invalid cells are scored:
+The null policy (`NullPolicy`) selects how invalid attribute predictions are scored:
 
-- **`first_class`** (default): in metrics computed from predicted classes, the cell counts as a prediction of class 0, as in the training-time evaluation. In NLL and Brier, it counts as the uniform distribution, which gives $\ln K$ and $1 - 1/K$ for $K$ classes (a one-hot distribution of class 0 would give an infinite NLL for any other label).
-- **`exclude`**: the cell is not scored, as if unlabeled. Each model leaves out its own invalid cells, so models with invalid cells are scored on different segments. An attribute with every labeled cell invalid would have no scored segments and would drop out of the attribute averages, which would reward leaving it empty. Scoring it is therefore an error.
+- **`first_class`** (default): in metrics computed from predicted classes, the invalid attribute prediction counts as a prediction of class 0, as in the training-time evaluation. In NLL and Brier, it counts as the uniform distribution, which gives $\ln K$ and $1 - 1/K$ for $K$ classes (a one-hot distribution of class 0 would give an infinite NLL for any other label).
+- **`exclude`**: the invalid attribute prediction is not scored, as if the segment were unlabeled for the attribute. Each model leaves out its own invalid attribute predictions, so models with invalid attribute predictions are scored on different segments. An attribute whose attribute predictions are invalid on every labeled segment would have no scored segments and would drop out of the attribute averages, which would reward leaving it empty. Scoring it is therefore an error.
 
 Means over models and comparisons therefore need `first_class`. `irap-eval evaluate` scores the models with `--null-policy` (default `first_class`) and writes the means over the models of a method (`method_averages_*.csv`) only with `first_class`. `irap-eval compare` always uses `first_class`.
 
-The tables and documents have a `null_policy` column or field. In the library, `compute_method_metrics` and `compute_bootstrap_intervals` refuse several models scored with `exclude` if any of them has invalid cells, and `compare_methods` refuses models scored with `exclude` if any of them has invalid cells.
+The tables and documents have a `null_policy` column or field. In the library, `compute_method_metrics` and `compute_bootstrap_intervals` refuse several models scored with `exclude` if any of them has invalid attribute predictions, and `compare_methods` refuses models scored with `exclude` if any of them has invalid attribute predictions.
 
 ## Statistics
 
@@ -112,7 +112,7 @@ The metrics of an attribute are computed from $C$, with, for each class $k$:
 | `cNLL`, `cBrier` | $s_k / a_k$ per class (NaN if $a_k = 0$) |
 | `mNLL`, `mBrier` | the mean of `cNLL`, `cBrier` over the classes with $a_k > 0$ |
 
-A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but never labeled, has $F_k = 0$. Other undefined values (0/0) are NaN. `NLL` is infinite if a valid cell gives its label probability 0. The probabilistic metrics are not defined for `hard` files, and requesting them is an error.
+A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but never labeled, has $F_k = 0$. Other undefined values (0/0) are NaN. `NLL` is infinite if a valid attribute prediction gives its label probability 0. The probabilistic metrics are not defined for `hard` files, and requesting them is an error.
 
 **Support threshold.** The suffix `_suppN` restricts a mean over classes to $\mathcal{K}_N = \{k : a_k \ge N\}$, e.g. `mF1_supp10`. `nc_suppN` is $|\mathcal{K}_N|$.
 
@@ -170,7 +170,7 @@ All models of both methods must have the same segments, sequences, attributes an
 - **`amF1` is the main metric.** Differences per attribute or for many metrics are exploratory, since some will exclude 0 by chance.
 - **The intervals generalize to roads like those of the evaluated region, and to further models of the methods.** The splits are by region, so they say nothing about other regions. For one region of a set, use `select_evaluation_subset`.
 - **Scores on a split that a model used** (`split_use`) are not of held-out data: those on a training split are not comparable with held-out scores, and those on an early stopping split are optimistic.
-- **Invalid cells.** With `first_class`, every model is scored on the same segments, but an invalid cell counts as class 0, which is often, but not always, the most common class. With `exclude`, the scores measure skill when the response is usable, and must be read together with the number of invalid cells (`num_invalid` in the JSON documents).
+- **Invalid attribute predictions.** With `first_class`, every model is scored on the same segments, but an invalid attribute prediction counts as class 0, which is often, but not always, the most common class. With `exclude`, the scores measure skill when the response is usable, and must be read together with the number of invalid attribute predictions (`num_invalid` in the JSON documents).
 
 Simulations on the Vietnam labels with synthetic predictors (2026-10-01, about 200 repetitions each) support the design of the intervals:
 
