@@ -1,7 +1,9 @@
-"""The JavaScript libraries of the map of the Analysis page, downloaded into the data directory.
+"""The JavaScript libraries of the pages, downloaded into the data directory: those of the map of
+the Analysis page, and MathJax, which typesets the formulas of the Methodology page.
 
 The server serves them itself, since MapLibre starts its worker from the URL of its module, which
-fails for a module of another origin, e.g. a CDN. The pinned versions are checked by SHA-256.
+fails for a module of another origin, e.g. a CDN, and so that the pages do not depend on a CDN
+while they are viewed. The pinned versions are checked by SHA-256.
 """
 
 import dataclasses as dc
@@ -47,13 +49,20 @@ MAP_LIBRARY_FILES = (
     DECK_SCRIPT,
 )
 
+#: MathJax 3 with TeX input and SVG output, whose fonts it contains, so that it needs no other
+#: files. MathJax 4 loads its fonts from separate files.
+MATHJAX_SCRIPT = LibraryFile(
+    "mathjax/tex-svg.js", "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js",
+    "d4295dc33744836935c1399feece5159577b34c5c8ffb9f1c6324cd82e03a882")
+MATH_LIBRARY_FILES = (MATHJAX_SCRIPT,)
+
 
 def _fetch_url(url: str) -> bytes:
     with urllib.request.urlopen(url, timeout=30) as response:
         return response.read()
 
 
-def ensure_map_libraries(vendor_dir: Path, files: T.Iterable[LibraryFile] = MAP_LIBRARY_FILES,
+def ensure_library_files(vendor_dir: Path, files: T.Iterable[LibraryFile],
                          fetch_url: T.Callable[[str], bytes] = _fetch_url) -> None:
     """Downloads the files that are missing in `vendor_dir` or differ from their SHA-256.
 

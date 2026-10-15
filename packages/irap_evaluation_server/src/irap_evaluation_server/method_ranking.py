@@ -13,7 +13,6 @@ from .scoring import (
     IRAP_AVERAGE_METRIC_NAMES,
     MethodScores,
     ScoredModel,
-    SubmissionScoring,
     compute_method_scores,
     group_scored_models_by_method,
 )
@@ -98,8 +97,9 @@ def compute_highlights(values: T.Sequence[float | None],
 def collect_scored_attributes(models: T.Iterable[ScoredModel]) -> tuple[str, ...]:
     """Collects the attributes that the models are scored on, in first-seen order.
 
-    The models of a view normally have the same attributes, since missing attributes are scored
-    as invalid cells. Model-compatible sets can lack labels of some attributes.
+    The models of a view normally have the same attributes, since the attribute predictions of
+    missing attributes are scored as invalid. Model-compatible sets can lack labels of some
+    attributes.
     """
     return tuple(dict.fromkeys(a for m in models for a in m.scores.attributes))
 
@@ -200,23 +200,3 @@ def select_shown_methods(rows: T.Iterable[MethodScores],
         else:
             shown.append(row)
     return shown, num_hidden
-
-
-def get_unscored_reason(scoring: SubmissionScoring | None, is_current: bool,
-                        is_pending: bool) -> str | None:
-    """Explains why a submission has no current scores. Returns None if it has them.
-
-    Args:
-        scoring: Its stored scoring, or None.
-        is_current: Whether `scoring` is current (`scoring.is_scoring_current`).
-        is_pending: Whether its scoring is queued or running.
-    """
-    if is_pending:
-        return "Scoring…"
-    if scoring is not None and scoring.status == "error":
-        return f"{scoring.message} It is scored again when the server restarts."
-    if scoring is None or not is_current:  # An 'error' scoring is not current.
-        return "No scores for the current settings and metadata."
-    if scoring.status == "failed":
-        return scoring.message
-    return None

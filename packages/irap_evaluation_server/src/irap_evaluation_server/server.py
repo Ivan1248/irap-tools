@@ -8,16 +8,22 @@ import http.client
 import os
 import secrets
 import time
+import typing as T
 from pathlib import Path
 
 from .accounts import AccountStore
 from .archive import ModelArchive
 from .config import load_server_config
 from .datasets import load_dataset_contexts
-from .map_libraries import ensure_map_libraries
 from .prediction_analysis import AlignedPredictionsCache
 from .scoring import ScoreStore
 from .scoring_worker import ScoringWorker
+from .vendor_libraries import (
+    MAP_LIBRARY_FILES,
+    MATH_LIBRARY_FILES,
+    LibraryFile,
+    ensure_library_files,
+)
 
 #: The length of the key of the session cookies, in hex digits (256 bits).
 _STORAGE_SECRET_LENGTH = 64
@@ -45,6 +51,24 @@ def _load_storage_secret(data_dir: Path) -> str:
     return secret
 
 
+def _download_libraries(vendor_dir: Path, files: T.Iterable[LibraryFile], name: str,
+                        consequence: str) -> str | None:
+    """Downloads the files of libraries (`ensure_library_files`) and returns None, or prints why
+    they could not be downloaded and returns an error message for the pages.
+
+    Args:
+        name: The subject of the messages, e.g. 'The map libraries'.
+        consequence: What is missing without them, e.g. 'The Analysis page shows no map.'.
+    """
+    try:
+        ensure_library_files(vendor_dir, files)
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        print(f"{name} could not be downloaded into {vendor_dir}: {e} {consequence}")
+        # Without the path and the error, which visitors need not see.
+        return f"{name} could not be downloaded when the server started."
+    return None
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Runs the iRAP evaluation web app.")
     parser.add_argument("config", type=Path, help="The configuration file (TOML).")
@@ -61,21 +85,18 @@ def main(argv: list[str] | None = None) -> None:
     from .pages.accounts import register_accounts_page
     from .pages.action_log import register_action_log_page
     from .pages.analysis import register_analysis_page
-    from .pages.ensemble import register_ensemble_page
+    from .pages.method import register_method_page
+    from .pages.methodology import register_methodology_page
     from .pages.model import register_model_page
     from .pages.models import register_models_pages
     from .pages.scores import register_scores_page
     from .pages.sign_in import register_sign_in_pages
 
     vendor_dir = config.data_dir / "vendor"
-    try:
-        ensure_map_libraries(vendor_dir)
-        map_error = None
-    except (OSError, ValueError, http.client.HTTPException) as e:
-        print(f"The map libraries could not be downloaded into {vendor_dir}: {e} The Analysis"
-              f" page shows no map.")
-        # Without the path and the error, which visitors need not see.
-        map_error = "The map libraries could not be downloaded when the server started."
+    map_error = _download_libraries(vendor_dir, MAP_LIBRARY_FILES, "The map libraries",
+                                    "The Analysis page shows no map.")
+    math_error = _download_libraries(vendor_dir, MATH_LIBRARY_FILES, "MathJax",
+                                     "The Methodology page shows its formulas as TeX.")
     start_time_s = time.perf_counter()
     dataset_contexts = load_dataset_contexts(config.datasets)
     print(f"Loaded the metadata of {', '.join(dataset_contexts)} in"
@@ -87,7 +108,8 @@ def main(argv: list[str] | None = None) -> None:
     # Scores what is new or out of date, e.g. after a metadata update, in the background.
     scoring_worker.update_all_submissions()
     scoring_worker.start()
-    app.on_shutdown(scoring_worker.stop)
+    # Without arguments: NiceGUI passes the app to a handler with one parameter.
+    app.on_shutdown(lambda: scoring_worker.stop())
 
     accounts = AccountStore(config.data_dir)
     if not accounts.has_accounts():
@@ -104,7 +126,9 @@ def main(argv: list[str] | None = None) -> None:
                            sessions)
     register_models_pages(archive, dataset_contexts, scoring_worker, sessions)
     register_model_page(archive, dataset_contexts, scoring_worker, sessions)
-    register_ensemble_page(archive, dataset_contexts, scoring_worker, sessions)
+    register_method_page(archive, dataset_contexts, scoring_worker, sessions)
+    register_methodology_page(scoring_worker.settings, list(dataset_contexts), math_error,
+                              sessions)
     register_action_log_page(archive, sessions)
     vendor_dir.mkdir(exist_ok=True)
     app.add_static_files(VENDOR_PATH, vendor_dir)

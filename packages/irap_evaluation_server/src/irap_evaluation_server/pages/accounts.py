@@ -12,7 +12,7 @@ from ..components.changes import run_change_in_thread
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import format_utc_time, make_table_html
 from ..components.native_controls import set_status
-from ..components.page_frame import create_page_frame
+from ..components.page_frame import create_key_values, create_page_frame
 from ..components.routes import ACCOUNTS_PATH
 
 
@@ -86,10 +86,7 @@ def register_accounts_page(sessions: AccountSessions) -> None:
             if not is_admin(account):
                 ui.label("Only admins can see the accounts.").classes("error")
                 return
-            with ui.element("div").classes("key-values"):
-                for permission, description in PERMISSION_DESCRIPTIONS.items():
-                    ui.label(permission).classes("key")
-                    ui.label(description)
+            create_key_values(PERMISSION_DESCRIPTIONS)
             ui.label("A change applies at once, but pages that are open show or hide their"
                      " controls and the action log only after a reload.").classes("muted")
             _create_accounts_table(sessions)

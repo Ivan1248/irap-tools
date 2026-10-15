@@ -8,7 +8,7 @@ from irap_data.metadata import IGNORE_LABEL_INDEX
 from run_helpers import add_model, make_model
 from synthetic_vietnam import SPLIT
 
-from irap_evaluation_server.map_libraries import LibraryFile, ensure_map_libraries
+from irap_evaluation_server.vendor_libraries import LibraryFile, ensure_library_files
 from irap_evaluation_server.prediction_analysis import (
     COMPARISON_OUTCOME_NAMES,
     MODEL_OUTCOME_NAMES,
@@ -146,7 +146,7 @@ def test_context_segments_outside_the_road_are_none(dataset_contexts):
     assert get_context_segment_ids(metadata, sequence[-1], (1,)) == [None]
 
 
-def test_ensure_map_libraries_checks_the_hashes(tmp_path):
+def test_ensure_library_files_checks_the_hashes(tmp_path):
     url_to_data = {"https://a/x.js": b"x", "https://a/y.css": b"y"}
     files = [LibraryFile(f"lib/{url[-4:]}", url, hashlib.sha256(data).hexdigest())
              for url, data in url_to_data.items()]
@@ -156,12 +156,12 @@ def test_ensure_map_libraries_checks_the_hashes(tmp_path):
         fetched_urls.append(url)
         return url_to_data[url]
 
-    ensure_map_libraries(tmp_path, files, fetch_url)
+    ensure_library_files(tmp_path, files, fetch_url)
     assert (tmp_path / "lib/x.js").read_bytes() == b"x"
-    ensure_map_libraries(tmp_path, files, fetch_url)  # The files are present.
+    ensure_library_files(tmp_path, files, fetch_url)  # The files are present.
     assert fetched_urls == list(url_to_data)
     (tmp_path / "lib/x.js").write_bytes(b"changed")
     url_to_data["https://a/x.js"] = b"tampered"
     with pytest.raises(ValueError, match="SHA-256"):
-        ensure_map_libraries(tmp_path, files, fetch_url)
+        ensure_library_files(tmp_path, files, fetch_url)
     assert (tmp_path / "lib/x.js").read_bytes() == b"changed"

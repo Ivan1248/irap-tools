@@ -3,16 +3,23 @@
 import typing as T
 import urllib.parse
 
+from ..vendor_libraries import LibraryFile
+
 SCORES_PATH = "/scores"
 #: Its query parameters are those of `analysis_view.AnalysisView.to_path`.
 ANALYSIS_PATH = "/analysis"
-#: With the query parameter `dataset`.
-ENSEMBLE_PATH = "/ensemble"
-#: With the query parameter `dataset`.
+#: With the query parameters `dataset` and `models` (the regular expression of the shown model
+#: labels).
 MODELS_PATH = "/models"
 #: With the query parameters `split` (of the scores) and an attribute subset
 #: (`ATTRIBUTE_PARAMETER`).
 MODEL_PATH = "/models/{model_id}"
+#: With the query parameters `dataset`, `method` (the method name, not the display name), `split`
+#: (of the scores) and an attribute subset (`ATTRIBUTE_PARAMETER`). A method has no number, and
+#: its name can have any characters.
+METHOD_PATH = "/methods"
+#: How the scores are computed and how to read them (`methodology`).
+METHODOLOGY_PATH = "/methodology"
 ACTION_LOG_PATH = "/actions"
 #: With the query parameters `next` (the path to return to) and `failed` ('1' after a wrong name
 #: or password).
@@ -32,7 +39,7 @@ SCORES_DOWNLOAD_PATH = "/api/submissions/{submission_id}/scores/{evaluation_set}
 #: A coding table that a Model page prepared, which can be downloaded once.
 CODING_TABLE_DOWNLOAD_PATH = "/api/coding-tables/{token}"
 SEGMENT_IMAGE_PATH = "/api/datasets/{dataset}/images/{segment_id}"
-#: The static files of the map libraries (`map_libraries`).
+#: The static files of the libraries (`vendor_libraries`).
 VENDOR_PATH = "/vendor"
 
 #: The query parameter of an attribute subset, repeated for each attribute.
@@ -66,11 +73,35 @@ def get_register_path(next_path: str) -> str:
     return make_query_path(REGISTER_PATH, {"next": next_path})
 
 
+def get_models_path(dataset: str = "", model_pattern: str = "") -> str:
+    """Makes the path of the Models page, with the shown dataset ('' for all) and the regular
+    expression of the shown model labels ('' for all)."""
+    return make_query_path(MODELS_PATH, {"dataset": dataset, "models": model_pattern})
+
+
 def get_model_path(model_id: int, split: str = "", attributes: T.Sequence[str] = ()) -> str:
     """Makes the path of the Model page, with the split of its scores and an attribute subset
     (`AttributeSubset.to_query`)."""
     return make_query_path(MODEL_PATH.format(model_id=model_id),
                            {"split": split, ATTRIBUTE_PARAMETER: attributes})
+
+
+def get_method_path(dataset: str, method_name: str, split: str = "",
+                    attributes: T.Sequence[str] = ()) -> str:
+    """Makes the path of the Method page, with the split of its scores and an attribute subset
+    (`AttributeSubset.to_query`)."""
+    return make_query_path(METHOD_PATH, {"dataset": dataset, "method": method_name,
+                                         "split": split, ATTRIBUTE_PARAMETER: attributes})
+
+
+def get_methodology_path(section_id: str) -> str:
+    """Makes the path of a section of the Methodology page (`methodology.MethodologySection`)."""
+    return f"{METHODOLOGY_PATH}#{section_id}"
+
+
+def get_library_path(file: LibraryFile) -> str:
+    """Makes the path of a file of a library (`vendor_libraries`) on the server."""
+    return f"{VENDOR_PATH}/{file.path}"
 
 
 def get_segment_image_path(dataset: str, segment_id: str) -> str:

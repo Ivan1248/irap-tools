@@ -6,8 +6,8 @@ from datetime import datetime
 
 import irap_evaluation as ie
 
-from ..archive import ActionLogEntry, Model
-from .routes import get_model_path
+from ..archive import ActionLogEntry, Model, Submission
+from .routes import get_method_path, get_model_path
 
 #: The display name of each evaluation set (`datasets.EVALUATION_SET_NAMES`).
 EVALUATION_SET_LABELS = {ie.REFERENCE_SET_NAME: "Reference set",
@@ -35,16 +35,49 @@ def format_splits(splits: T.Sequence[str] | None) -> str:
     return ", ".join(splits) or "none"
 
 
+def format_training_split_rows(info: ie.ModelInfo | None) -> dict[str, str]:
+    """Formats the training and early stopping splits of a model as rows of details
+    (`create_key_values`), '–' without model info."""
+    return {"Training splits": "–" if info is None else format_splits(info.training_splits),
+            "Early stopping splits": ("–" if info is None
+                                      else format_splits(info.early_stopping_splits))}
+
+
 def format_context_offsets(offsets: T.Sequence[int] | None) -> str:
     """Formats context offsets: 'unknown' for None."""
     return "unknown" if offsets is None else ", ".join(map(str, offsets))
 
 
+def format_evaluation_set_title(name: str, context_offsets_text: str) -> str:
+    """Formats the title of the scores on an evaluation set, with the context offsets
+    (`format_context_offsets`) on the model-compatible set."""
+    if name == ie.REFERENCE_SET_NAME:
+        return EVALUATION_SET_LABELS[name]
+    return f"{EVALUATION_SET_LABELS[name]}, context offsets {context_offsets_text}"
+
+
+def make_link_html(path: str, text: str) -> str:
+    return f'<a href="{html.escape(path)}">{html.escape(text)}</a>'
+
+
 def make_model_link_html(model_id: int, text: str, split: str = "",
                          attributes: T.Sequence[str] = ()) -> str:
     """Makes a link to the Model page (`routes.get_model_path`) with an escaped text."""
-    path = html.escape(get_model_path(model_id, split, attributes))
-    return f'<a href="{path}">{html.escape(text)}</a>'
+    return make_link_html(get_model_path(model_id, split, attributes), text)
+
+
+def make_method_link_html(dataset: str, method_name: str, text: str, split: str = "",
+                          attributes: T.Sequence[str] = ()) -> str:
+    """Makes a link to the Method page (`routes.get_method_path`) with an escaped text."""
+    return make_link_html(get_method_path(dataset, method_name, split, attributes), text)
+
+
+def make_unscored_files_html(unscored: T.Iterable[tuple[Submission, str]],
+                             get_label: T.Callable[[Submission], str]) -> str:
+    """Makes a line per submission without current scores, with a link to its Model page and the
+    reason (`scoring_worker.SubmissionScorings.list_unscored`)."""
+    return "".join(f"<div>{make_truncated_model_link_html(s.model.id, get_label(s), s.split)}:"
+                   f" {html.escape(reason)}</div>" for s, reason in unscored)
 
 
 def make_truncated_name_html(name: str, content_html: str | None = None) -> str:
@@ -53,6 +86,12 @@ def make_truncated_name_html(name: str, content_html: str | None = None) -> str:
     escaped_name = html.escape(name)
     content_html = escaped_name if content_html is None else content_html
     return f'<div class="truncated-name" title="{escaped_name}">{content_html}</div>'
+
+
+def make_truncated_model_link_html(model_id: int, label: str, split: str = "") -> str:
+    """Makes a link to the Model page (`make_model_link_html`) whose text is a model label, cut
+    off if it is long (`make_truncated_name_html`)."""
+    return make_truncated_name_html(label, make_model_link_html(model_id, label, split))
 
 
 def make_code_spans_html(text: str) -> str:
@@ -115,7 +154,7 @@ def make_table_html_from_header(header_html: str, rows: T.Sequence[str]) -> str:
 def make_ensemble_members_html(members: T.Sequence[T.Mapping[str, T.Any]]) -> str:
     """Formats the members of an ensemble from the details of its action (`ensembles`), with
     links to their models."""
-    return ", ".join(f"{make_model_link_html(m['model_id'], m['label'])}"
+    return ", ".join(f"{make_truncated_model_link_html(m['model_id'], m['label'])}"
                      f" #{m['submission_id']} (weight {m['weight']:g})" for m in members)
 
 
@@ -151,8 +190,7 @@ def make_action_table_html(entries: T.Sequence[ActionLogEntry],
     def make_row(entry: ActionLogEntry) -> str:
         model = model_id_to_model.get(entry.model_id)
         model_html = (make_truncated_name_html(f"{entry.model_label} (deleted)") if model is None
-                      else make_truncated_name_html(
-                          model.shown_label, make_model_link_html(model.id, model.shown_label)))
+                      else make_truncated_model_link_html(model.id, model.shown_label))
         submission = "" if entry.submission_id is None else f"#{entry.submission_id}"
         return (f"<tr><td>{format_utc_time(entry.time)}</td><td>{html.escape(entry.actor)}</td>"
                 f"<td>{_ACTION_TEXTS[entry.action]}</td><td>{model_html}</td>"

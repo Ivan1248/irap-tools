@@ -16,7 +16,7 @@ VIEW_OPTIONS = {"": "Attribute averages",
 #: The longest time that a name filter may take over all names (`select_matching_names`).
 #: Plain filters take microseconds, while a catastrophic pattern, e.g. '^(\w|\w\w)*$', can take
 #: minutes.
-NAME_FILTER_TIMEOUT_S = 0.05
+NAME_FILTER_TIMEOUT_S = 0.1
 
 
 def parse_dataset(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, DatasetContext],
@@ -35,17 +35,23 @@ def parse_dataset(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, D
     return dataset
 
 
+def select_default_split(split_names: T.Sequence[str]) -> str:
+    """Selects the split that a page shows without the `split` parameter: the first that is not
+    "train", or the first if there is no other."""
+    return next((s for s in split_names if s != "train"), split_names[0])
+
+
 def parse_dataset_and_split(query: T.Mapping[str, str],
                             dataset_contexts: T.Mapping[str, DatasetContext]) -> tuple[str, str]:
     """Parses the `dataset` and `split` parameters of a page of any split. They default to the first
-    dataset and its first analysis split, or its first split.
+    dataset and its default split (`select_default_split`).
 
     Raises:
         ValueError: For an unknown dataset or split.
     """
     dataset = parse_dataset(query, dataset_contexts)
     context = dataset_contexts[dataset]
-    split = query.get("split") or (context.config.analysis_splits or context.split_names)[0]
+    split = query.get("split") or select_default_split(context.split_names)
     if split not in context.split_names:
         raise ValueError(f"The dataset {dataset!r} has no split {split!r}. Its splits:"
                          f" {', '.join(context.split_names)}.")

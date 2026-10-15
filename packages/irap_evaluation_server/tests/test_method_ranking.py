@@ -10,6 +10,8 @@ from irap_evaluation.metrics import IRAP_ATTRIBUTE_METRIC_NAMES
 from irap_evaluation_server.archive import Model, Submission
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
 from irap_evaluation_server.components.score_tables import (
+    ScoresScope,
+    make_method_scores_html,
     make_method_table_html,
     make_per_attribute_table_html,
 )
@@ -17,7 +19,6 @@ from irap_evaluation_server.components.view_queries import select_matching_names
 from irap_evaluation_server.method_ranking import (
     CellHighlight,
     compute_highlights,
-    get_unscored_reason,
     is_not_significantly_worse,
     rank_methods,
     select_model_metrics,
@@ -30,7 +31,7 @@ from irap_evaluation_server.scoring import (
     EvaluationSetScores,
     MethodScores,
     ScoredModel,
-    SubmissionScoring,
+    compute_method_scores,
 )
 
 _TIME = datetime(2026, 10, 3, tzinfo=timezone.utc)
@@ -174,19 +175,6 @@ def test_summarize_models_by_method():
         {}, None, None, None)
 
 
-def test_get_unscored_reason():
-    scoring = SubmissionScoring(submission_id=1, status="scored", message="", notes=(),
-                                settings_fingerprint="s", evaluation_sets_fingerprint="e",
-                                scored_at=_TIME)
-    assert get_unscored_reason(scoring, is_current=True, is_pending=False) is None
-    assert get_unscored_reason(scoring, True, is_pending=True) == "Scoring…"
-    assert "current settings" in get_unscored_reason(None, False, False)
-    failed = dc.replace(scoring, status="failed", message="No predictions for 3 segments.")
-    assert get_unscored_reason(failed, True, False) == failed.message
-    error = dc.replace(scoring, status="error", message="Unexpected error.")
-    assert "scored again" in get_unscored_reason(error, False, False)
-
-
 def test_attribute_subset():
     options = ("a", "b", "c")
     assert AttributeSubset.from_query([], options).is_all
@@ -253,9 +241,29 @@ def test_method_tables_escape_names():
     rows = [*rank_methods(models, ["x", "y"], "amF1"),
             make_method_scores("<n>", {}, error="Models <differ>.")]
     resamples = ie.MetricValues(averages={"amF1": np.linspace(0.1, 0.3, 20)}, per_attribute={})
-    table = make_method_table_html(rows, {"<m>": resamples}, 0.95, "amF1", "val", ["x"])
+    scope = ScoresScope("vietnam", "val", ("x",))
+    table = make_method_table_html(rows, {"<m>": resamples}, 0.95, "amF1", scope)
     assert "&lt;m&gt;" in table and "<m>" not in table
+    assert "method=%3Cm%3E" in table  # The link to the Method page.
     assert "Models &lt;differ&gt;." in table
 
-    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", ["x", "y"], "val")
+    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", ["x", "y"], scope)
     assert "<m>" not in per_attribute and "<n>" not in per_attribute
+
+
+def test_method_scores_have_the_mean_of_the_models():
+    models = [make_scored_model(i, {"x": 0.2 * i}) for i in (1, 2)]
+    models[1] = dc.replace(models[1], scores=dc.replace(models[1].scores, num_invalid={"x": 4}))
+    seed_scores = [compute_method_scores(m.submission.label, [m], ["x"]) for m in models]
+    scope = ScoresScope("vietnam", "val", ())
+
+    def make_html(method_scores):
+        return make_method_scores_html(method_scores, None, seed_scores, [None, None], 0.95,
+                                       scope)
+
+    assert "3.5" in make_html(compute_method_scores("m", models, ["x"]))  # Invalid predictions.
+    # Without the attribute table of a mean with an error.
+    offset_models = [models[0], dc.replace(models[1], scores=dc.replace(
+        models[1].scores, context_offsets=(1,), evaluation_set_fingerprint="g"))]
+    tables_html = make_html(compute_method_scores("m", offset_models, ["x"]))
+    assert "cannot be combined" in tables_html and "Invalid predictions" not in tables_html

@@ -2,9 +2,10 @@
 of an account, with refusals shown in a status label."""
 
 import functools
+import inspect
 import typing as T
 
-from nicegui import run, ui
+from nicegui import Client, run, ui
 
 from .native_controls import set_status
 
@@ -80,3 +81,33 @@ async def run_change_in_thread(change: T.Callable[[str], T.Any], get_actor: T.Ca
         return False
     return await run_in_thread_showing_errors(functools.partial(change, actor),
                                               status_label) is not None
+
+
+async def load_after_change(load: T.Callable[[], R], missing_path: str,
+                            client: Client) -> R | None:
+    """Loads what a page shows again in a thread after a change, also after a refused one, e.g.
+    of something that another user has changed. Goes to `missing_path` if it no longer exists.
+
+    Args:
+        load: Raises `LookupError` if what the page shows no longer exists.
+        client: The client of the page.
+
+    Returns:
+        The result of `load`, or None if it no longer exists, the page is closed, or the server
+        is stopping.
+    """
+    try:
+        loaded = await run.io_bound(load)
+    except LookupError:  # E.g. deleted by the change or by another user.
+        if not client.is_deleted:
+            ui.navigate.to(missing_path)
+        return None
+    return None if client.is_deleted else loaded
+
+
+async def run_refreshes(refreshes: T.Iterable[T.Callable[[], T.Any]]) -> None:
+    """Runs the refreshes of the panels of a page in order, awaiting those that return an
+    awaitable."""
+    for refresh in refreshes:
+        if inspect.isawaitable(result := refresh()):
+            await result

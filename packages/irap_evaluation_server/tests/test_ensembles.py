@@ -9,7 +9,6 @@ from synthetic_vietnam import SPLIT
 from irap_evaluation_server.archive import discard_model_update
 from irap_evaluation_server.ensembles import (
     EnsembleMember,
-    list_member_models,
     plan_ensemble,
     prepare_ensemble,
 )
@@ -36,11 +35,7 @@ def member(submissions, name, weight=1.0):
     return EnsembleMember(submissions[(name, SPLIT)].model, weight)
 
 
-def test_member_models_and_plan(archive, submissions):
-    members = list_member_models(archive.list_submissions(), "vietnam", SPLITS)
-    assert [(m.model.label, m.splits) for m in members] == [
-        ("a/seed1", SPLITS), ("b/seed0", SPLITS), ("c/seed0", (SPLIT,))]
-
+def test_plan(archive, submissions):
     members = [member(submissions, "a", 2.0), member(submissions, "b"),
                member(submissions, "c")]
     plan = plan_ensemble(archive.list_submissions(), "vietnam", members, SPLITS)
@@ -48,6 +43,8 @@ def test_member_models_and_plan(archive, submissions):
     assert plan.split_to_missing == {OTHER_SPLIT: ("c/seed0",)}
     for wrong_members, message in [
             (members[:1], "at least 2"), ([members[0], members[0]], "only once"),
+            ([members[0], EnsembleMember(dc.replace(members[1].model, dataset="other"))],
+             "one dataset"),
             ([dc.replace(members[0], weight=0.0), members[1]], "positive"),
             ([members[0], member(submissions, "d")], "No split")]:
         with pytest.raises(ValueError, match=message):
@@ -126,7 +123,7 @@ def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts
     assert archive.list_submissions() == [third, *archive.list_submissions()[1:]]
     assert archive.list_model_submissions(third.model.id) == [third]
     assert not archive.get_predictions_path(second.id).parent.exists()
-    ensemble, *deletions = archive.list_actions(model_id=third.model.id)[:3]
+    ensemble, *deletions = archive.list_actions(model_ids=[third.model.id])[:3]
     assert (ensemble.action, ensemble.details["replaced_submission_id"]) == ("ensemble", first.id)
     assert [(a.action, a.submission_id, a.details) for a in deletions] == [
         ("delete", first.id, {"split": SPLIT, "by": "ensemble"}),

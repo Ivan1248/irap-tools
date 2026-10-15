@@ -4,17 +4,15 @@ reference method (see `method_comparison`). The methods trained on the split are
 the user shows them."""
 
 import dataclasses as dc
-import html
 import typing as T
 
 import irap_evaluation as ie
 from fastapi import Request
 from nicegui import run, ui
 
-from ..archive import Submission
 from ..components.account_sessions import AccountSessions
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
-from ..components.formatting import EVALUATION_SET_LABELS, make_model_link_html
+from ..components.formatting import EVALUATION_SET_LABELS, make_unscored_files_html
 from ..components.latest_updates import LatestUpdates
 from ..components.native_controls import (
     create_native_checkbox,
@@ -26,8 +24,7 @@ from ..components.refresh_timer import RefreshTimer
 from ..components.routes import ATTRIBUTE_PARAMETER, SCORES_PATH, make_query_path
 from ..components.score_tables import (
     ReferenceComparisons,
-    make_comparison_note,
-    make_interval_note,
+    ScoresScope,
     make_method_table_html,
     make_per_attribute_table_html,
 )
@@ -45,12 +42,11 @@ from ..method_ranking import (
     RANKING_METRIC_NAMES,
     collect_scored_attributes,
     get_method_split_use,
-    get_unscored_reason,
     rank_methods,
     select_shown_methods,
 )
-from ..scoring import MethodScores, ScoredModel, SubmissionScoring, select_scored_models
-from ..scoring_worker import ScoringWorker
+from ..scoring import MethodScores, ScoredModel
+from ..scoring_worker import ScoringWorker, SubmissionScorings
 
 #: Plural for the model-compatible sets, since each method is scored on its own.
 _EVALUATION_SET_LABELS = {**EVALUATION_SET_LABELS,
@@ -138,26 +134,16 @@ class _SplitScorings:
     """The scorings of the files of the split of a view (`_load_split_scorings`).
 
     Attributes:
-        submission_id_to_scoring: Submission id -> its stored scoring.
-        current: Submission id -> its current scoring (`ScoringWorker.select_current_scorings`).
         models: The models scored on the evaluation set of the view.
-        pending_ids: The submissions whose scoring is queued or running.
     """
 
-    submissions: list[Submission]
-    submission_id_to_scoring: dict[int, SubmissionScoring]
-    current: dict[int, SubmissionScoring]
+    scorings: SubmissionScorings
     models: list[ScoredModel]
-    pending_ids: list[int]
 
 
 def _load_split_scorings(worker: ScoringWorker, view: _ScoresView) -> _SplitScorings:
-    submissions, submission_id_to_scoring, current = worker.load_split_scorings(view.dataset,
-                                                                                view.split)
-    return _SplitScorings(
-        submissions, submission_id_to_scoring, current,
-        select_scored_models(submissions, current, view.evaluation_set),
-        [s.id for s in submissions if worker.is_scoring_pending(s.id)])
+    scorings = worker.load_split_scorings(view.dataset, view.split)
+    return _SplitScorings(scorings, scorings.select_scored_models(view.evaluation_set))
 
 
 @dc.dataclass(frozen=True)
@@ -215,15 +201,15 @@ def _compute_method_table(worker: ScoringWorker, view: _ScoresView,
         if reference is not None:
             method_to_differences, comparison_errors = compare_with_reference(
                 shown, method_to_resamples, reference, confidence)
-            comparisons = ReferenceComparisons(reference.method_name, method_to_differences)
+            comparisons = ReferenceComparisons(reference, method_to_differences)
+        scope = ScoresScope(view.dataset, view.split, subset.to_query())
         if view.metric_name:
             table_html = make_per_attribute_table_html(
-                shown, method_to_resamples, confidence, view.metric_name, subset.selected,
-                view.split, comparisons)
+                shown, method_to_resamples, confidence, view.metric_name, subset.selected, scope,
+                comparisons)
         else:
             table_html = make_method_table_html(
-                shown, method_to_resamples, confidence, view.sort_metric, view.split,
-                subset.to_query(), comparisons)
+                shown, method_to_resamples, confidence, view.sort_metric, scope, comparisons)
     return _MethodTable(
         rows, name_to_comparable, reference,
         reference is not None and reference.method_name not in matching_method_names, shown,
@@ -339,11 +325,6 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
             "click", lambda e: on_view_changed(sort_metric=e.args),
             js_handler="(e) => { const th = e.target.closest('th[data-sort]');"
                        " if (th) emit(th.dataset.sort); }")
-        ui.label(make_interval_note(worker.settings, is_mean_over_models=True)).classes(
-            "muted")
-        if reference is not None:
-            ui.label(make_comparison_note(worker.settings, reference.shown_method_name,
-                                          table.shown)).classes("muted")
         for error in table.comparison_errors:
             ui.label(error).classes("error")
 
@@ -361,7 +342,7 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
         ui.label(title).classes("section-title")
         if not split_scorings.models:
             ui.label("No models are scored on this evaluation set.").classes("muted")
-            notes = {n for s in split_scorings.current.values()
+            notes = {n for s in split_scorings.scorings.current.values()
                      if s.get_scores(shown_view.evaluation_set) is None for n in s.notes}
             for note in sorted(notes):
                 ui.label(note).classes("muted")
@@ -372,17 +353,11 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
         if content.table is not None:
             show_methods(shown_view, content.table)
 
-        unlisted = [(s, reason) for s in split_scorings.submissions
-                    if (reason := get_unscored_reason(
-                        split_scorings.submission_id_to_scoring.get(s.id),
-                        s.id in split_scorings.current, s.id in split_scorings.pending_ids))]
-        if unlisted:
+        if unlisted := split_scorings.scorings.list_unscored():
             ui.label("Unscored files").classes("section-title")
-            ui.html("".join(f"<div>{make_model_link_html(s.model.id, s.shown_label, s.split)}"
-                            f": {html.escape(reason)}</div>"
-                            for s, reason in unlisted), sanitize=False)
+            ui.html(make_unscored_files_html(unlisted, lambda s: s.shown_label), sanitize=False)
         refresh_timer.watch([lambda i=i: worker.is_scoring_pending(i)
-                             for i in split_scorings.pending_ids])
+                             for i in split_scorings.scorings.pending_ids])
 
     latest_updates = LatestUpdates()
     initial_scorings = await run.io_bound(_load_split_scorings, worker, view)
@@ -395,9 +370,9 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
                                  lambda v: navigate_to(dataset=v, split="", reference_method=""))
             create_native_select("Split", {n: n for n in context.split_names}, view.split,
                                  lambda v: navigate_to(split=v))
-            if view.evaluation_set != ie.REFERENCE_SET_NAME or select_scored_models(
-                    initial_scorings.submissions, initial_scorings.current,
-                    ie.MODEL_COMPATIBLE_SET_NAME):
+            if (view.evaluation_set != ie.REFERENCE_SET_NAME
+                    or initial_scorings.scorings.select_scored_models(
+                        ie.MODEL_COMPATIBLE_SET_NAME)):
                 create_native_select(
                     "Evaluation set", _EVALUATION_SET_LABELS, view.evaluation_set,
                     lambda v: navigate_to(evaluation_set=v, reference_method=""))

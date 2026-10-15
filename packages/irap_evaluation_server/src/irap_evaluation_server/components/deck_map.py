@@ -1,7 +1,7 @@
 """The map of the Analysis page: segments as points on a basemap, coloured by their outcome
 (`prediction_analysis.AttributeOutcomes`), drawn by deck.gl in `deck_map.js`.
 
-The libraries are served from `routes.VENDOR_PATH` (see `map_libraries`). The basemap tiles come
+The libraries are served from `routes.VENDOR_PATH` (see `vendor_libraries`). The basemap tiles come
 from Carto, so the map needs internet access.
 """
 
@@ -11,13 +11,8 @@ import typing as T
 import numpy as np
 from nicegui import ui
 
-from ..map_libraries import (
-    DECK_SCRIPT,
-    MAPLIBRE_MODULE,
-    MAPLIBRE_STYLESHEET,
-    LibraryFile,
-)
-from .routes import VENDOR_PATH
+from ..vendor_libraries import DECK_SCRIPT, MAPLIBRE_MODULE, MAPLIBRE_STYLESHEET
+from .routes import get_library_path
 
 BASEMAP_STYLE_URL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 
@@ -31,10 +26,6 @@ OUTCOME_COLORS = {
 }
 #: Outcomes drawn smaller and paler, so that they do not hide the others.
 _BACKGROUND_OUTCOMES = ("unlabeled",)
-
-
-def _get_library_url(file: LibraryFile) -> str:
-    return f"{VENDOR_PATH}/{file.path}"
 
 
 def _get_outcome_style(name: str) -> tuple[list[int], float]:
@@ -59,9 +50,9 @@ class DeckMap(ui.element, component="deck_map.js"):
         self._props.update({
             "latitudes": coordinates[:, 0].tolist(), "longitudes": coordinates[:, 1].tolist(),
             "segment-ids": list(segment_ids),
-            "maplibre-url": _get_library_url(MAPLIBRE_MODULE),
-            "maplibre-stylesheet-url": _get_library_url(MAPLIBRE_STYLESHEET),
-            "deck-url": _get_library_url(DECK_SCRIPT),
+            "maplibre-url": get_library_path(MAPLIBRE_MODULE),
+            "maplibre-stylesheet-url": get_library_path(MAPLIBRE_STYLESHEET),
+            "deck-url": get_library_path(DECK_SCRIPT),
             "basemap-style-url": BASEMAP_STYLE_URL})
         self.on("pick", lambda e: on_pick(int(e.args)))
 

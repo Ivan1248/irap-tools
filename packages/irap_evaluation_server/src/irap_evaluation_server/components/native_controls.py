@@ -45,13 +45,33 @@ def _create_options(options: T.Mapping[str, str]) -> None:
 
 
 def _create_select(label: str, value: str, on_change: T.Callable[[str], T.Any],
-                   create_options: T.Callable[[], None]) -> ui.element:
+                   groups: T.Mapping[str | None, T.Mapping[str, str]]) -> ui.element:
+    """
+    Args:
+        groups: Group label (`<optgroup>`), or None for options outside a group -> option value
+            -> displayed text. The text of the selected option is the tooltip, which shows it
+            when it is cut off, e.g. a long method name.
+    """
+    option_texts = {v: t for options in groups.values() for v, t in options.items()}
     with _create_field(label):
         select = ui.element("select").classes("native-control")
-        select.props["value"] = value
+        # No tooltip for a value without an option, e.g. a reference method without scores,
+        # for which the browser selects no option.
+        select.props.update(value=value, title=option_texts.get(value, ""))
         with select:
-            create_options()
-    select.on("change", _on_user_change(select, "value", on_change),
+            for group_label, options in groups.items():
+                if group_label is None:
+                    _create_options(options)
+                    continue
+                with ui.element("optgroup") as group:
+                    _create_options(options)
+                group.props["label"] = group_label
+
+    def handle_change(new_value: str) -> T.Any:
+        select.props["title"] = option_texts[new_value]  # Sent with the value.
+        return on_change(new_value)
+
+    select.on("change", _on_user_change(select, "value", handle_change),
               js_handler="(e) => emit(e.target.value)")
     return select
 
@@ -64,7 +84,7 @@ def create_native_select(label: str, options: T.Mapping[str, str], value: str,
         options: Value -> displayed text.
         on_change: Gets the new value. It can be async.
     """
-    return _create_select(label, value, on_change, lambda: _create_options(options))
+    return _create_select(label, value, on_change, {None: options})
 
 
 def create_native_grouped_select(label: str, groups: T.Mapping[str, T.Mapping[str, str]],
@@ -77,14 +97,7 @@ def create_native_grouped_select(label: str, groups: T.Mapping[str, T.Mapping[st
         on_change: Gets the new value. It can be async.
         ungrouped: Options before the groups, e.g. one for none.
     """
-    def create_options() -> None:
-        _create_options(ungrouped or {})
-        for group_label, options in groups.items():
-            with ui.element("optgroup") as group:
-                _create_options(options)
-            group.props["label"] = group_label
-
-    return _create_select(label, value, on_change, create_options)
+    return _create_select(label, value, on_change, {None: ungrouped or {}, **groups})
 
 
 def create_native_input(label: str, value: str, on_change: T.Callable[[str], None], *,
@@ -122,12 +135,20 @@ def set_native_input_placeholder(element: ui.element, placeholder: str) -> None:
         element.update()
 
 
-def create_native_checkbox(label: str, value: bool,
-                           on_change: T.Callable[[bool], None]) -> ui.element:
+def create_native_checkbox(label: str, value: bool, on_change: T.Callable[[bool], None], *,
+                           is_label_html: bool = False) -> ui.element:
+    """
+    Args:
+        is_label_html: Whether `label` is HTML, e.g. with a link, which a click follows instead
+            of checking the checkbox.
+    """
     with ui.element("label").classes("flex items-center gap-1"):
         element = ui.element("input").classes("native-control")
         element.props.update(type="checkbox", checked=value)
-        ui.label(label)
+        if is_label_html:
+            ui.html(label, sanitize=False)
+        else:
+            ui.label(label)
     element.on("change", _on_user_change(element, "checked", lambda v: on_change(bool(v))),
                js_handler="(e) => emit(e.target.checked)")
     return element

@@ -26,33 +26,6 @@ class EnsembleMember:
 
 
 @dc.dataclass(frozen=True)
-class MemberModel:
-    """A model that can be an ensemble member, with the splits of its submissions."""
-
-    model: Model
-    splits: tuple[str, ...]
-
-
-def list_member_models(submissions: T.Iterable[Submission], dataset: str,
-                       split_names: T.Sequence[str]) -> list[MemberModel]:
-    """Lists the models of a dataset that have submissions, sorted by shown label.
-
-    Args:
-        submissions: E.g. all submissions (`ModelArchive.list_submissions`).
-        split_names: The splits of the dataset, which give the order of `MemberModel.splits`.
-    """
-    model_id_to_model: dict[int, Model] = {}
-    model_id_to_splits: dict[int, set[str]] = {}
-    for s in submissions:
-        if s.dataset == dataset:
-            model_id_to_model[s.model.id] = s.model
-            model_id_to_splits.setdefault(s.model.id, set()).add(s.split)
-    members = [MemberModel(model, tuple(s for s in split_names if s in model_id_to_splits[i]))
-               for i, model in model_id_to_model.items()]
-    return sorted(members, key=lambda m: m.model.shown_label)
-
-
-@dc.dataclass(frozen=True)
 class EnsemblePlan:
     """The submissions that an ensemble is made of, by split.
 
@@ -85,11 +58,15 @@ def plan_ensemble(submissions: T.Iterable[Submission], dataset: str,
         split_names: The splits of the dataset, in the order of the plan.
 
     Raises:
-        ValueError: If there are fewer than 2 members, a member is given twice, a weight is not
-            positive and finite, or no split has a submission of every member.
+        ValueError: If there are fewer than 2 members, a member is not of `dataset` or is given
+            twice, a weight is not positive and finite, or no split has a submission of every
+            member.
     """
     if len(members) < 2:
         raise ValueError("An ensemble needs at least 2 members.")
+    if other := [m.model.shown_label for m in members if m.model.dataset != dataset]:
+        raise ValueError(f"The members must be of one dataset, but {', '.join(other)} are not"
+                         f" of {dataset}.")
     if len({m.model.id for m in members}) < len(members):
         raise ValueError("Each model can be a member only once.")
     if bad := [m.model.shown_label for m in members

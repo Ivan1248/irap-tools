@@ -140,8 +140,8 @@ def test_inherited_method_display_name(archive, dataset_contexts):
     predictions = make_model(dataset_contexts)
     named = with_model(predictions, method_display_name="From file").header
     assert archive.get_inherited_method_display_name([predictions.header]) is None
-    first = add_model(archive, dataset_contexts, predictions)
-    archive.set_method_display_name(first.model.id, "Stored", actor="Bo")
+    add_model(archive, dataset_contexts, predictions)
+    archive.set_method_display_name("vietnam", "m", "Stored", actor="Bo")
     assert archive.get_inherited_method_display_name([predictions.header]) == "Stored"
     assert archive.get_inherited_method_display_name([predictions.header, named]) == "From file"
     with pytest.raises(ValueError, match="different method display names"):
@@ -152,24 +152,29 @@ def test_inherited_method_display_name(archive, dataset_contexts):
 def test_set_method_display_name(archive, dataset_contexts):
     first = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
     second = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
-    edited = archive.set_method_display_name(first.model.id, " Model M ", actor="Bo")
-    assert (edited.method_display_name, edited.shown_label) == ("Model M", "Model M/seed1")
+    edited = archive.set_method_display_name("vietnam", "m", " Model M ", actor="Bo")
+    assert [m.shown_label for m in edited] == ["Model M/seed1", "Model M/seed2"]
     assert archive.get_submission(second.id).shown_label == "Model M/seed2"
     with pytest.raises(ValueError, match="unchanged"):
-        archive.set_method_display_name(second.model.id, "Model M", actor="Bo")
-    cleared = archive.set_method_display_name(second.model.id, " ", actor="Bo")
-    assert (cleared.method_display_name, cleared.shown_label) == (None, "m/seed2")
+        archive.set_method_display_name("vietnam", "m", "Model M", actor="Bo")
+    cleared = archive.set_method_display_name("vietnam", "m", " ", actor="Bo")
+    assert [m.method_display_name for m in cleared] == [None, None]
+    # Logged on the first model of the method.
     assert [(a.model_id, a.details) for a in archive.list_actions()
             if a.action == "edit_method_display_name"] == [
-        (second.model.id, {"old_display_name": "Model M", "display_name": None}),
+        (first.model.id, {"old_display_name": "Model M", "display_name": None}),
         (first.model.id, {"old_display_name": None, "display_name": "Model M"})]
+    with pytest.raises(LookupError, match="no models"):
+        archive.set_method_display_name("vietnam", "other", "O", actor="Bo")
+    assert archive.get_method_models("vietnam", "m") == [m.model for m in (first, second)]
+    assert [a.action for a in archive.list_actions(model_ids=[second.model.id])] == ["upload"]
 
 
 def test_a_display_name_change_after_the_planning_is_refused(archive, dataset_contexts):
-    first = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
+    add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1))
     # A new model of the method.
     planned = plan(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
-    archive.set_method_display_name(first.model.id, "M", actor="Bo")
+    archive.set_method_display_name("vietnam", "m", "M", actor="Bo")
     with pytest.raises(ValueError, match="display name of the method 'm' has changed"):
         apply_upload(archive, planned, submitter="Al")
 
@@ -285,7 +290,7 @@ def test_delete_a_model(archive, two_split_contexts):
     assert archive.list_models() == [other.model]
     assert [p.name for p in archive.submissions_dir.iterdir()] == [str(other.id)]
     assert [(a.action, a.model_label, a.submission_id, a.details)
-            for a in archive.list_actions(model_id=model.id)[:3]] == [
+            for a in archive.list_actions(model_ids=[model.id])[:3]] == [
         ("delete_model", "m/seed1", None, {}),
         ("delete", "m/seed1", first.id, {"split": SPLIT, "by": "delete_model"}),
         ("delete", "m/seed1", second.id, {"split": OTHER_SPLIT, "by": "delete_model"})]
@@ -327,7 +332,7 @@ def test_actions_need_an_actor(archive, dataset_contexts):
     for change in (lambda: archive.delete_submission(submission.id, actor=""),
                    lambda: archive.delete_model(submission.model.id, actor=""),
                    lambda: archive.set_model_description(submission.model.id, "x", actor=""),
-                   lambda: archive.set_method_display_name(submission.model.id, "x", actor="")):
+                   lambda: archive.set_method_display_name("vietnam", "m", "x", actor="")):
         with pytest.raises(ValueError, match="actor of an action"):
             change()
     with pytest.raises(LookupError):

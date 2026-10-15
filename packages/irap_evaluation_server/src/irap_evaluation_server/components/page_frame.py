@@ -1,4 +1,5 @@
-"""The frame of every page: the styles, the navigation and the sign-in."""
+"""The frame of every page: the styles, the navigation and the sign-in, and the panels and
+elements shared by the pages."""
 
 import contextlib
 import html
@@ -6,13 +7,14 @@ import typing as T
 from pathlib import Path
 
 from nicegui import ui
+from nicegui.elements.mixins.text_element import TextElement
 
 from ..accounts import Account, can_write, is_admin
 from .routes import (
     ACCOUNTS_PATH,
     ACTION_LOG_PATH,
     ANALYSIS_PATH,
-    ENSEMBLE_PATH,
+    METHODOLOGY_PATH,
     MODELS_PATH,
     SCORES_PATH,
     SIGN_OUT_ENDPOINT_PATH,
@@ -22,7 +24,7 @@ from .routes import (
 
 #: (Title, path) of the pages in the navigation of everyone, also of visitors.
 NAVIGATION_PAGES = (("Scores", SCORES_PATH), ("Analysis", ANALYSIS_PATH),
-                    ("Models", MODELS_PATH), ("Ensemble", ENSEMBLE_PATH))
+                    ("Models", MODELS_PATH), ("Methodology", METHODOLOGY_PATH))
 
 _STYLES = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
 
@@ -100,6 +102,31 @@ def create_write_permission_panel(account: Account | None, title: str, action: s
         else:
             ui.label(f"Your account can only view. An admin can give it write permission, so"
                      f" that you can {action}.").classes("muted")
+
+
+@contextlib.contextmanager
+def create_collapsible_panel(title: str, classes: str = "") -> T.Iterator[ui.element]:
+    """Creates a panel that is collapsed at first, with `title` as its summary, in which the
+    caller creates the content. A refresh of the content does not close it.
+
+    Args:
+        classes: More classes of its `details` element.
+    """
+    with ui.element("section").classes("panel"), \
+            ui.element("details").classes(f"collapsible-section {classes}") as details:
+        TextElement(tag="summary", text=title).classes("section-title")
+        yield details
+
+
+def create_key_values(rows: T.Mapping[str, str | tuple[str, str]]) -> None:
+    """Creates a grid of keys and their values, a text, or the text and the path of a link."""
+    with ui.element("div").classes("key-values"):
+        for key, value in rows.items():
+            ui.label(key).classes("key")
+            if isinstance(value, tuple):
+                ui.link(*value)
+            else:
+                ui.label(value)
 
 
 def show_view_error(message: str, page_path: str) -> None:

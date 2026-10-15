@@ -1,12 +1,10 @@
-"""The Models page (the list of models with the upload form), and the endpoints for uploading and
-downloading prediction files."""
+"""The Models page (the list of models with the upload form and the form that creates an ensemble
+of selected models), and the endpoints for uploading and downloading prediction files."""
 
 import dataclasses as dc
-import html
 import typing as T
 from pathlib import Path
 
-import irap_evaluation as ie
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from nicegui import app, run, ui
@@ -15,14 +13,12 @@ from ..accounts import can_write
 from ..archive import ModelArchive, Submission, get_download_file_name
 from ..components.account_sessions import AccountSessions
 from ..components.confirmation_dialog import confirm_changes
-from ..components.formatting import (
-    format_splits,
-    format_utc_time,
-    make_code_spans_html,
-    make_header_cell_html,
-    make_model_link_html,
-    make_table_html_from_header,
-    make_truncated_name_html,
+from ..components.ensemble_form import EnsembleForm
+from ..components.formatting import make_code_spans_html
+from ..components.models_table import (
+    MODEL_CHECKBOX_CHANGE_HANDLER,
+    make_check_models_js,
+    make_models_table_html,
 )
 from ..components.native_controls import (
     create_file_upload_input,
@@ -39,8 +35,9 @@ from ..components.routes import (
     SCORES_PATH,
     UPLOAD_PATH,
     get_model_path,
-    make_query_path,
+    get_models_path,
 )
+from ..components.view_queries import select_matching_names
 from ..datasets import DatasetContext
 from ..model_listing import MethodGroup, ModelSummary, summarize_models_by_method
 from ..scoring_worker import ScoringWorker
@@ -59,86 +56,6 @@ from ..uploads import (
 _ABANDONED_UPLOAD_AGE_S = 24 * 3600
 _UPLOAD_TOO_LARGE_MESSAGE = f"A file can have at most {MAX_UPLOAD_SIZE_TEXT}."
 _UPLOAD_FORM_TITLE = "Upload predictions"
-
-#: The columns of the models table after the split columns.
-_SUMMARY_COLUMNS = ("Output", "Segments", "Attributes", "Description", "Updated")
-_SUMMARY_NUMBER_COLUMNS = ("Segments", "Attributes")
-#: The mark of what a model used a split for, in the column of the split, which the header names
-#: (`method_ranking.describe_split_use` for marks without it).
-_SPLIT_USE_MARKS: dict[ie.SplitUse, str] = {"training": "training", "early_stopping": "early stop",
-                                            "unknown": "unknown", "held_out": ""}
-
-
-def _make_submission_cell_html(summary: ModelSummary, split: str) -> str:
-    """Makes the cell of a split: a link to the model page with the scores of its submission,
-    the submission details in the title, and a mark if the model used the split, with
-    the explanation in its title."""
-    submission = summary.split_to_submission.get(split)
-    if submission is None:
-        return '<td class="mark"></td>'
-    title = (f"File #{submission.id}, uploaded {format_utc_time(submission.uploaded_at)} by"
-             f" {submission.submitter}, {submission.num_segments} segments,"
-             f" {submission.num_attributes} attributes")
-    link = make_model_link_html(summary.model.id, "✓", split)
-    split_use = submission.model_info.get_split_use(split)
-    explanation = ie.explain_split_use(split_use, split)
-    mark_html = ("" if explanation is None else
-                 f'<div class="interval" title="{html.escape(explanation)}">'
-                 f"{_SPLIT_USE_MARKS[split_use]}</div>")
-    return f'<td class="mark" title="{html.escape(title)}">{link}{mark_html}</td>'
-
-
-def _make_summary_cells_html(summary: ModelSummary) -> str:
-    attribute_range = summary.attribute_range
-    attributes = ("" if attribute_range is None else str(attribute_range[0])
-                  if attribute_range[0] == attribute_range[1]
-                  else f"{attribute_range[0]}–{attribute_range[1]}")
-    return (f"<td>{summary.output_kind or ''}</td>"
-            f'<td class="number">{summary.num_segments or ""}</td>'
-            f'<td class="number">{attributes}</td>'
-            f"<td>{html.escape(summary.model.description)}</td>"
-            f"<td>{format_utc_time(summary.updated_at)}</td>")
-
-
-def _make_method_row_html(group: MethodGroup, num_columns: int) -> str:
-    info = group.model_info
-    splits = ""
-    if info is not None:
-        splits = f"trained on {format_splits(info.training_splits)}"
-        if info.early_stopping_splits:
-            splits += f", early stopping on {format_splits(info.early_stopping_splits)}"
-        splits = f' <span class="muted">· {html.escape(splits)}</span>'
-    method_name = ("" if group.shown_method_name == group.method_name
-                   else f' <span class="muted">({html.escape(group.method_name)})</span>')
-    # The internal method name can be long without spaces. Wrapped to not widen the columns.
-    return (f'<tr class="method-row"><td colspan="{num_columns}" class="breaks-anywhere">'
-            f"<b>{html.escape(group.shown_method_name)}</b>{method_name}{splits}</td></tr>")
-
-
-def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Sequence[str]) -> str:
-    """Makes the table of the models of a dataset under their methods
-    (`model_listing.summarize_models_by_method`), with a column per split.
-
-    Args:
-        split_names: The splits of the dataset, the order of the split columns.
-    """
-    header_html = "".join([
-        "<th>Model</th>", *(f'<th class="mark">{html.escape(s)}</th>' for s in split_names),
-        *(make_header_cell_html(c, c in _SUMMARY_NUMBER_COLUMNS) for c in _SUMMARY_COLUMNS)])
-    num_columns = 1 + len(split_names) + len(_SUMMARY_COLUMNS)
-    rows = []
-    for group in groups:
-        rows.append(_make_method_row_html(group, num_columns))
-        for summary in group.models:
-            model = summary.model
-            label_html = make_truncated_name_html(
-                model.shown_label, make_model_link_html(model.id, model.shown_label))
-            rows.append(
-                f"<tr><td>{label_html}</td>"
-                f"{''.join(_make_submission_cell_html(summary, s) for s in split_names)}"
-                f"{_make_summary_cells_html(summary)}</tr>")
-    return make_table_html_from_header(header_html, rows)
-
 
 async def _write_upload(request: Request, path: Path) -> None:
     """Writes the body of an upload request to `path`. Removes `path` if that fails, also if the
@@ -383,6 +300,47 @@ async def _check_and_store(archive: ModelArchive,
         planned.discard()  # Also if the page is closed, or the server is stopping.
 
 
+@dc.dataclass(frozen=True)
+class _ModelsView:
+    """What the Models page shows, which its URL keeps.
+
+    Attributes:
+        dataset: The shown dataset, or '' for all.
+        model_pattern: The regular expression of the shown model labels
+            (`select_matching_names`), '' for all.
+    """
+
+    dataset: str = ""
+    model_pattern: str = ""
+
+    def to_path(self) -> str:
+        return get_models_path(self.dataset, self.model_pattern)
+
+
+def _load_groups(archive: ModelArchive,
+                 dataset_names: T.Iterable[str]) -> dict[str, list[MethodGroup]]:
+    """Loads the models of each dataset by method (`summarize_models_by_method`)."""
+    models = archive.list_models()
+    submissions = archive.list_submissions()
+    return {d: summarize_models_by_method([m for m in models if m.dataset == d], submissions)
+            for d in dataset_names}
+
+
+def _list_group_models(dataset_to_groups: T.Mapping[str, T.Iterable[MethodGroup]]
+                       ) -> list[ModelSummary]:
+    return [m for groups in dataset_to_groups.values() for g in groups for m in g.models]
+
+
+def _filter_groups(groups: T.Iterable[MethodGroup],
+                   shown_labels: T.Collection[str]) -> list[MethodGroup]:
+    """Leaves out the models whose shown label is not in `shown_labels`, and the methods without
+    models left."""
+    filtered = (dc.replace(g, models=tuple(m for m in g.models
+                                           if m.model.shown_label in shown_labels))
+                for g in groups)
+    return [g for g in filtered if g.models]
+
+
 def register_models_pages(archive: ModelArchive,
                           dataset_contexts: T.Mapping[str, DatasetContext],
                           worker: ScoringWorker, sessions: AccountSessions) -> None:
@@ -415,47 +373,120 @@ def register_models_pages(archive: ModelArchive,
         return RedirectResponse(SCORES_PATH)
 
     @ui.page(MODELS_PATH, title="Models · iRAP evaluation")
-    def models_page(dataset: str = "") -> None:
+    def models_page(dataset: str = "", models: str = "") -> None:
+        """
+        Args:
+            dataset, models: `_ModelsView.dataset` and `model_pattern`.
+        """
         account = sessions.get_account()
         if dataset and dataset not in dataset_contexts:
             with create_page_frame(MODELS_PATH, account):
                 ui.label(f"Unknown dataset {dataset!r}. Datasets:"
                          f" {', '.join(dataset_contexts)}.").classes("error")
             return
+        view = _ModelsView(dataset, models)
+        # The models of all datasets, loaded again after each change of the view or the archive.
+        dataset_to_all_groups = _load_groups(archive, dataset_contexts)
 
-        def on_dataset_changed(value: str) -> None:
-            nonlocal dataset
-            dataset = value
-            ui.navigate.history.replace(make_query_path(MODELS_PATH, {"dataset": dataset}))
+        async def on_view_changed(**changes: str) -> None:
+            nonlocal view
+            view = dc.replace(view, **changes)
+            ui.navigate.history.replace(view.to_path())
+            await reload()
+
+        async def reload() -> None:
+            """Loads the models again, e.g. with a new ensemble, and shows them."""
+            nonlocal dataset_to_all_groups
+            client = ui.context.client
+            loaded = await run.io_bound(_load_groups, archive, dataset_contexts)
+            if loaded is None or client.is_deleted:  # None if the server is stopping.
+                return
+            dataset_to_all_groups = loaded
+            if form is not None:
+                form.set_models(_list_group_models(loaded))
             show_tables.refresh()
+
+        def list_shown_groups() -> dict[str, list[MethodGroup]]:
+            """Lists the models of the shown datasets that the filter matches, by method, without
+            the datasets without such models.
+
+            Raises:
+                ValueError: See `select_matching_names`.
+            """
+            matching_labels = select_matching_names(
+                view.model_pattern,
+                {m.model.shown_label for m in _list_group_models(dataset_to_all_groups)})
+            datasets = [view.dataset] if view.dataset else list(dataset_contexts)
+            return {d: groups for d in datasets
+                    if (groups := _filter_groups(dataset_to_all_groups[d], matching_labels))}
+
+        # Only with a form.
+        def check_selected_models() -> None:
+            """Shows the form's selection in the checkboxes of the tables, after a selection by
+            the server."""
+            ui.run_javascript(make_check_models_js(form.selected_model_ids))
+
+        def select_shown(is_selected: bool) -> None:
+            try:
+                dataset_to_groups = list_shown_groups()
+            except ValueError:  # Shown instead of the tables.
+                return
+            form.set_selected([m.model.id for m in _list_group_models(dataset_to_groups)],
+                              is_selected)
+            check_selected_models()
 
         @ui.refreshable
         def show_tables() -> None:
-            models = archive.list_models()
-            submissions = archive.list_submissions()
-            datasets = [dataset] if dataset else list(dataset_contexts)
-            shown_datasets = [d for d in datasets if any(m.dataset == d for m in models)]
-            if not shown_datasets:
-                ui.label("No models.").classes("muted")
-            for name in shown_datasets:
-                groups = summarize_models_by_method([m for m in models if m.dataset == name],
-                                                    submissions)
+            """Shows the tables, with checkboxes if there is an ensemble form. A click on a
+            checkbox only selects its model in the form, since the checkbox shows it."""
+            try:
+                dataset_to_groups = list_shown_groups()
+            except ValueError as e:
+                ui.label(str(e)).classes("error")
+                return
+            if not dataset_to_groups:
+                ui.label("No models match the filter." if view.model_pattern
+                         else "No models.").classes("muted")
+            for name, groups in dataset_to_groups.items():
                 ui.label(name).classes("subsection-title")
-                ui.html(make_models_table_html(groups, dataset_contexts[name].split_names),
-                        sanitize=False).classes("w-full overflow-x-auto")
+                table = ui.html(make_models_table_html(
+                    groups, dataset_contexts[name].split_names,
+                    selected_model_ids=None if form is None else form.selected_model_ids),
+                    sanitize=False).classes("w-full overflow-x-auto")
+                if form is not None:
+                    table.on("change", lambda e, f=form: f.set_selected([e.args[0]], e.args[1]),
+                             js_handler=MODEL_CHECKBOX_CHANGE_HANDLER)
 
         with create_page_frame(MODELS_PATH, account):
             if can_write(account):
                 _create_upload_form(archive, dataset_contexts, worker,
                                     sessions.require_writer_name)
             else:
-                create_write_permission_panel(account, _UPLOAD_FORM_TITLE, "upload predictions")
-            with ui.element("section").classes("panel"):
+                create_write_permission_panel(account, _UPLOAD_FORM_TITLE,
+                                              "upload predictions and create ensembles")
+            models_panel = ui.element("section").classes("panel")
+            # Below the models, since they are selected first.
+            form = (EnsembleForm(archive, dataset_contexts, worker, sessions.require_writer_name,
+                                 on_selection_changed=check_selected_models, on_created=reload)
+                    if can_write(account) else None)
+            if form is not None:
+                form.set_models(_list_group_models(dataset_to_all_groups))
+            with models_panel:
                 ui.label("Models").classes("section-title")
                 with ui.element("div").classes("form-row"):
                     create_native_select("Dataset", {"": "All", **{n: n for n in dataset_contexts}},
-                                         dataset, on_dataset_changed)
-                ui.label("A ✓ opens the Model page with the scores of the split's file."
+                                         view.dataset, lambda v: on_view_changed(dataset=v))
+                    create_native_input("Model filter (regex)", view.model_pattern,
+                                        lambda v: on_view_changed(model_pattern=v),
+                                        placeholder="all", size=24)
+                    if form is not None:
+                        # Hidden with the checkboxes while the ensemble form is collapsed.
+                        create_native_button("Select shown", lambda: select_shown(True)
+                                             ).classes("model-selection")
+                        create_native_button("Unselect shown", lambda: select_shown(False)
+                                             ).classes("model-selection")
+                ui.label("A method name opens the Method page with the scores of all its seeds."
+                         " A ✓ opens the Model page with the scores of the split's file."
                          " Hover over it for the file details. Below it: whether the model used"
                          " the split for training or early stopping.").classes("muted")
                 show_tables()

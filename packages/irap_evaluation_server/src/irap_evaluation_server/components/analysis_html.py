@@ -127,29 +127,34 @@ def _make_probability_table_html(detail: SegmentDetail) -> str:
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 
-def make_segment_detail_html(detail: SegmentDetail,
+def make_context_images_html(detail: SegmentDetail,
                              get_image_url: T.Callable[[str], str]) -> str:
-    """Makes the details of a segment: its context images, road position, location, label and
-    predicted distributions.
+    """Makes the context images of a segment, one below the other, from the largest offset, e.g.
+    the segment itself (0) above the previous ones (-1, -4).
 
     Args:
         get_image_url: Segment id -> the URL of its image.
     """
     figures = []
-    for offset, segment_id in detail.context_segment_ids:
+    for offset, segment_id in sorted(detail.context_segment_ids, key=lambda p: p[0],
+                                     reverse=True):
         image = (f'<img src="{html.escape(get_image_url(segment_id))}" alt="No image">'
                  if segment_id is not None
                  else '<div class="muted">Outside the road sequence</div>')
         figures.append(f"<figure>{image}<figcaption>offset {offset}</figcaption></figure>")
-    images = f'<div class="context-images">{"".join(figures)}</div>'
+    return f'<div class="context-images">{"".join(figures)}</div>'
+
+
+def make_segment_facts_html(detail: SegmentDetail) -> str:
+    """Makes the road position, location and predicted distributions of a segment. The table
+    shows the label, so the title only says when there is none."""
     road = ("no road sequence" if detail.road_id is None
             else f"road {detail.road_id}, position {detail.position}")
     location = ("no location" if detail.coordinates is None
                 else f"{detail.coordinates[0]:.5f}, {detail.coordinates[1]:.5f}")
-    label = ("no label" if detail.label_index is None
-             else "label " + _format_class(detail.irap_codes[detail.label_index],
-                                           detail.class_names[detail.label_index]))
-    title = html.escape(f"{detail.segment_id} · {road} · {location} · {label}")
-    return (f'<div class="segment-detail">{images}<div class="segment-facts">'
-            f'<div class="subsection-title">{title}</div>'
-            f"{_make_probability_table_html(detail)}</div></div>")
+    parts = [detail.segment_id, road, location]
+    if detail.label_index is None:
+        parts.append("no label")
+    title = html.escape(" · ".join(parts))
+    return (f'<div class="segment-facts"><div class="subsection-title">{title}</div>'
+            f"{_make_probability_table_html(detail)}</div>")

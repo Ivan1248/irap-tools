@@ -10,7 +10,7 @@ from ..datasets import DatasetContext
 from ..scoring import ScoredModel
 from .attribute_filter import AttributeSubset
 from .routes import ANALYSIS_PATH, ATTRIBUTE_PARAMETER, make_query_path
-from .view_queries import parse_dataset, parse_evaluation_set
+from .view_queries import parse_dataset, parse_evaluation_set, select_default_split
 
 
 @dc.dataclass(frozen=True)
@@ -55,7 +55,8 @@ class AnalysisView:
     @classmethod
     def from_query(cls, query: T.Mapping[str, str],
                    dataset_contexts: T.Mapping[str, DatasetContext]) -> T.Self:
-        """Parses the query parameters of `to_path`, and fills in the default dataset and split.
+        """Parses the query parameters of `to_path`, and fills in the default dataset and split
+        (`view_queries.select_default_split` of the analysis splits).
 
         Raises:
             ValueError: For an unknown dataset or evaluation set, a dataset without analysis
@@ -68,7 +69,7 @@ class AnalysisView:
         if not analysis_splits:
             raise ValueError(f"The dataset {dataset!r} has no analysis splits (analysis_splits"
                              f" in the server configuration).")
-        split = query.get("split") or analysis_splits[0]
+        split = query.get("split") or select_default_split(analysis_splits)
         if split not in analysis_splits:
             raise ValueError(f"{split!r} is not an analysis split of {dataset!r}. Its analysis"
                              f" splits: {', '.join(analysis_splits)}.")

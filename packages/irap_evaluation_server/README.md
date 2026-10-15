@@ -5,10 +5,11 @@ A web app that keeps an archive of model predictions, scores them, and compares,
 | Page | Path | Content |
 |---|---|---|
 | Scores | `/scores` (start page) | The methods of a dataset split ranked by an attribute average, or one per-attribute metric, with intervals and differences from a reference method. |
-| Models | `/models` | The models of each dataset by method, with the file of each split, and the upload form. |
+| Models | `/models` | The models of each dataset by method, with the file of each split, a filter, the upload form, and the form that creates an ensemble of the models selected in the tables. |
 | Model | `/models/<id>` | A model's files, its scores, the coding-table export and its actions (collapsed, for accounts with write permission). |
+| Method | `/methods?dataset=<dataset>&method=<method>` | A method's models, the scores of their mean and of each model on a split, its display name, and the actions of its models. Method names in the tables link to it. |
 | Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
-| Ensemble | `/ensemble` | Creates an ensemble of stored models. |
+| Methodology | `/methodology` | How the files are scored, and how to read the values, intervals, highlights and differences of the score tables. The short notes below the tables link to its sections. |
 | Action log | `/actions` | All changes, with the name of the user. Only for accounts with write permission. |
 | Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins. |
 
@@ -27,6 +28,8 @@ The map of the Analysis page needs internet access:
 
 - On its first start, the server downloads MapLibre and deck.gl (pinned versions checked by SHA-256) into `data_dir/vendor/`, since MapLibre must be served by the server itself. Without internet access, it starts without the map.
 - The browser loads the basemap tiles from Carto.
+
+It also downloads MathJax 3 (`tex-svg.js`, pinned and checked the same way), which typesets the formulas of the Methodology page. Without it, the page shows them as TeX.
 
 ## Configuration
 
@@ -56,7 +59,7 @@ The data directory holds:
 - `submissions/<id>/predictions.parquet`: the stored files, removed when they are [deleted](#deletion) (or at a later deletion if a file is open, e.g. on Windows),
 - `scores.sqlite3`: the [scores](#scoring), which the server computes again from the files if the file is missing, so backups can leave it out,
 - `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
-- `vendor/`: the map libraries,
+- `vendor/`: the map libraries and MathJax,
 - `accounts.sqlite3`: the [accounts](#accounts),
 - `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie. Keep them, and backups of the data directory, private. Deleting the key signs out all users.
 
@@ -160,7 +163,7 @@ Back up `/srv/irap-eval/data`, and keep the backups private.
 
 A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). Unlike `irap_evaluation`, the app requires a seed also for the only model of a method, so that a second model can be added without changing the first. It has at most one file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
 
-A method on a dataset can have a display name, which the pages show instead of the method name. The Method filter of the Scores page and the member filter of the Ensemble page match the shown name. An upload sets the display name of its method, entered in the upload form or from a file header's `method_display_name`, and the Model page edits it for all models of the method. Files, URLs, download names and the action log keep the method name.
+A method on a dataset can have a display name, which the pages show instead of the method name. The Method filter of the Scores page and the Model filter of the Models page match the shown name. An upload sets the display name of its method, entered in the upload form or from a file header's `method_display_name`, and the Method page edits it for all models of the method. The action log records the edit on the method's first model. Files, URLs, download names and the action log keep the method name.
 
 ### Uploads
 
@@ -192,7 +195,7 @@ To keep a copy, the Model page downloads the files of a model, e.g. an ensemble,
 
 ## Scoring
 
-A background thread scores each new file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes that a file does not predict count as invalid cells (`--missing-attribute-policy invalid`), so all models are scored on the same attributes.
+A background thread scores each new file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). The attribute predictions of attributes that a file does not predict count as invalid (`--missing-attribute-policy invalid`), so all models are scored on the same attributes.
 
 `scores.sqlite3` stores the attribute averages and per-attribute values, and their values in each bootstrap resample of road sequences (`irap_evaluation.resample_model_metrics`), as float32 (about 1.7 MB per file and evaluation set on Vietnam). Resampling adds 0.1 s per file on Vietnam val and 0.4 s on train. All files on an evaluation set share the resamples, so the pages compute means over models, intervals and paired comparisons of methods from the stored values, also over any subset of attributes, as `irap-eval evaluate` and `irap-eval compare` compute them (see [confidence intervals](../irap_evaluation/docs/evaluation.md#confidence-intervals)).
 
@@ -208,9 +211,9 @@ The Scores page shows the means over each method's models with their bootstrap i
 - Methods trained on the shown split are hidden by default, since their scores are not of held-out data. Methods that used the split for early stopping, or whose training splits are unknown, are marked.
 - The Method filter is a case-insensitive regular expression that matches any part of the name, e.g. `foo`, or `^(foo|bar)$` for exactly these two.
 - On the reference set, "Compare with" adds each method's difference from a reference method, with its interval, as `irap-eval compare` computes it. See [comparing methods](../irap_evaluation/docs/evaluation.md#comparing-methods) for how to read them.
-- The attribute filter, here and on the Model page, chooses the attributes that the averages cover. The averages of a method over a new subset take about 12 ms on Vietnam (34 attributes). The pages compute them in a thread, so that a large table does not hold up the server, and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
+- The attribute filter, here and on the Method and Model pages, chooses the attributes that the averages cover. The averages of a method over a new subset take about 12 ms on Vietnam (34 attributes). The pages compute them in a thread, so that a large table does not hold up the server, and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
 
-The URL keeps the view, so it can be shared as a link. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`). For a [protected split](#protected-splits), only admins get its per-class scores (`classes`).
+The URL keeps the view, so it can be shared as a link. A method name links to the Method page with the same split and attributes. It shows the attribute averages of the method's mean and of each of its models, which are shaded but not tested against each other, and the per-attribute metrics of the mean. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`). For a [protected split](#protected-splits), only admins get its per-class scores (`classes`).
 
 ## Analysis
 
@@ -225,7 +228,7 @@ The page keeps the 8 most recently used files in memory. Reading and aligning a 
 
 ## Ensembles
 
-The Ensemble page creates the weighted mean of the distributions of stored models of a dataset, as `irap-eval ensemble` does (`irap_evaluation.ensemble_predictions`). A hard prediction counts as a one-hot distribution.
+The "Create an ensemble" form of the Models page creates the weighted mean of the distributions of stored models of a dataset, as `irap-eval ensemble` does (`irap_evaluation.ensemble_predictions`). A hard prediction counts as a one-hot distribution. The members are the models selected with the checkboxes of the tables, which the form lists with their weights, also those that the filter hides.
 
 - The ensemble is a model with the given method name, display name and seed (0 in a new form). A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
 - It gets a file for each split where every member has a file, and these replace all files of an existing model of that name, which are deleted, so that all its files are of the same members.
@@ -249,13 +252,14 @@ irap_evaluation_server/
 ├─ archive.py               ModelArchive: models, their files, the SQLite index and action log
 ├─ accounts.py              AccountStore: the accounts, their permissions and password hashes
 ├─ uploads.py               The checks of uploaded files and .zip archives, and their planned updates
-├─ model_listing.py         The models of the Models page, grouped by method
+├─ model_listing.py         The models of the Models and Method pages, grouped by method
 ├─ scoring.py               Scoring settings, the score cache, means over models and resampled values
 ├─ scoring_worker.py        The background thread that scores, and the resampled values in memory
 ├─ method_ranking.py        The rows of the method table, their order, highlights and marks of used splits
 ├─ method_comparison.py     Comparisons with a reference method
+├─ methodology.py           The text of the Methodology page, with the values of the settings
 ├─ prediction_analysis.py   Outcomes of segments, confusion matrices, segment details
-├─ map_libraries.py         The download of the map libraries
+├─ vendor_libraries.py      The download of the libraries of the map and of MathJax
 ├─ ensembles.py             Ensembles of stored models
 ├─ coding_table_export.py   The coding table of the files of a model
 ├─ components/              Parts of the pages, e.g. the page frame, form controls, tables and the map

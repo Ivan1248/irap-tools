@@ -103,8 +103,9 @@ def compute_json_sha256(value: T.Any) -> str:
 @dc.dataclass(frozen=True)
 class ScoringSettings:
     """How the server scores submissions and computes intervals: the defaults of
-    `irap-eval evaluate`, but with 1000 bootstrap resamples, and with missing attributes counted
-    as invalid cells, so that all models are scored on the same attributes."""
+    `irap-eval evaluate`, but with 1000 bootstrap resamples, and with the attribute predictions of
+    missing attributes counted as invalid, so that all models are scored on the same
+    attributes."""
 
     attribute_selection: ie.AttributeSelection = "canonical"
     null_policy: ie.NullPolicy = "first_class"
@@ -519,6 +520,26 @@ def is_scoring_current(scoring: SubmissionScoring, submission: Submission,
     except ValueError:  # The split is no longer in the metadata.
         return False
     return scoring.evaluation_sets_fingerprint == sets_fingerprint
+
+
+def get_unscored_reason(scoring: SubmissionScoring | None, is_current: bool,
+                        is_pending: bool) -> str | None:
+    """Explains why a submission has no current scores. Returns None if it has them.
+
+    Args:
+        scoring: Its stored scoring, or None.
+        is_current: Whether `scoring` is current (`is_scoring_current`).
+        is_pending: Whether its scoring is queued or running.
+    """
+    if is_pending:
+        return "Scoring…"
+    if scoring is not None and scoring.status == "error":
+        return f"{scoring.message} It is scored again when the server restarts."
+    if scoring is None or not is_current:  # An 'error' scoring is not current.
+        return "No scores for the current settings and metadata."
+    if scoring.status == "failed":
+        return scoring.message
+    return None
 
 
 def score_submission(

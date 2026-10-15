@@ -1,6 +1,7 @@
 import dataclasses as dc
 import json
 import math
+from datetime import datetime, timezone
 
 import irap_evaluation as ie
 import numpy as np
@@ -26,8 +27,10 @@ from irap_evaluation_server.scoring import (
     RESAMPLED_METRIC_NAMES,
     ScoreStore,
     ScoringSettings,
+    SubmissionScoring,
     compute_method_scores,
     compute_scoring_code_fingerprint,
+    get_unscored_reason,
     group_scored_models_by_method,
     is_scoring_current,
     remove_class_scores,
@@ -237,6 +240,19 @@ def test_scoring_errors(archive, dataset_contexts, store, worker):
     assert worker.is_scoring_pending(submissions[1].id)
     assert not worker.is_scoring_pending(submissions[0].id)
     worker.run_pending()
+
+
+def test_get_unscored_reason():
+    scoring = SubmissionScoring(submission_id=1, status="scored", message="", notes=(),
+                                settings_fingerprint="s", evaluation_sets_fingerprint="e",
+                                scored_at=datetime(2026, 10, 3, tzinfo=timezone.utc))
+    assert get_unscored_reason(scoring, is_current=True, is_pending=False) is None
+    assert get_unscored_reason(scoring, True, is_pending=True) == "Scoring…"
+    assert "current settings" in get_unscored_reason(None, False, False)
+    failed = dc.replace(scoring, status="failed", message="No predictions for 3 segments.")
+    assert get_unscored_reason(failed, True, False) == failed.message
+    error = dc.replace(scoring, status="error", message="Unexpected error.")
+    assert "scored again" in get_unscored_reason(error, False, False)
 
 
 def test_scorings_of_other_scoring_code_are_out_of_date(archive, dataset_contexts, worker,

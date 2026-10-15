@@ -1,5 +1,5 @@
-"""What the Models page lists: the models of a dataset with the submission of each split,
-grouped by method."""
+"""What the Models and Method pages list: the models of a dataset with the submission of each
+split, grouped by method."""
 
 import dataclasses as dc
 import typing as T
@@ -34,6 +34,11 @@ class ModelSummary:
     @property
     def submissions(self) -> list[Submission]:
         return list(self.split_to_submission.values())
+
+    def list_splits(self, split_names: T.Iterable[str]) -> list[str]:
+        """Lists the splits of `split_names`, e.g. those of the dataset in order, that the model
+        has a submission of."""
+        return [s for s in split_names if s in self.split_to_submission]
 
     @property
     def output_kind(self) -> ie.OutputKind | None:
@@ -81,6 +86,15 @@ class MethodGroup:
         return max(m.updated_at for m in self.models)
 
     @property
+    def dataset(self) -> str:
+        return self.models[0].model.dataset
+
+    @property
+    def method_display_name(self) -> str | None:
+        """`archive.Model.method_display_name`, which the models of a method share."""
+        return self.models[0].model.method_display_name
+
+    @property
     def shown_method_name(self) -> str:
         """`archive.Model.shown_method_name`, which the models of a method share."""
         return self.models[0].model.shown_method_name
@@ -90,6 +104,15 @@ class MethodGroup:
         """The `irap_evaluation.ModelInfo` of a model of the method, whose training and early
         stopping splits are those of all its models, or None if none has a submission."""
         return next((m.model_info for m in self.models if m.model_info is not None), None)
+
+
+def group_submissions_by_split(summaries: T.Sequence[ModelSummary], split_names: T.Iterable[str]
+                               ) -> dict[str, list[Submission]]:
+    """Groups the submissions of models by split, for the splits of `split_names`, e.g. those of
+    the dataset in order, that some model has a submission of."""
+    return {s: submissions for s in split_names
+            if (submissions := [m.split_to_submission[s] for m in summaries
+                                if s in m.split_to_submission])}
 
 
 def summarize_models_by_method(models: T.Iterable[Model],

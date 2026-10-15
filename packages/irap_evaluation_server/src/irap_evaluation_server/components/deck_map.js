@@ -1,7 +1,8 @@
 // A Vue component for NiceGUI: points on a MapLibre basemap, drawn by deck.gl (see deck_map.py).
 // Python sends the outcomes of the points with `set_outcomes`, the highlighted points with
 // `set_highlighted` and the selected point with `set_selected`, and receives clicks on points as
-// 'pick' events. A change of the selected point rebuilds only its layer.
+// 'pick' events. A change of the selected point rebuilds only its layer. Radii and line widths are
+// in pixels, so that the points look the same at every zoom.
 
 const SEGMENT_ZOOM = 14;
 const HIGHLIGHTING_ALPHA = 50;
@@ -168,7 +169,8 @@ export default {
         radiusUnits: "pixels",
         stroked: true,
         getLineColor: [255, 255, 255, 255],
-        lineWidthMinPixels: 1,
+        getLineWidth: 1,
+        lineWidthUnits: "pixels",
         pickable: true,
         onClick: ({ object }) => this.$emit("pick", object),
       });
@@ -188,7 +190,8 @@ export default {
         radiusUnits: "pixels",
         stroked: true,
         filled: false,
-        lineWidthMinPixels: 2.5,
+        getLineWidth: 2.5,
+        lineWidthUnits: "pixels",
       });
       this.setLayers();
       if (selectedPoint !== null && selectedPoint !== this.shownPoint) {

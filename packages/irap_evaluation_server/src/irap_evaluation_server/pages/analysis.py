@@ -19,7 +19,8 @@ from ..components.account_sessions import AccountSessions
 from ..components.analysis_html import (
     make_class_table_html,
     make_confusion_matrix_html,
-    make_segment_detail_html,
+    make_context_images_html,
+    make_segment_facts_html,
     make_segment_list_html,
 )
 from ..components.analysis_view import (
@@ -60,24 +61,20 @@ from ..prediction_analysis import (
     get_segment_detail,
     select_cell_segments,
 )
-from ..scoring import (
-    ScoredModel,
-    ScoreStore,
-    get_model_evaluation_set,
-    select_scored_models,
-)
+from ..scoring import ScoredModel, ScoreStore, get_model_evaluation_set
 from ..scoring_worker import ScoringWorker
 
-#: The metric that orders the models, and that the summary shows.
+#: The metric that orders the models, and that their options show.
 _RANKING_METRIC = DEFAULT_SORT_METRIC
 _MAX_LISTED_SEGMENTS = 500
 #: Null policy -> how the class table counts invalid predictions.
 _CLASS_TABLE_NOTES = {
-    "first_class": "Precision, recall and F1 as scored: an invalid prediction counts as the first"
-                   " class.",
-    "exclude": "Precision, recall and F1 as scored: invalid predictions are left out."}
+    "first_class": "An invalid prediction counts as the first class.",
+    "exclude": "Invalid predictions are left out in scoring."}
 #: The initial width of the side panel next to the map.
 _SIDE_PANEL_WIDTH_PX = 440
+#: The initial width of the column of context images between the side panel and the map.
+_IMAGE_COLUMN_WIDTH_PX = 480
 
 
 def _create_side_panel_without_map() -> ui.element:
@@ -122,7 +119,7 @@ def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
                            map_error: str | None, sessions: AccountSessions) -> None:
     """
     Args:
-        map_error: Why the map libraries are missing (`map_libraries.ensure_map_libraries`), or
+        map_error: Why the map libraries are missing (`vendor_libraries.ensure_library_files`), or
             None if they are served.
     """
     @app.get(SEGMENT_IMAGE_PATH)
@@ -202,7 +199,7 @@ def _make_model_label(scored_model: ScoredModel, attributes: T.Sequence[str]) ->
     submission = scored_model.submission
     average = _get_ranking_average(scored_model, attributes)
     score = ("" if average is None
-             else f" · {_RANKING_METRIC} {format_optional_metric_value(average, 3)}")
+             else f" · {_RANKING_METRIC}={format_optional_metric_value(average, 3)}")
     mark = describe_split_use(submission.model_info.get_split_use(submission.split),
                               submission.split)
     return f"{submission.shown_label}{score}{f' · {mark}' if mark else ''}"
@@ -220,13 +217,22 @@ def _group_model_options(models: T.Sequence[ScoredModel],
     return groups
 
 
-def _describe_attribute_scores(scored_model: ScoredModel, attribute: str) -> str:
-    """Describes the scores of a model for one attribute, e.g. 'mF1 .512 · 3 invalid', with
-    '(not predicted)' for a missing attribute."""
-    scores = scored_model.scores
-    f1 = format_optional_metric_value(scores.metrics.per_attribute["mF1"].get(attribute), 3)
-    missing = " (not predicted)" if attribute in scores.missing_attributes else ""
-    return f"mF1 {f1} · {scores.num_invalid[attribute]} invalid{missing}"
+def _describe_attribute_scores(role_models: T.Sequence[tuple[str, ScoredModel]],
+                               attribute: str) -> str:
+    """Describes the scores of models for one attribute, e.g. 'mF1=.512 vs .498 · 3 vs 0
+    invalid', with '(not predicted by B)' if a model lacks the attribute.
+
+    Args:
+        role_models: (role, model), e.g. ("A", model A), in the order of their scores.
+    """
+    all_scores = [m.scores for _, m in role_models]
+    f1s = " vs ".join(
+        format_optional_metric_value(s.metrics.per_attribute["mF1"].get(attribute), 3)
+        for s in all_scores)
+    nums_invalid = " vs ".join(str(s.num_invalid[attribute]) for s in all_scores)
+    missing_roles = [r for r, m in role_models if attribute in m.scores.missing_attributes]
+    missing = f" (not predicted by {', '.join(missing_roles)})" if missing_roles else ""
+    return f"mF1={f1s} · {nums_invalid} invalid{missing}"
 
 
 async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
@@ -258,8 +264,8 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
 
     # The page is sent first, since reading the files takes tenths of a second (see the README).
     await client.connected()
-    submissions, _, current = worker.load_split_scorings(view.dataset, view.split)
-    models = select_scored_models(submissions, current, view.evaluation_set)
+    scorings = worker.load_split_scorings(view.dataset, view.split)
+    models = scorings.select_scored_models(view.evaluation_set)
     if not models:
         show_error(f"No models of {view.dataset}/{view.split} are scored on the"
                    f" {EVALUATION_SET_LABELS[view.evaluation_set].lower()}.",
@@ -327,6 +333,11 @@ class _AnalysisPage:
         #: The segments of the selected cell (`select_cell_segments`), None without a cell.
         self.cell_segments: np.ndarray | None = None
 
+    def _list_role_models(self) -> list[tuple[str, _LoadedModel]]:
+        """Lists the shown models with their roles, 'A' and 'B'."""
+        return [(role, m) for role, m in (("A", self.model_a), ("B", self.model_b))
+                if m is not None]
+
     def create(self, analysis_datasets: T.Sequence[str], map_error: str | None,
                attribute_query: T.Sequence[str]) -> None:
         """Creates the page content and shows the view.
@@ -340,8 +351,12 @@ class _AnalysisPage:
                 "w-full h-full") as outer:
             with outer.before, ui.element("div").classes("analysis-side"):
                 self._create_side_panel(analysis_datasets, attribute_query)
-            with outer.after:
-                self._create_map_panel(map_error)
+            with outer.after, ui.splitter(value=_IMAGE_COLUMN_WIDTH_PX, limits=(200, 1200)).props(
+                    "unit=px").classes("w-full h-full") as inner:
+                with inner.before:
+                    self.images_html = ui.html("", sanitize=False).classes("w-full h-full")
+                with inner.after:
+                    self._create_map_panel(map_error)
         self._update_outcomes()
         self._update_map_selected()
 
@@ -360,7 +375,6 @@ class _AnalysisPage:
             self.show_model_selects()
         self.show_attribute_picker = ui.refreshable(self._show_attribute_picker)
         self.show_attribute_picker()
-        self.summary_html = ui.html("", sanitize=False)
         ui.label("Confusion matrix").classes("section-title")
         ui.label("Rows: labels. Columns: predictions of A, then invalid ones.").classes("muted")
         self.matrix_html = ui.html("", sanitize=False).on(
@@ -377,7 +391,7 @@ class _AnalysisPage:
                        " if (button) emit(button.dataset.segment); }")
 
     def _create_map_panel(self, map_error: str | None) -> None:
-        """Creates the map and its legend, and the details of the selected segment below them."""
+        """Creates the map and its legend, and the facts of the selected segment below them."""
         with ui.splitter(horizontal=True, reverse=True, value=280, limits=(120, 700)).props(
                 "unit=px").classes("w-full h-full") as splitter:
             with splitter.before, ui.element("div").classes("map-container"):
@@ -390,13 +404,12 @@ class _AnalysisPage:
                                             self.points.coordinates, self._on_point_picked)
                 self.legend_html = ui.html("", sanitize=False)
             with splitter.after:
-                self.detail_html = ui.html("", sanitize=False).classes("w-full h-full")
+                self.facts_html = ui.html("", sanitize=False).classes("w-full h-full")
 
     # Controls #####################################################################################
 
     def _show_model_selects(self) -> None:
-        subset = self.attribute_filter.subset
-        attributes = subset.selected
+        attributes = self.attribute_filter.subset.selected
         models = sort_scored_models(self.models, _RANKING_METRIC, attributes)
         with ui.element("div").classes("wide"):
             create_native_grouped_select(
@@ -410,21 +423,19 @@ class _AnalysisPage:
                 "" if self.model_b is None else str(self.model_b.model_id),
                 self._on_compared_model_changed, ungrouped={"": "–"})
         links = ", ".join(
-            f"{role}: {make_model_link_html(m.model_id, s.shown_label, s.split)}"
-            for role, m in (("A", self.model_a), ("B", self.model_b)) if m is not None
-            for s in [m.scored.submission])
-        ui.html(f'<span class="muted">{links}. Grouped by method, best {_RANKING_METRIC} over'
-                f" {html.escape(subset.label)} first.</span>", sanitize=False).classes("wide")
+            f"{role}: {make_model_link_html(m.model_id, 'details', m.scored.submission.split)}"
+            for role, m in self._list_role_models())
+        ui.html(f'<span class="muted">{links}</span>', sanitize=False).classes("wide")
 
     def _show_attribute_picker(self) -> None:
         attributes = select_attribute_options(self.attribute_filter.subset, self.model_a.scored)
         if not attributes:
             ui.label("Select at least one attribute that model A is scored on.").classes("error")
             return
+        role_models = [(role, m.scored) for role, m in self._list_role_models()]
         create_native_select(
             "Attribute",
-            {a: f"{a} · {_describe_attribute_scores(self.model_a.scored, a)}"
-             for a in attributes},
+            {a: f"{a} · {_describe_attribute_scores(role_models, a)}" for a in attributes},
             self.view.attribute_name, self._on_attribute_changed)
         unlabeled = [a for a, n in self.evaluation_set.attr_to_num_labeled.items() if n == 0]
         if unlabeled:
@@ -452,7 +463,6 @@ class _AnalysisPage:
         self.outcomes = compute_attribute_outcomes(
             self.model_a.aligned, attribute,
             None if self.model_b is None else self.model_b.aligned)
-        self._update_summary()
         point_outcomes = self.outcomes.segment_outcomes[self.points.segment_indices]
         counts = np.bincount(point_outcomes, minlength=len(self.outcomes.outcome_names))
         num_unlocated = self.points.num_unlocated
@@ -470,21 +480,6 @@ class _AnalysisPage:
                 else make_class_table_html(class_report, self.outcomes.confusion_matrix))
             self._update_cell()
         self._update_detail()
-
-    def _update_summary(self) -> None:
-        """Shows the averages of the models over the subset, and their scores of the attribute."""
-        subset = self.attribute_filter.subset
-        attribute = html.escape(self.view.attribute_name)
-        parts = []
-        for name, loaded_model in (("A", self.model_a), ("B", self.model_b)):
-            if loaded_model is None:
-                continue
-            average = _get_ranking_average(loaded_model.scored, subset.selected)
-            parts.append(
-                f"{name}: {_RANKING_METRIC} {format_optional_metric_value(average, 3)} over"
-                f" {html.escape(subset.label)} – {attribute}:"
-                f" {_describe_attribute_scores(loaded_model.scored, self.view.attribute_name)}")
-        self.summary_html.set_content(f'<div class="muted">{"<br>".join(parts)}</div>')
 
     def _get_selected_segment(self) -> int | None:
         return self.segment_id_to_index.get(self.view.segment_id)
@@ -545,15 +540,17 @@ class _AnalysisPage:
     def _update_detail(self) -> None:
         selected = self._get_selected_segment()
         if selected is None:
-            self.detail_html.set_content(
+            self.images_html.set_content("")
+            self.facts_html.set_content(
                 '<div class="muted p-2">Select a segment on the map or in the list.</div>')
             return
-        aligned_seq = [m.aligned for m in (self.model_a, self.model_b) if m is not None]
+        aligned_seq = [m.aligned for _, m in self._list_role_models()]
         detail = get_segment_detail(self.context.metadata, aligned_seq, selected,
                                     self.view.attribute_name)
         dataset = self.context.name
-        self.detail_html.set_content(make_segment_detail_html(
+        self.images_html.set_content(make_context_images_html(
             detail, lambda s: get_segment_image_path(dataset, s)))
+        self.facts_html.set_content(make_segment_facts_html(detail))
 
     # Event handlers ###############################################################################
 
@@ -581,8 +578,7 @@ class _AnalysisPage:
         if attributes and self.view.attribute_name not in attributes:
             self.view = dc.replace(self.view, attribute_name=attributes[0], cell=None)
             self._update_outcomes()
-        else:  # Only the averages over the subset change.
-            self._update_summary()
+        else:  # Only the averages over the subset change, which the selects show.
             self._update_url()
 
     def _find_model(self, model_id_text: str) -> ScoredModel:
@@ -642,5 +638,6 @@ class _AnalysisPage:
             self.num_model_changes["B"] += 1  # Discards a pending read of B.
         self.model_b = model_b
         self.show_model_selects.refresh()
+        self.show_attribute_picker.refresh()  # The options show the scores of B.
         self._update_outcomes(is_model_a_changed=False)
         self._update_url()

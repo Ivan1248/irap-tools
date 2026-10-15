@@ -174,6 +174,11 @@ class Model:
         """The label shown on the pages: `label` with the method display name."""
         return ie.format_model_label(self.shown_method_name, self.seed)
 
+    @property
+    def seed_label(self) -> str:
+        """Identifies the model among the models of its method, e.g. 'seed3'."""
+        return f"seed{self.seed}"
+
 
 @dc.dataclass(frozen=True)
 class Submission:
@@ -517,6 +522,16 @@ def _find_model(connection: sqlite3.Connection, dataset: str, method_name: str,
     return None if row is None else _to_model(row)
 
 
+def _get_method_models(connection: sqlite3.Connection, dataset: str,
+                       method_name: str) -> list[Model]:
+    rows = connection.execute(
+        f"{_MODEL_QUERY} WHERE m.dataset = ? AND m.method_name = ? ORDER BY m.id",
+        (dataset, method_name))
+    if not (models := [_to_model(row) for row in rows]):
+        raise LookupError(f"The method {method_name!r} has no models on {dataset}.")
+    return models
+
+
 def _get_submission(connection: sqlite3.Connection, submission_id: int) -> Submission:
     row = connection.execute(f"{_SUBMISSION_QUERY} WHERE s.id = ?", (submission_id,)).fetchone()
     if row is None:
@@ -535,6 +550,12 @@ def _list_submissions(connection: sqlite3.Connection, where: str | None = None,
 
 def _list_model_submissions(connection: sqlite3.Connection, model_id: int) -> list[Submission]:
     return _list_submissions(connection, "s.model_id = ?", (model_id,))
+
+
+def _list_method_submissions(connection: sqlite3.Connection, dataset: str,
+                             method_name: str) -> list[Submission]:
+    return _list_submissions(connection, "m.dataset = ? AND m.method_name = ?",
+                             (dataset, method_name))
 
 
 def _log_action(connection: sqlite3.Connection, actor: str, action: ActionKind, model: Model,
@@ -643,8 +664,7 @@ def _check_method_invariant(connection: sqlite3.Connection, dataset: str,
     Raises:
         ValueError: If they cannot.
     """
-    submissions = _list_submissions(connection, "m.dataset = ? AND m.method_name = ?",
-                                    (dataset, method_name))
+    submissions = _list_method_submissions(connection, dataset, method_name)
     model_id_to_info = {s.model.id: s.model_info for s in submissions}  # Equal per model.
     try:
         ie.check_method_models(model_id_to_info.values())
@@ -821,12 +841,28 @@ class ModelArchive:
         with connect(self.database_path) as connection:
             return _get_submission(connection, submission_id)
 
-    def list_actions(self, *, model_id: int | None = None) -> list[ActionLogEntry]:
-        """Lists the actions, newest first, optionally only those on one model and its
+    def get_method_models(self, dataset: str, method_name: str) -> list[Model]:
+        """Returns the models of a method on a dataset, by id.
+
+        Raises:
+            LookupError: If the method has no models on the dataset, e.g. since they have been
+                deleted.
+        """
+        with connect(self.database_path) as connection:
+            return _get_method_models(connection, dataset, method_name)
+
+    def list_method_submissions(self, dataset: str, method_name: str) -> list[Submission]:
+        """Lists the submissions of the models of a method on a dataset, newest first."""
+        with connect(self.database_path) as connection:
+            return _list_method_submissions(connection, dataset, method_name)
+
+    def list_actions(self, *, model_ids: T.Collection[int] | None = None) -> list[ActionLogEntry]:
+        """Lists the actions, newest first, optionally only those on some models and their
         submissions."""
         query, parameters = "SELECT * FROM actions", ()
-        if model_id is not None:
-            query, parameters = query + " WHERE model_id = ?", (model_id,)
+        if model_ids is not None:
+            parameters = tuple(model_ids)
+            query += f" WHERE model_id IN ({', '.join('?' * len(parameters))})"
         with connect(self.database_path) as connection:
             rows = connection.execute(query + " ORDER BY id DESC", parameters)
             return [_to_action_log_entry(row) for row in rows]
@@ -1116,23 +1152,26 @@ class ModelArchive:
             _set_description(connection, model, description, actor)
             return _get_model(connection, model_id)
 
-    def set_method_display_name(self, model_id: int, display_name: str | None, *,
-                                actor: str) -> Model:
-        """Changes the display name of the method of a model, which all models of the method on
-        its dataset share, and logs it on the model.
+    def set_method_display_name(self, dataset: str, method_name: str, display_name: str | None,
+                                *, actor: str) -> list[Model]:
+        """Changes the display name of a method on a dataset, which all its models share, and
+        logs it on its first model (the lowest id), since the action log is of models.
 
         Args:
             display_name: The new display name, None or blank to clear it.
 
+        Returns:
+            The models of the method, with the new display name, by id.
+
         Raises:
-            LookupError: If there is no such model.
+            LookupError: If the method has no models on the dataset.
             ValueError: If `actor` is empty, or the display name is unchanged.
         """
         actor = _check_actor(actor)
         display_name = (display_name or "").strip() or None
         with begin_write(self.database_path) as connection:
-            model = _get_model(connection, model_id)
-            if display_name == model.method_display_name:
+            models = _get_method_models(connection, dataset, method_name)
+            if display_name == models[0].method_display_name:
                 raise ValueError("The display name is unchanged.")
-            _set_method_display_name(connection, model, display_name, actor, {})
-            return _get_model(connection, model_id)
+            _set_method_display_name(connection, models[0], display_name, actor, {})
+            return _get_method_models(connection, dataset, method_name)

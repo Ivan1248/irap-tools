@@ -5,6 +5,7 @@ store, and the resampled values through `ScoringWorker.get_method_resamples`, wh
 memory.
 """
 
+import dataclasses as dc
 import functools
 import logging
 import threading
@@ -14,17 +15,20 @@ import irap_evaluation as ie
 import numpy as np
 
 from .archive import Model, ModelArchive, Submission
-from .datasets import DatasetContext
+from .datasets import EVALUATION_SET_NAMES, DatasetContext
 from .scoring import (
     SCORING_SETTINGS,
     MethodScores,
+    ScoredModel,
     ScoreStore,
     ScoringSettings,
     SubmissionScoring,
     combine_method_resamples,
+    get_unscored_reason,
     is_scoring_current,
     make_unscored_scoring,
     score_submission,
+    select_scored_models,
 )
 
 _logger = logging.getLogger(__name__)
@@ -37,6 +41,41 @@ NUM_CACHED_MODEL_RESAMPLES = 200
 #: again at once, e.g. after sorting. On iRAP-Vietnam, they take about 0.05 MB each for the
 #: attribute averages, 0.14 MB for a per-attribute metric and 0.6 MB for the Model page.
 NUM_CACHED_METHOD_RESAMPLES = 1000
+
+
+@dc.dataclass(frozen=True)
+class SubmissionScorings:
+    """The scorings of some submissions (`ScoringWorker.load_scorings`).
+
+    Attributes:
+        submission_id_to_scoring: Submission id -> its stored scoring (`ScoreStore.get_scorings`).
+        current: Submission id -> its current scoring (`ScoringWorker.select_current_scorings`).
+        pending_ids: The submissions whose scoring is queued or running.
+    """
+
+    submissions: list[Submission]
+    submission_id_to_scoring: dict[int, SubmissionScoring]
+    current: dict[int, SubmissionScoring]
+    pending_ids: list[int]
+
+    def select_scored_models(self, evaluation_set: str) -> list[ScoredModel]:
+        """Selects the submissions with current scores on the evaluation set with this name
+        (`scoring.select_scored_models`)."""
+        return select_scored_models(self.submissions, self.current, evaluation_set)
+
+    def group_scored_models_by_set(self) -> dict[str, list[ScoredModel]]:
+        """Groups the submissions with current scores by evaluation set name
+        (`select_scored_models`), for the sets with some."""
+        return {n: models for n in EVALUATION_SET_NAMES
+                if (models := self.select_scored_models(n))}
+
+    def list_unscored(self) -> list[tuple[Submission, str]]:
+        """Lists the submissions without current scores, each with the reason
+        (`get_unscored_reason`)."""
+        return [(s, reason) for s in self.submissions
+                if (reason := get_unscored_reason(self.submission_id_to_scoring.get(s.id),
+                                                  s.id in self.current,
+                                                  s.id in self.pending_ids))]
 
 
 def _format_unexpected_error(e: Exception) -> str:
@@ -170,16 +209,18 @@ class ScoringWorker:
         return self.select_current_scorings(
             submissions, self.store.get_scorings(s.id for s in submissions))
 
-    def load_split_scorings(self, dataset: str, split: str) -> tuple[
-            list[Submission], dict[int, SubmissionScoring], dict[int, SubmissionScoring]]:
-        """Loads the submissions of a dataset split, submission id -> its stored scoring
-        (`ScoreStore.get_scorings`), and submission id -> its current scoring
-        (`select_current_scorings`)."""
-        submissions = [s for s in self.archive.list_submissions()
-                       if (s.dataset, s.split) == (dataset, split)]
+    def load_scorings(self, submissions: T.Iterable[Submission]) -> SubmissionScorings:
+        submissions = list(submissions)
         submission_id_to_scoring = self.store.get_scorings(s.id for s in submissions)
-        return (submissions, submission_id_to_scoring,
-                self.select_current_scorings(submissions, submission_id_to_scoring))
+        return SubmissionScorings(
+            submissions, submission_id_to_scoring,
+            self.select_current_scorings(submissions, submission_id_to_scoring),
+            [s.id for s in submissions if self.is_scoring_pending(s.id)])
+
+    def load_split_scorings(self, dataset: str, split: str) -> SubmissionScorings:
+        """Loads the scorings of the submissions of a dataset split (`load_scorings`)."""
+        return self.load_scorings(s for s in self.archive.list_submissions()
+                                  if (s.dataset, s.split) == (dataset, split))
 
     def is_scoring_pending(self, submission_id: int) -> bool:
         with self._condition:
