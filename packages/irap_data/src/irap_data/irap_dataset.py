@@ -8,7 +8,14 @@ import torch
 
 from .dataset import Dataset
 from .lazy_dict import LazyDict
-from .image_utils import load_image_cv2, center_crop, hwc_to_chw_float_tensor
+from .image_utils import (
+    DEFAULT_FIT_MODE,
+    FitMode,
+    fit_to_size,
+    float_rgb_to_uint8,
+    hwc_to_chw_float_tensor,
+    load_image_cv2,
+)
 from .metadata import (
     DATASET_PRESETS,
     IRAPMetadata,
@@ -180,6 +187,7 @@ def make_irap_data(
     mean: T.Sequence[float] = RGB_MEAN,
     std: T.Sequence[float] = RGB_STD,
     input_dim_rgb: T.Sequence[int] = INPUT_DIM,
+    fit_mode: FitMode = DEFAULT_FIT_MODE,
     transforms: T.Mapping[str, T.Callable] | None = None,
     ncontext_segment_id_subset: set[str] | None = None,
     use_ncontext_filter: bool = False,
@@ -199,7 +207,12 @@ def make_irap_data(
         mean: Channel means for RGB normalization.
         std: Channel standard deviations for RGB normalization.
         input_dim_rgb: Target image dimensions (width, height, channels).
-        transforms: Custom transforms mapping by split name or single transform dict.
+        fit_mode: How the default transform fits an image to `input_dim_rgb` (see
+            `image_utils.fit_to_size`). The padding of `"fit_width"` has the color `mean`, so it is
+            0 after standardization. iRAP-BH images have exactly the default size, so they pass
+            through unchanged with every option except `"resize_width"` with another width.
+        transforms: Custom transforms mapping by split name or single transform dict. If given,
+            `input_dim_rgb` and `fit_mode` are not used.
         ncontext_segment_id_subset: Optional explicit set of segment IDs to include.
         use_ncontext_filter: Whether to apply N-context filtering from precomputed result files.
         seg_to_res_path: Directory containing precomputed `<split>.pickle` files for N-context
@@ -234,10 +247,11 @@ def make_irap_data(
 
     if transforms is None:
         target_wh = (int(input_dim_rgb[0]), int(input_dim_rgb[1]))
+        fill_rgb = float_rgb_to_uint8(mean)
         per_kind: dict[str, T.Callable] = {}
         # Photometric jittering is handled in TrainerConfig, so loading is deterministic.
-        per_kind["rgb"] = lambda img, _twh=target_wh: hwc_to_chw_float_tensor(
-            center_crop(img, _twh)
+        per_kind["rgb"] = lambda img: hwc_to_chw_float_tensor(
+            fit_to_size(img, target_wh, fit_mode, fill_rgb)
         )
         transforms = {split: per_kind for split in split_names}
 

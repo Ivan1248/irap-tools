@@ -52,14 +52,12 @@ The two coincide on iRAP-BH iff (a) segment IDs are integer-contiguous within ea
 
 | | Original ([`dataset_wrapper.py:141-144`](https://github.com/mkacan/irap_gaim/blob/main/dataset_wrapper.py#L141-L144)) | New (`image_utils.py`) |
 |---|---|---|
-| Resize | none | none (`IRAPDataset` default); `resize_to_cover` only in `InferenceImageDataset` |
-| Crop | `CenterCrop((H, W))` only when `input_dim['rgb'] != [384, 284, 3]` | `center_crop` always (raises if source is smaller than target) |
+| Resize | none | to the target width, preserving the aspect ratio (Lanczos), by default (`fit_mode="fit_width"`) |
+| Crop | `CenterCrop((H, W))` only when `input_dim['rgb'] != [384, 284, 3]` | the height is center-cropped or padded with the mean color to the target height, by default |
 
 The `[384, 284, 3]` literal looks like a typo for `288`: `input_dim.rgb` is `[384, 288, 3]`, so the `!=` branch fires and the original does crop.
 
-The new code applies `center_crop` without any prior resize, matching the original. For iRAP-BH, source images are at exactly `384 × 288`, so the crop is full-bounds and pixels pass through unchanged (the only remaining difference is that the original emits a standardized tensor rather than a `[0, 1]` `float32` – see §3).
-
-`resize_to_cover` (Lanczos) is available as a separate function and is used by `InferenceImageDataset`, which loads from arbitrary-size inputs.
+For iRAP-BH, source images are at exactly `384 × 288`, so the default fit leaves pixels unchanged, as the original does (the only remaining difference is that the original emits a standardized tensor rather than a `[0, 1]` `float32` – see §3). `fit_mode="center_crop"` reproduces the crop of the original for any source size. For 1920×1080 iRAP-Vietnam images, that crop keeps only about 5% of the image, which is why the default fit resizes.
 
 ### 3. Augmentation and normalization moved out of the dataset
 

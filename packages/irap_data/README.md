@@ -72,7 +72,7 @@ ds = InferenceImageDataset.from_folder(
 - Targets use `-1` (`irap_data.metadata.IGNORE_LABEL_INDEX`) for a missing label, as `torch.nn.CrossEntropyLoss(ignore_index=-1)` expects.
 - Class indices follow the value order of `attribute_value_to_irap_number` in `attribute_metadata.json` (see `ClassVocabulary`).
 - `Dataset.info` is a `LazyDict`: `info["class_counts"]` and `info.class_counts` are equivalent, and `Lazy(...)` entries are computed on first access.
-- The datasets do not normalize images. `info.pixel_stats` holds the mean and standard deviation to normalize with, by default `RGB_MEAN` and `RGB_STD` in `irap_data.irap_dataset`. `IRAPDataset` center-crops images to `INPUT_DIM`, (width, height, channels) = (384, 288, 3).
+- The datasets do not normalize images. `info.pixel_stats` holds the mean and standard deviation to normalize with, by default `RGB_MEAN` and `RGB_STD` in `irap_data.irap_dataset`. By default, `make_irap_data` fits images to `INPUT_DIM`, (width, height, channels) = (384, 288, 3), by resizing them to the width 384 and padding or cropping the height (`fit_mode="fit_width"`). All releases then keep their full horizontal field of view. iRAP-BH images have exactly this size and pass through unchanged, and 1920×1080 iRAP-Vietnam images become 384×216 with 36 rows of the mean color above and below. `image_utils.fit_to_size` lists the other modes.
 
 ## Dataset viewer
 

@@ -8,7 +8,14 @@ import torch
 from .dataset import Dataset
 
 from .irap_dataset import RGB_MEAN, RGB_STD, INPUT_DIM
-from .image_utils import load_image_cv2, center_crop, resize_to_cover, hwc_to_chw_float_tensor
+from .image_utils import (
+    DEFAULT_FIT_MODE,
+    FitMode,
+    fit_to_size,
+    float_rgb_to_uint8,
+    hwc_to_chw_float_tensor,
+    load_image_cv2,
+)
 
 
 class InferenceImageDataset(Dataset):
@@ -43,6 +50,7 @@ class InferenceImageDataset(Dataset):
         mean: T.Sequence[float] = RGB_MEAN,
         std: T.Sequence[float] = RGB_STD,
         input_size: tuple[int, int] = (INPUT_DIM[0], INPUT_DIM[1]),  # (W, H)
+        fit_mode: FitMode = DEFAULT_FIT_MODE,
     ):
         """
         Args:
@@ -53,10 +61,13 @@ class InferenceImageDataset(Dataset):
                 The frames are ordered by offset (so (0, -1, -4) gives [img_0, img_-1, img_-4]).
             mean, std: Normalization stats (used by input adapter, stored in info).
             input_size: Target image size (W, H).
+            fit_mode: How an image is fitted to `input_size`, as in `make_irap_data`.
         """
         all_image_paths = [Path(p) for p in image_paths]
         self.context_offsets = tuple(context_offsets)
         self.input_size = input_size
+        self.fit_mode = fit_mode
+        self._fill_rgb = float_rgb_to_uint8(mean)
 
         # Determine which images have valid context (all context indices in bounds)
         min_offset = min(self.context_offsets)
@@ -95,11 +106,8 @@ class InferenceImageDataset(Dataset):
 
         frames = [
             hwc_to_chw_float_tensor(
-                center_crop(
-                    resize_to_cover(load_image_cv2(str(self.all_image_paths[img_idx + offset])),
-                                    self.input_size),
-                    self.input_size,
-                )
+                fit_to_size(load_image_cv2(str(self.all_image_paths[img_idx + offset])),
+                            self.input_size, self.fit_mode, self._fill_rgb)
             )
             for offset in self.context_offsets
         ]

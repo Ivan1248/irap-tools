@@ -2,7 +2,15 @@ import numpy as np
 import pytest
 import torch
 
-from irap_data.image_utils import center_crop, hwc_to_chw_float_tensor, resize_to_cover
+from irap_data.image_utils import (
+    center_crop,
+    fit_to_size,
+    float_rgb_to_uint8,
+    hwc_to_chw_float_tensor,
+    pad_or_crop_height,
+    resize_to_cover,
+    resize_to_width,
+)
 
 
 def _make_hwc(h, w, c=3, dtype=np.uint8):
@@ -90,3 +98,63 @@ def test_resize_to_cover_preserves_aspect():
     out = resize_to_cover(img, (384, 288))
     assert out.shape[0] == 288
     assert out.shape[1] >= 384
+
+
+# --- resize_to_width / pad_or_crop_height ---
+
+def test_resize_to_width_same_width_is_unchanged():
+    img = _make_hwc(288, 384)
+    assert resize_to_width(img, 384) is img
+
+
+def test_resize_to_width_preserves_aspect():
+    out = resize_to_width(_make_hwc(108, 192), 384)  # 16:9
+    assert out.shape == (216, 384, 3)
+
+
+def test_pad_or_crop_height_pads_centered_with_fill():
+    img = np.full((216, 384, 3), 7, dtype=np.uint8)
+    out = pad_or_crop_height(img, 288, fill_rgb=(1, 2, 3))
+    assert out.shape == (288, 384, 3)
+    np.testing.assert_array_equal(out[36:252], img)
+    np.testing.assert_array_equal(out[:36], np.broadcast_to([1, 2, 3], (36, 384, 3)))
+    np.testing.assert_array_equal(out[252:], np.broadcast_to([1, 2, 3], (36, 384, 3)))
+
+
+def test_pad_or_crop_height_crops_centered():
+    img = _make_hwc(288, 384)
+    np.testing.assert_array_equal(pad_or_crop_height(img, 216, fill_rgb=(0, 0, 0)), img[36:252])
+
+
+# --- fit_to_size ---
+
+@pytest.mark.parametrize("mode", ["fit_width", "resize_width", "cover", "center_crop"])
+def test_fit_to_size_bh_size_is_unchanged(mode):
+    img = _make_hwc(288, 384)
+    np.testing.assert_array_equal(fit_to_size(img, (384, 288), mode), img)
+
+
+def test_fit_to_size_full_hd():
+    img = _make_hwc(1080, 1920)
+    fill = (136, 134, 124)
+    out = fit_to_size(img, (384, 288), "fit_width", fill)
+    assert out.shape == (288, 384, 3)
+    np.testing.assert_array_equal(out[:36], np.broadcast_to(fill, (36, 384, 3)))
+    assert fit_to_size(img, (384, 288), "resize_width").shape == (216, 384, 3)
+    assert fit_to_size(img, (384, 288), "cover").shape == (288, 384, 3)
+    np.testing.assert_array_equal(fit_to_size(img, (384, 288), "center_crop"),
+                                  img[396:684, 768:1152])
+
+
+def test_fit_to_size_custom_size_crops_height():
+    out = fit_to_size(_make_hwc(288, 384), (384, 216), "fit_width")
+    assert out.shape == (216, 384, 3)
+
+
+def test_fit_to_size_unknown_mode():
+    with pytest.raises(ValueError):
+        fit_to_size(_make_hwc(288, 384), (384, 288), "stretch")
+
+
+def test_float_rgb_to_uint8():
+    assert float_rgb_to_uint8((0.0, 0.5, 1.0)) == (0, 128, 255)
