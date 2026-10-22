@@ -109,6 +109,25 @@ def test_description_change_needs_confirmation(archive, dataset_contexts):
         archive.set_model_description(first.model.id, "third", actor="Bo")
 
 
+def test_set_method_description(archive, dataset_contexts):
+    first = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=1),
+                      description="same")
+    second = add_model(archive, dataset_contexts, make_model(dataset_contexts, model_seed=2))
+    edited = archive.set_method_description("vietnam", "m", " same ", actor="Bo")
+    assert [m.description for m in edited] == ["same", "same"]
+    # Logged only on the changed model.
+    assert [(a.model_id, a.details) for a in archive.list_actions()
+            if a.action == "edit_description" and a.actor == "Bo"] == [
+        (second.model.id, {"old_description": "", "description": "same"})]
+    with pytest.raises(ValueError, match="unchanged"):
+        archive.set_method_description("vietnam", "m", "same", actor="Bo")
+    cleared = archive.set_method_description("vietnam", "m", " ", actor="Bo")
+    assert [m.description for m in cleared] == ["", ""]
+    assert archive.get_model(first.model.id).description == ""
+    with pytest.raises(LookupError, match="no models"):
+        archive.set_method_description("vietnam", "other", "O", actor="Bo")
+
+
 def test_files_set_the_method_display_name(archive, dataset_contexts):
     first = add_model(archive, dataset_contexts, with_model(
         make_model(dataset_contexts, model_seed=1), method_display_name=" Model M "))
@@ -364,6 +383,7 @@ def test_actions_need_an_actor(archive, dataset_contexts):
                    lambda: archive.delete_model(submission.model.id, actor=""),
                    lambda: archive.delete_method("vietnam", "m", actor=""),
                    lambda: archive.set_model_description(submission.model.id, "x", actor=""),
+                   lambda: archive.set_method_description("vietnam", "m", "x", actor=""),
                    lambda: archive.set_method_display_name("vietnam", "m", "x", actor="")):
         with pytest.raises(ValueError, match="actor of an action"):
             change()

@@ -7,7 +7,7 @@ from datetime import datetime
 
 import irap_evaluation as ie
 
-from .archive import Model, Submission, list_submitters
+from .archive import Model, Submission, get_method_description, list_submitters
 
 
 @dc.dataclass(frozen=True)
@@ -103,6 +103,11 @@ class MethodGroup:
     def shown_method_name(self) -> str:
         """`archive.Model.shown_method_name`, which the models of a method share."""
         return self.models[0].model.shown_method_name
+
+    @property
+    def description(self) -> str:
+        """`archive.get_method_description` of the models."""
+        return get_method_description(m.model for m in self.models)
 
     @property
     def model_info(self) -> ie.ModelInfo | None:

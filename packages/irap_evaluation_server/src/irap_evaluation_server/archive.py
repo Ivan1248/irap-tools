@@ -256,6 +256,23 @@ def list_submitters(submissions: T.Iterable[Submission]) -> list[str]:
         s.submitter for s in sorted(submissions, key=lambda s: s.uploaded_at)))
 
 
+def get_method_description(models: T.Iterable[Model]) -> str:
+    """Returns the description of the model of a method with the lowest seed, or '' if there are
+    no models. `ModelArchive.set_method_description` gives the models of a method the same one."""
+    lowest_seed_model = min(models, key=lambda m: m.seed, default=None)
+    return "" if lowest_seed_model is None else lowest_seed_model.description
+
+
+def describe_description_change(label: str, old_description: str,
+                                description: str) -> str | None:
+    """Describes a change of the description of a model for the user to confirm, or returns None
+    if it replaces no other description."""
+    if not old_description or description == old_description:
+        return None
+    return (f"Changes the description of {label} from {old_description!r} to"
+            f" {description!r}.")
+
+
 @dc.dataclass(frozen=True)
 class ActionLogEntry:
     """An action on the archive.
@@ -434,10 +451,10 @@ class ModelUpdate:
         for split, submission in self.replaced_other_splits.items():
             items.append(f"Permanently deletes the {split} {describe(submission)}, since the new"
                          f" files replace all files of the model. {copy}")
-        if (self.model is not None and self.description is not None and self.model.description
-                and self.description != self.model.description):
-            items.append(f"Changes the description of {self.label} from"
-                         f" {self.model.description!r} to {self.description!r}.")
+        if (self.model is not None and self.description is not None
+                and (change := describe_description_change(self.label, self.model.description,
+                                                           self.description)) is not None):
+            items.append(change)
         if (self.old_method_display_name is not None and self.method_display_name is not None
                 and self.method_display_name != self.old_method_display_name):
             items.append(f"Changes the display name of the method {self.method_name!r} on"
@@ -1209,6 +1226,28 @@ class ModelArchive:
                 raise ValueError("The description is unchanged.")
             _set_description(connection, model, description, actor)
             return _get_model(connection, model_id)
+
+    def set_method_description(self, dataset: str, method_name: str, description: str, *,
+                               actor: str) -> list[Model]:
+        """Changes the description of each model of a method on a dataset to the same one, and
+        logs it on each changed model.
+
+        Returns:
+            The models of the method, with the new description, by id.
+
+        Raises:
+            LookupError: If the method has no models on the dataset.
+            ValueError: If `actor` is empty, or all models already have the description.
+        """
+        actor = _check_actor(actor)
+        description = description.strip()
+        with begin_write(self.database_path) as connection:
+            models = _get_method_models(connection, dataset, method_name)
+            if all(m.description == description for m in models):
+                raise ValueError("The description is unchanged.")
+            for model in models:
+                _set_description(connection, model, description, actor)
+            return _get_method_models(connection, dataset, method_name)
 
     def set_method_display_name(self, dataset: str, method_name: str, display_name: str | None,
                                 *, actor: str) -> list[Model]:

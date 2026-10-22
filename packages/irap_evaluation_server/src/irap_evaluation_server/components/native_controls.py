@@ -136,6 +136,18 @@ def create_native_input(label: str, value: str, on_change: T.Callable[[str], Non
     return element
 
 
+def create_native_input_form(label: str, value: str, button_text: str,
+                             on_saved: T.Callable[[str], T.Any], *, placeholder: str = "",
+                             size: int | None = None) -> None:
+    """Creates a row of an input (`create_native_input`) and a button whose click passes the
+    input's text to `on_saved`, which can be async."""
+    text = {"value": value}
+    with ui.element("div").classes("form-row items-end"):
+        create_native_input(label, value, lambda t: text.update(value=t), placeholder=placeholder,
+                            size=size)
+        create_native_button(button_text, lambda: on_saved(text["value"]))
+
+
 def set_native_input_placeholder(element: ui.element, placeholder: str) -> None:
     """Sets the placeholder of an input of `create_native_input`, e.g. to show the value that a
     blank input stands for. The element is rendered again only if the placeholder changes."""

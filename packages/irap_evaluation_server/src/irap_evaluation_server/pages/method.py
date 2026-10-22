@@ -1,5 +1,6 @@
 """The Method page: a method's details, models, and the scores of its seeds and their mean on a
-split. Its display name, which all its models share, is edited here."""
+split. Its display name, which all its models share, is edited here, and a description that is
+given to all its models, which the Scores page shows."""
 
 import dataclasses as dc
 import functools
@@ -10,7 +11,7 @@ from fastapi import Request
 from nicegui import run, ui
 
 from ..accounts import can_write
-from ..archive import ActionLogEntry, ModelArchive
+from ..archive import ActionLogEntry, ModelArchive, describe_description_change
 from ..components.account_sessions import AccountSessions
 from ..components.attribute_filter import AttributeSubset
 from ..components.changes import load_after_change, run_change_in_thread, run_refreshes
@@ -24,7 +25,7 @@ from ..components.formatting import (
     make_unscored_files_html,
 )
 from ..components.models_table import make_models_table_html
-from ..components.native_controls import create_native_button, create_native_input
+from ..components.native_controls import create_native_button, create_native_input_form
 from ..components.page_frame import create_collapsible_panel, create_key_values, create_page_frame
 from ..components.split_scores_panel import ShownSplitScores, create_split_scores_panel
 from ..components.view_queries import parse_dataset
@@ -103,7 +104,8 @@ def _make_set_score_tables_html(worker: ScoringWorker, method_name: str,
 
 class _MethodPage:
     """The panels of the page and their refreshes after a change of the method. A user who cannot
-    write sees them without the display name input and without the action log."""
+    write sees them without the display name and description inputs and without the action
+    log."""
 
     def __init__(self, archive: ModelArchive, context: DatasetContext, worker: ScoringWorker,
                  get_actor: T.Callable[[], str], can_write: bool, snapshot: _MethodSnapshot):
@@ -170,6 +172,17 @@ class _MethodPage:
             await self.run_change(lambda actor: self.archive.set_method_display_name(
                 self.dataset, self.method_name, display_name, actor=actor), status_label)
 
+        async def on_description_saved(description: str) -> None:
+            description = description.strip()
+            changes = [c for m in self.snapshot.group.models
+                       if (c := describe_description_change(m.model.seed_label,
+                                                            m.model.description,
+                                                            description)) is not None]
+            if changes and not await confirm_changes("Save description", changes, "Save"):
+                return
+            await self.run_change(lambda actor: self.archive.set_method_description(
+                self.dataset, self.method_name, description, actor=actor), status_label)
+
         async def on_delete_method_clicked() -> None:
             group = self.snapshot.group
             seeds = ", ".join(m.model.seed_label for m in group.models)
@@ -184,18 +197,17 @@ class _MethodPage:
                 await self.run_change(lambda actor: self.archive.delete_method(
                     self.dataset, self.method_name, actor=actor), status_label)
 
-        display_name = {"text": self.snapshot.group.method_display_name or ""}
         with ui.element("section").classes("panel"):
             show_details()
             # Not refreshed with the details, so that a refresh does not undo an edit.
             if self.can_write:
-                with ui.element("div").classes("form-row items-end"):
-                    create_native_input("Display name (for all models of the method)",
-                                        display_name["text"],
-                                        lambda text: display_name.update(text=text),
-                                        placeholder="none", size=40)
-                    create_native_button("Save display name",
-                                         lambda: on_display_name_saved(display_name["text"]))
+                create_native_input_form("Display name (for all models of the method)",
+                                         self.snapshot.group.method_display_name or "",
+                                         "Save display name", on_display_name_saved,
+                                         placeholder="none", size=40)
+                create_native_input_form("Description (for all models of the method)",
+                                         self.snapshot.group.description, "Save description",
+                                         on_description_saved, placeholder="none", size=60)
             status_label = ui.label().classes("muted")
         self.refreshes.append(show_details.refresh)
 

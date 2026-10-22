@@ -58,6 +58,7 @@ from ..components.native_controls import (
     create_native_button,
     create_native_checkbox,
     create_native_input,
+    create_native_input_form,
     set_status,
 )
 from ..components.page_frame import create_collapsible_panel, create_key_values, create_page_frame
@@ -263,16 +264,12 @@ class _ModelPage:
                 await self.run_change(lambda actor: self.archive.delete_model(
                     self.model_id, actor=actor), status_label)
 
-        description = {"text": self.snapshot.model.description}
         with ui.element("section").classes("panel"):
             show_details()
             # Not refreshed with the details, so that a refresh does not undo an edit.
             if self.can_write:
-                with ui.element("div").classes("form-row items-end"):
-                    create_native_input("Description", description["text"],
-                                        lambda text: description.update(text=text), size=60)
-                    create_native_button("Save description",
-                                         lambda: on_description_saved(description["text"]))
+                create_native_input_form("Description", self.snapshot.model.description,
+                                         "Save description", on_description_saved, size=60)
             status_label = ui.label().classes("muted")
         self.refreshes.append(show_details.refresh)
 

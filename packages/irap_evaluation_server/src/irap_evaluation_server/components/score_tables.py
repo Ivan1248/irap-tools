@@ -401,7 +401,8 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
     """
     metric_headers = "".join(_make_sortable_metric_header_html(n, n == sort_metric)
                              for n in metric_names)
-    header = f"<th>Method</th><th>Models</th>{metric_headers}<th>Submitter</th><th>Notes</th>"
+    header = (f"<th>Method</th><th>Models</th>{metric_headers}<th>Submitter</th><th>Notes</th>"
+              f"<th>Description</th>")
     row_resamples = [method_to_resamples.get(r.method_name) for r in rows]
     is_tested = _are_tested(rows)
     metric_columns = [
@@ -411,10 +412,12 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
     html_rows = []
     for row, metric_cells in zip(rows, zip(*metric_columns)):
         cells = _make_row_cells_html(row, metric_cells, len(metric_names))
+        # Cut off, so that a long description does not widen the table.
+        description = make_truncated_name_html(row.description)
         html_rows.append(f"<tr><td>{_make_method_label_html(row, comparisons, scope)}</td>"
                          f"<td>{_make_model_links_html(row, scope)}</td>{cells}"
                          f"<td>{html.escape(', '.join(row.submitters))}</td>"
-                         f"<td>{_make_notes_html(row)}</td></tr>")
+                         f"<td>{_make_notes_html(row)}</td><td>{description}</td></tr>")
     return (make_table_html_from_header(header, html_rows)
             + _make_method_notes_html(rows, confidence, "column", is_tested, comparisons))
 
