@@ -15,6 +15,7 @@ from .accounts import AccountStore
 from .archive import ModelArchive
 from .config import load_server_config
 from .datasets import load_dataset_contexts
+from .display_settings import DisplaySettingsStore
 from .prediction_analysis import AlignedPredictionsCache
 from .scoring import ScoreStore
 from .scoring_worker import ScoringWorker
@@ -90,6 +91,7 @@ def main(argv: list[str] | None = None) -> None:
     from .pages.model import register_model_page
     from .pages.models import register_models_pages
     from .pages.scores import register_scores_page
+    from .pages.shown_metrics import register_shown_metrics_page
     from .pages.sign_in import register_sign_in_pages
 
     vendor_dir = config.data_dir / "vendor"
@@ -115,20 +117,23 @@ def main(argv: list[str] | None = None) -> None:
     if not accounts.has_accounts():
         print(f"There are no accounts yet. The first to register at {REGISTER_PATH} becomes the"
               f" admin.")
+    display_settings = DisplaySettingsStore(config.data_dir, accounts)
+    display_settings.warn_about_unknown_metrics()
     sessions = AccountSessions(accounts)
     # The session cookie is also sent with the requests of pages on other hosts of the domain.
     app.add_middleware(SameOriginMiddleware)
     register_sign_in_pages(sessions)
     register_accounts_page(sessions)
-    register_scores_page(dataset_contexts, scoring_worker, sessions)
+    register_shown_metrics_page(display_settings, sessions)
+    register_scores_page(dataset_contexts, scoring_worker, sessions, display_settings)
     register_analysis_page(dataset_contexts, scoring_worker,
                            AlignedPredictionsCache(archive, scoring_worker.settings), map_error,
                            sessions)
     register_models_pages(archive, dataset_contexts, scoring_worker, sessions)
-    register_model_page(archive, dataset_contexts, scoring_worker, sessions)
-    register_method_page(archive, dataset_contexts, scoring_worker, sessions)
+    register_model_page(archive, dataset_contexts, scoring_worker, sessions, display_settings)
+    register_method_page(archive, dataset_contexts, scoring_worker, sessions, display_settings)
     register_methodology_page(scoring_worker.settings, list(dataset_contexts), math_error,
-                              sessions)
+                              sessions, display_settings)
     register_action_log_page(archive, sessions)
     vendor_dir.mkdir(exist_ok=True)
     app.add_static_files(VENDOR_PATH, vendor_dir)

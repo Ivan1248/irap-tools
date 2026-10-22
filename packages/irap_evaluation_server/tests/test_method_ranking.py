@@ -17,7 +17,10 @@ from irap_evaluation_server.components.score_tables import (
 )
 from irap_evaluation_server.components.view_queries import select_matching_names
 from irap_evaluation_server.method_ranking import (
+    DEFAULT_SORT_METRIC,
+    RANKING_METRIC_NAMES,
     CellHighlight,
+    ShownMetrics,
     compute_highlights,
     is_not_significantly_worse,
     rank_methods,
@@ -242,7 +245,7 @@ def test_method_tables_escape_names():
             make_method_scores("<n>", {}, error="Models <differ>.")]
     resamples = ie.MetricValues(averages={"amF1": np.linspace(0.1, 0.3, 20)}, per_attribute={})
     scope = ScoresScope("vietnam", "val", ("x",))
-    table = make_method_table_html(rows, {"<m>": resamples}, 0.95, "amF1", scope)
+    table = make_method_table_html(rows, {"<m>": resamples}, 0.95, ["amF1"], "amF1", scope)
     assert "&lt;m&gt;" in table and "<m>" not in table
     assert "method=%3Cm%3E" in table  # The link to the Method page.
     assert "Models &lt;differ&gt;." in table
@@ -259,7 +262,7 @@ def test_method_scores_have_the_mean_of_the_models():
 
     def make_html(method_scores):
         return make_method_scores_html(method_scores, None, seed_scores, [None, None], 0.95,
-                                       scope)
+                                       ShownMetrics.from_hidden(()), scope)
 
     assert "3.5" in make_html(compute_method_scores("m", models, ["x"]))  # Invalid predictions.
     # Without the attribute table of a mean with an error.
@@ -267,3 +270,24 @@ def test_method_scores_have_the_mean_of_the_models():
         models[1].scores, context_offsets=(1,), evaluation_set_fingerprint="g"))]
     tables_html = make_html(compute_method_scores("m", offset_models, ["x"]))
     assert "cannot be combined" in tables_html and "Invalid predictions" not in tables_html
+
+
+def test_shown_metrics_leave_out_the_hidden_ones():
+    assert ShownMetrics.from_hidden(()).average_names == RANKING_METRIC_NAMES
+    # The main metric and unknown names cannot be hidden.
+    shown = ShownMetrics.from_hidden({"amP", "aBrier", DEFAULT_SORT_METRIC, "aUnknown"})
+    assert shown.average_names == tuple(n for n in RANKING_METRIC_NAMES
+                                        if n not in ("amP", "aBrier"))
+    assert "Brier" not in shown.per_attribute_names and "NLL" in shown.per_attribute_names
+    assert shown.attribute_table_names == ("mF1", "mR", "MCC")
+
+
+def test_method_submitters_are_in_the_order_of_their_first_upload():
+    def make_model(submission_id, submitter, day):
+        model = make_scored_model(submission_id, {"x": 0.5})
+        submission = dc.replace(model.submission, submitter=submitter,
+                                uploaded_at=_TIME.replace(day=day))
+        return dc.replace(model, submission=submission)
+
+    models = [make_model(1, "Cy", 5), make_model(2, "Al", 4), make_model(3, "Cy", 3)]
+    assert compute_method_scores("m", models, ["x"]).submitters == ["Cy", "Al"]

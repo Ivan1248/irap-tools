@@ -11,7 +11,8 @@ A web app that keeps an archive of model predictions, scores them, and compares,
 | Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
 | Methodology | `/methodology` | How the files are scored, and how to read the values, intervals, highlights and differences of the score tables. The short notes below the tables link to its sections. |
 | Action log | `/actions` | All changes, with the name of the user. Only for accounts with write permission. |
-| Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins. |
+| Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins, in the Admin menu. |
+| Shown metrics | `/shown-metrics` | The attribute averages that the pages show, which admins choose. Only for admins, in the Admin menu. |
 
 Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles, and see the action log, which shows the account name of each change.
 
@@ -61,9 +62,10 @@ The data directory holds:
 - `uploads/`: uploaded files that are not stored yet, removed at start, and when another upload begins if they are older than 24 h,
 - `vendor/`: the map libraries and MathJax,
 - `accounts.sqlite3`: the [accounts](#accounts),
+- `display_settings.sqlite3`: the [hidden metrics](#hidden-metrics),
 - `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie. Keep them, and backups of the data directory, private. Deleting the key signs out all users.
 
-The databases have a schema version. At start, the server migrates an archive or accounts database of an older version, after copying it to a backup next to it, e.g. `archive.v1.2026-10-12T150000Z.backup.sqlite3`. It refuses a database of a newer version, or one whose tables differ from those of its version. A score cache of another version is created again, and all files are scored again, which takes a few minutes, during which the Scores page lists the files that are being scored.
+The databases have a schema version. At start, the server migrates an archive, accounts or display settings database of an older version, after copying it to a backup next to it, e.g. `archive.v1.2026-10-12T150000Z.backup.sqlite3`. It refuses a database of a newer version, or one whose tables differ from those of its version. A score cache of another version is created again, and all files are scored again, which takes a few minutes, during which the Scores page lists the files that are being scored.
 
 ## Accounts
 
@@ -73,7 +75,7 @@ Users register and sign in with the links in the top bar. An account has one of 
 |---|---|
 | view | View, like visitors without an account. |
 | write | Also upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles. |
-| admin | Also download the per-class scores of [protected splits](#protected-splits), and change the permissions of the accounts and remove them, on the Accounts page. |
+| admin | Also download the per-class scores of [protected splits](#protected-splits), change the permissions of the accounts and remove them, on the Accounts page, and choose the [shown metrics](#hidden-metrics). |
 
 The first account to register is an admin. Later accounts can view until an admin gives them more. The app keeps at least one admin: it refuses to remove the last admin or to take away its admin permission.
 
@@ -214,6 +216,10 @@ The Scores page shows the means over each method's models with their bootstrap i
 - The attribute filter, here and on the Method and Model pages, chooses the attributes that the averages cover. The averages of a method over a new subset take about 12 ms on Vietnam (34 attributes). The pages compute them in a thread, so that a large table does not hold up the server, and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
 
 The URL keeps the view, so it can be shared as a link. A method name links to the Method page with the same split and attributes. It shows the attribute averages of the method's mean and of each of its models, which are shaded but not tested against each other, and the per-attribute metrics of the mean. The Model page shows the scores of a file on each evaluation set and downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`). For a [protected split](#protected-splits), only admins get its per-class scores (`classes`).
+
+### Hidden metrics
+
+On the Shown metrics page, admins hide attribute averages from the pages, all but the main metric, amF1. A hidden average also hides its per-attribute metric, e.g. aBrier hides Brier: from the columns, the sort and View options of the Scores page, the tables of the Method and Model pages, and the metric list of the Methodology page. A link with a hidden metric (`sort` or `metric`) is refused. The files are scored as before, and the downloaded scores have all metrics, so a metric that is shown again appears at once. Pages that are open show a change after a reload.
 
 ## Analysis
 

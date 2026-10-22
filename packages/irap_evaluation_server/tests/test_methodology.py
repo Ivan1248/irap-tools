@@ -6,9 +6,11 @@ from irap_evaluation_server.methodology import (
     COMPARISONS_SECTION,
     EVALUATION_SETS_SECTION,
     INTERVALS_SECTION,
+    check_described_settings,
     compute_t_quantile,
     make_methodology_sections,
 )
+from irap_evaluation_server.method_ranking import ShownMetrics
 from irap_evaluation_server.scoring import SCORING_SETTINGS
 
 
@@ -20,12 +22,12 @@ def test_t_quantiles_of_one_and_two_degrees_of_freedom():
 
 
 def test_linked_sections_exist():
-    ids = [s.id for s in make_methodology_sections(SCORING_SETTINGS, ["vietnam", "bh"])]
+    ids = [s.id for s in make_methodology_sections(SCORING_SETTINGS, ["vietnam", "bh"],
+                                                   ShownMetrics.from_hidden(()))]
     assert len(set(ids)) == len(ids)
     assert {EVALUATION_SETS_SECTION, INTERVALS_SECTION, COMPARISONS_SECTION} <= set(ids)
 
 
 def test_settings_that_the_text_does_not_describe_are_refused():
     with pytest.raises(ValueError, match="null policy"):
-        make_methodology_sections(dc.replace(SCORING_SETTINGS, null_policy="exclude"),
-                                  ["vietnam"])
+        check_described_settings(dc.replace(SCORING_SETTINGS, null_policy="exclude"))

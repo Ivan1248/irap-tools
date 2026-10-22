@@ -29,17 +29,18 @@ from ..components.score_tables import (
     make_per_attribute_table_html,
 )
 from ..components.view_queries import (
-    VIEW_OPTIONS,
+    make_view_options,
     parse_dataset_and_split,
     parse_evaluation_set,
     parse_per_attribute_metric,
     select_matching_names,
 )
 from ..datasets import DatasetContext
+from ..display_settings import DisplaySettingsStore
 from ..method_comparison import compare_with_reference, list_comparable_methods
 from ..method_ranking import (
     DEFAULT_SORT_METRIC,
-    RANKING_METRIC_NAMES,
+    ShownMetrics,
     collect_scored_attributes,
     get_method_split_use,
     rank_methods,
@@ -90,42 +91,45 @@ class _ScoresView:
             ATTRIBUTE_PARAMETER: attributes})
 
 
-def _parse_view(query: T.Mapping[str, str],
-                dataset_contexts: T.Mapping[str, DatasetContext]) -> _ScoresView:
+def _parse_view(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, DatasetContext],
+                shown_metrics: ShownMetrics) -> _ScoresView:
     """Parses the view from the query parameters of `_ScoresView.to_path`. The page checks the
     method pattern and the reference method against the scored models.
 
     Raises:
-        ValueError: For an unknown dataset, split, evaluation set or metric, or a reference
-            method on the model-compatible sets.
+        ValueError: For an unknown dataset, split or evaluation set, a metric that is unknown or
+            hidden, or a reference method on the model-compatible sets.
     """
     dataset, split = parse_dataset_and_split(query, dataset_contexts)
     evaluation_set = parse_evaluation_set(query)
     sort_metric = query.get("sort") or DEFAULT_SORT_METRIC
-    if sort_metric not in RANKING_METRIC_NAMES:
-        raise ValueError(f"Unknown sort metric {sort_metric!r}. Metrics:"
-                         f" {', '.join(RANKING_METRIC_NAMES)}.")
+    if sort_metric not in shown_metrics.average_names:
+        raise ValueError(f"Unknown or hidden sort metric {sort_metric!r}. Metrics:"
+                         f" {', '.join(shown_metrics.average_names)}.")
     reference_method = query.get("ref", "")
     if reference_method and evaluation_set != ie.REFERENCE_SET_NAME:
         raise ValueError("Methods are compared only on the reference set.")
+    metric_name = parse_per_attribute_metric(query, shown_metrics.per_attribute_names)
     return _ScoresView(dataset=dataset, split=split, evaluation_set=evaluation_set,
-                       sort_metric=sort_metric, metric_name=parse_per_attribute_metric(query),
+                       sort_metric=sort_metric, metric_name=metric_name,
                        method_pattern=query.get("methods", ""),
                        reference_method=reference_method,
                        shows_trained_methods=query.get("trained") == "1")
 
 
 def register_scores_page(dataset_contexts: T.Mapping[str, DatasetContext],
-                         worker: ScoringWorker, sessions: AccountSessions) -> None:
+                         worker: ScoringWorker, sessions: AccountSessions,
+                         display_settings: DisplaySettingsStore) -> None:
     @ui.page(SCORES_PATH, title="Scores · iRAP evaluation")
     async def scores_page(request: Request) -> None:
+        shown_metrics = display_settings.get_shown_metrics()
         with create_page_frame(SCORES_PATH, sessions.get_account()):
             try:
-                view = _parse_view(request.query_params, dataset_contexts)
+                view = _parse_view(request.query_params, dataset_contexts, shown_metrics)
             except ValueError as e:
                 show_view_error(str(e), SCORES_PATH)
                 return
-            await _create_scores(dataset_contexts, worker, view,
+            await _create_scores(dataset_contexts, worker, shown_metrics, view,
                                  request.query_params.getlist(ATTRIBUTE_PARAMETER))
 
 
@@ -175,13 +179,15 @@ class _MethodTable:
     comparison_errors: list[str]
 
 
-def _compute_method_table(worker: ScoringWorker, view: _ScoresView,
-                          models: T.Sequence[ScoredModel], subset: AttributeSubset,
+def _compute_method_table(worker: ScoringWorker, average_names: T.Sequence[str],
+                          view: _ScoresView, models: T.Sequence[ScoredModel],
+                          subset: AttributeSubset,
                           matching_method_names: T.AbstractSet[str]) -> _MethodTable:
     """Ranks the methods of a view over the attributes of `subset` and makes their table, with
     the comparisons with the reference method, if any.
 
     Args:
+        average_names: The attribute averages of the table (`ShownMetrics.average_names`).
         matching_method_names: The methods that the method filter matches.
     """
     rows = rank_methods(models, subset.selected, view.sort_metric)
@@ -193,7 +199,7 @@ def _compute_method_table(worker: ScoringWorker, view: _ScoresView,
     table_html, comparison_errors = "", []
     if shown:
         confidence = worker.settings.confidence
-        metric_names = (view.metric_name,) if view.metric_name else RANKING_METRIC_NAMES
+        metric_names = (view.metric_name,) if view.metric_name else average_names
         method_to_resamples = {
             r.method_name: worker.get_method_resamples(r, subset.selected, metric_names)
             for r in shown}
@@ -209,7 +215,8 @@ def _compute_method_table(worker: ScoringWorker, view: _ScoresView,
                 comparisons)
         else:
             table_html = make_method_table_html(
-                shown, method_to_resamples, confidence, view.sort_metric, scope, comparisons)
+                shown, method_to_resamples, confidence, average_names, view.sort_metric, scope,
+                comparisons)
     return _MethodTable(
         rows, name_to_comparable, reference,
         reference is not None and reference.method_name not in matching_method_names, shown,
@@ -233,8 +240,8 @@ class _ScoresContent:
     table: _MethodTable | None
 
 
-def _compute_scores_content(worker: ScoringWorker, view: _ScoresView,
-                            split_scorings: _SplitScorings,
+def _compute_scores_content(worker: ScoringWorker, average_names: T.Sequence[str],
+                            view: _ScoresView, split_scorings: _SplitScorings,
                             subset: AttributeSubset) -> _ScoresContent:
     filter_error, table = None, None
     if split_scorings.models and subset.selected:
@@ -249,15 +256,20 @@ def _compute_scores_content(worker: ScoringWorker, view: _ScoresView,
         else:
             matching_method_names = {n for n, s in name_to_shown.items()
                                      if s in matching_shown_names}
-            table = _compute_method_table(worker, view, split_scorings.models, subset,
-                                          matching_method_names)
+            table = _compute_method_table(worker, average_names, view, split_scorings.models,
+                                          subset, matching_method_names)
     return _ScoresContent(view, split_scorings, subset, filter_error, table)
 
 
 async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
-                         view: _ScoresView, attribute_query: T.Sequence[str]) -> None:
+                         shown_metrics: ShownMetrics, view: _ScoresView,
+                         attribute_query: T.Sequence[str]) -> None:
     """Creates the page. The scores are loaded and computed in threads (`update_table`), so that
-    a large table does not hold up the event loop, e.g. for other users."""
+    a large table does not hold up the event loop, e.g. for other users.
+
+    Args:
+        shown_metrics: The metrics of the page when it was opened.
+    """
     def navigate_to(**changes: str) -> None:
         # Another dataset has other attributes.
         attributes = () if "dataset" in changes else attribute_filter.subset.to_query()
@@ -287,7 +299,8 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
             if split_scorings is None or not is_latest():
                 return
         subset = attribute_filter.set_options(collect_scored_attributes(split_scorings.models))
-        content = await run.io_bound(_compute_scores_content, worker, shown_view, split_scorings,
+        content = await run.io_bound(_compute_scores_content, worker,
+                                     shown_metrics.average_names, shown_view, split_scorings,
                                      subset)
         if content is not None and is_latest():
             show_table.refresh(content)
@@ -376,8 +389,8 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
                 create_native_select(
                     "Evaluation set", _EVALUATION_SET_LABELS, view.evaluation_set,
                     lambda v: navigate_to(evaluation_set=v, reference_method=""))
-            create_native_select("View", VIEW_OPTIONS, view.metric_name,
-                                 lambda v: on_view_changed(metric_name=v))
+            create_native_select("View", make_view_options(shown_metrics.per_attribute_names),
+                                 view.metric_name, lambda v: on_view_changed(metric_name=v))
             create_native_input("Method filter (regex)", view.method_pattern,
                                 lambda v: on_view_changed(method_pattern=v), placeholder="all",
                                 size=24)

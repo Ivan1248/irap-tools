@@ -7,6 +7,8 @@ import typing as T
 
 from nicegui import Client, run, ui
 
+from ..accounts import is_admin
+from .account_sessions import AccountSessions
 from .native_controls import set_status
 
 R = T.TypeVar("R")
@@ -81,6 +83,28 @@ async def run_change_in_thread(change: T.Callable[[str], T.Any], get_actor: T.Ca
         return False
     return await run_in_thread_showing_errors(functools.partial(change, actor),
                                               status_label) is not None
+
+
+async def run_admin_change(change: T.Callable[[str], T.Any], sessions: AccountSessions,
+                           status_label: ui.label, done_text: str,
+                           refresh: T.Callable[[], T.Any]) -> None:
+    """Runs a change that only admins may make, whose store checks that the signed-in account is
+    still an admin when it runs (`run_change_in_thread`). Then shows what it changed as it is
+    (`refresh`), also after a refused change, or reloads the page if the user is no longer an
+    admin.
+
+    Args:
+        done_text: The status after the change is done.
+    """
+    is_done = await run_change_in_thread(change, sessions.require_account_name, status_label)
+    if status_label.client.is_deleted:
+        return
+    if not is_admin(sessions.get_account()):
+        ui.navigate.reload()
+        return
+    if is_done:
+        set_status(status_label, done_text)
+    refresh()
 
 
 async def load_after_change(load: T.Callable[[], R], missing_path: str,

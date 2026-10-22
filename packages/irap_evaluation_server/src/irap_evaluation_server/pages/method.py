@@ -41,6 +41,8 @@ from ..components.score_tables import (
     make_method_scores_note_html,
 )
 from ..datasets import DatasetContext
+from ..display_settings import DisplaySettingsStore
+from ..method_ranking import ShownMetrics
 from ..model_listing import MethodGroup, group_submissions_by_split, summarize_models_by_method
 from ..scoring import MethodScores, ScoredModel, compute_method_scores
 from ..scoring_worker import ScoringWorker
@@ -72,12 +74,14 @@ class _MethodSnapshot:
 
 def _make_set_score_tables_html(worker: ScoringWorker, method_name: str,
                                 set_to_models: T.Mapping[str, T.Sequence[ScoredModel]],
-                                subset: AttributeSubset, scope: ScoresScope) -> dict[str, str]:
+                                subset: AttributeSubset, shown_metrics: ShownMetrics,
+                                scope: ScoresScope) -> dict[str, str]:
     """Makes the score tables of a method (`make_method_scores_html`) over the attributes of
     `subset` on each evaluation set, with a row per model, by seed.
 
     Args:
         set_to_models: Evaluation set name -> the models of the method scored on it.
+        shown_metrics: The metrics of the tables.
     """
     def get_resamples(scores: MethodScores) -> ie.MetricValues | None:
         # The metrics of the Model page also for the models, whose resampled values are then
@@ -91,7 +95,8 @@ def _make_set_score_tables_html(worker: ScoringWorker, method_name: str,
                        for m in sorted(models, key=lambda m: m.submission.model.seed)]
         set_to_tables_html[name] = make_method_scores_html(
             method_scores, get_resamples(method_scores), seed_scores,
-            [get_resamples(s) for s in seed_scores], worker.settings.confidence, scope)
+            [get_resamples(s) for s in seed_scores], worker.settings.confidence, shown_metrics,
+            scope)
     return set_to_tables_html
 
 
@@ -153,7 +158,7 @@ class _MethodPage:
             if not self.can_write:  # Otherwise it is edited below.
                 rows["Display name"] = group.method_display_name or "–"
             ui.html(f"Method {make_truncated_name_html(group.shown_method_name)}",
-                    sanitize=False).classes("section-title")
+                    sanitize=False).classes("section-title truncated-line")
             create_key_values(rows)
 
         async def on_display_name_saved(display_name: str) -> None:
@@ -191,7 +196,8 @@ class _MethodPage:
 
     # Scores #######################################################################################
 
-    def create_scores(self, split_query: str, attribute_query: T.Sequence[str]) -> None:
+    def create_scores(self, split_query: str, attribute_query: T.Sequence[str],
+                      shown_metrics: ShownMetrics) -> None:
         create_split_scores_panel(
             self.worker, "method", split_query, attribute_query,
             lambda: group_submissions_by_split(self.snapshot.group.models,
@@ -199,7 +205,7 @@ class _MethodPage:
             lambda split, attributes: get_method_path(self.dataset, self.method_name, split,
                                                       attributes),
             lambda set_to_models, subset, split: _make_set_score_tables_html(
-                self.worker, self.method_name, set_to_models, subset,
+                self.worker, self.method_name, set_to_models, subset, shown_metrics,
                 ScoresScope(self.dataset, split, subset.to_query())),
             self._show_split_scores)
 
@@ -252,10 +258,12 @@ class _MethodPage:
 
 def register_method_page(archive: ModelArchive,
                          dataset_contexts: T.Mapping[str, DatasetContext],
-                         worker: ScoringWorker, sessions: AccountSessions) -> None:
+                         worker: ScoringWorker, sessions: AccountSessions,
+                         display_settings: DisplaySettingsStore) -> None:
     @ui.page(METHOD_PATH, title="Method · iRAP evaluation")
     def method_page(request: Request) -> None:
         account = sessions.get_account()
+        shown_metrics = display_settings.get_shown_metrics()
         query = request.query_params
         with create_page_frame(MODELS_PATH, account):
             try:
@@ -269,5 +277,6 @@ def register_method_page(archive: ModelArchive,
                                sessions.require_writer_name, can_write(account), snapshot)
             page.create_details()
             page.create_models()
-            page.create_scores(query.get("split", ""), query.getlist(ATTRIBUTE_PARAMETER))
+            page.create_scores(query.get("split", ""), query.getlist(ATTRIBUTE_PARAMETER),
+                               shown_metrics)
             page.create_actions()

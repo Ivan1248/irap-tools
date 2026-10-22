@@ -24,7 +24,7 @@ from .formatting import (
 MODEL_CHECKBOX_CHANGE_HANDLER = ("(e) => { const id = e.target.dataset.modelId;"
                                  " if (id !== undefined) emit([Number(id), e.target.checked]); }")
 #: The columns of the models table after the split columns.
-_SUMMARY_COLUMNS = ("Output", "Segments", "Attributes", "Description", "Updated")
+_SUMMARY_COLUMNS = ("Output", "Segments", "Attributes", "Description", "Submitter", "Updated")
 _SUMMARY_NUMBER_COLUMNS = ("Segments", "Attributes")
 #: The mark of what a model used a split for, in the column of the split, which the header names
 #: (`method_ranking.describe_split_use` for marks without it).
@@ -60,13 +60,14 @@ def _make_summary_cells_html(summary: ModelSummary) -> str:
             f'<td class="number">{summary.num_segments or ""}</td>'
             f'<td class="number">{attributes}</td>'
             f"<td>{html.escape(summary.model.description)}</td>"
+            f"<td>{html.escape(', '.join(summary.submitters))}</td>"
             f"<td>{format_utc_time(summary.updated_at)}</td>")
 
 
 def _make_method_row_html(group: MethodGroup, num_columns: int) -> str:
     """Makes the row of a method above its models: its shown name as a link to the Method page,
-    its method name if it differs, both cut off if long, and its training and early stopping
-    splits."""
+    its method name if it differs, both cut off at the end of the row if long, the method name
+    first, and its training and early stopping splits."""
     info = group.model_info
     splits = ""
     if info is not None:
@@ -75,11 +76,12 @@ def _make_method_row_html(group: MethodGroup, num_columns: int) -> str:
             splits += f", early stopping on {format_splits(info.early_stopping_splits)}"
         splits = f' <span class="muted">· {html.escape(splits)}</span>'
     method_name = ("" if group.shown_method_name == group.method_name else
-                   f' <span class="muted">({make_truncated_name_html(group.method_name)})</span>')
+                   f' <span class="muted truncated-first">'
+                   f"({make_truncated_name_html(group.method_name)})</span>")
     link_html = make_method_link_html(group.dataset, group.method_name, group.shown_method_name)
-    return (f'<tr class="method-row"><td colspan="{num_columns}">'
+    return (f'<tr class="method-row"><td colspan="{num_columns}"><div class="truncated-line">'
             f"<b>{make_truncated_name_html(group.shown_method_name, link_html)}</b>{method_name}"
-            f"{splits}</td></tr>")
+            f"{splits}</div></td></tr>")
 
 
 def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Sequence[str], *,

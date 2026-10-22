@@ -27,6 +27,8 @@ SIGN_IN_PATH = "/sign-in"
 #: With the query parameter `next`.
 REGISTER_PATH = "/register"
 ACCOUNTS_PATH = "/accounts"
+#: Where admins choose the shown metrics (`display_settings`).
+SHOWN_METRICS_PATH = "/shown-metrics"
 #: Endpoints of plain forms, with the form field `next`.
 SIGN_IN_ENDPOINT_PATH = "/api/sign-in"
 REGISTER_ENDPOINT_PATH = "/api/register"

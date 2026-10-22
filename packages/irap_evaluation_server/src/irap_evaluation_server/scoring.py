@@ -34,7 +34,7 @@ from irap_evaluation.metrics import parse_metric_name
 from irap_evaluation.reports.evaluation_report import to_json_dict
 
 from .archive import DATABASE_FILE_NAME as ARCHIVE_DATABASE_FILE_NAME
-from .archive import ModelArchive, Submission
+from .archive import ModelArchive, Submission, list_submitters
 from .database import begin_write, connect, get_utc_now, initialize_schema
 from .datasets import DatasetContext
 
@@ -636,6 +636,12 @@ class MethodScores:
         same for the models of a method, or `method_name` if there are no models."""
         return (self.models[0].submission.model.shown_method_name if self.models
                 else self.method_name)
+
+    @property
+    def submitters(self) -> list[str]:
+        """The distinct submitters of the submissions of the models
+        (`archive.list_submitters`)."""
+        return list_submitters(m.submission for m in self.models)
 
 
 def select_scored_models(submissions: T.Iterable[Submission],

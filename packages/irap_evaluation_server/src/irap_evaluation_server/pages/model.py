@@ -83,6 +83,8 @@ from ..components.score_tables import (
 from ..components.split_scores_panel import ShownSplitScores, create_split_scores_panel
 from ..config import DatasetConfig
 from ..datasets import DatasetContext
+from ..display_settings import DisplaySettingsStore
+from ..method_ranking import ShownMetrics
 from ..model_listing import ModelSummary, group_submissions_by_split
 from ..scoring import ScoredModel, compute_method_scores, remove_class_scores
 from ..scoring_worker import ScoringWorker
@@ -126,12 +128,14 @@ class _ModelSnapshot:
 
 def _make_set_score_tables_html(worker: ScoringWorker,
                                 set_to_models: T.Mapping[str, T.Sequence[ScoredModel]],
-                                subset: AttributeSubset) -> dict[str, str]:
+                                subset: AttributeSubset,
+                                shown_metrics: ShownMetrics) -> dict[str, str]:
     """Makes the score tables of a submission over the attributes of `subset`
     (`make_model_scores_html`) on each evaluation set that it is scored on.
 
     Args:
         set_to_models: Evaluation set name -> the submission with its scores on it.
+        shown_metrics: The metrics of the tables.
     """
     set_to_tables_html = {}
     for name, [model] in set_to_models.items():
@@ -139,7 +143,8 @@ def _make_set_score_tables_html(worker: ScoringWorker,
         resamples = worker.get_method_resamples(scores, subset.selected,
                                                 MODEL_SCORES_METRIC_NAMES)
         set_to_tables_html[name] = make_model_scores_html(scores, resamples,
-                                                          worker.settings.confidence)
+                                                          worker.settings.confidence,
+                                                          shown_metrics)
     return set_to_tables_html
 
 
@@ -240,7 +245,7 @@ class _ModelPage:
             if not self.can_write:  # Otherwise it is edited below.
                 rows["Description"] = model.description or "–"
             ui.html(f"Model {make_truncated_name_html(model.shown_label)}",
-                    sanitize=False).classes("section-title")
+                    sanitize=False).classes("section-title truncated-line")
             create_key_values(rows)
             if self.can_write:
                 create_native_button("Delete model", on_delete_model_clicked)
@@ -340,7 +345,8 @@ class _ModelPage:
 
     # Scores #######################################################################################
 
-    def create_scores(self, split_query: str, attribute_query: T.Sequence[str]) -> None:
+    def create_scores(self, split_query: str, attribute_query: T.Sequence[str],
+                      shown_metrics: ShownMetrics) -> None:
         dataset = self.snapshot.model.dataset
         context = self.dataset_contexts.get(dataset)
         if context is None:
@@ -355,7 +361,7 @@ class _ModelPage:
             lambda: group_submissions_by_split([self.snapshot.summary], context.split_names),
             lambda split, attributes: get_model_path(self.model_id, split, attributes),
             lambda set_to_models, subset, _: _make_set_score_tables_html(
-                self.worker, set_to_models, subset),
+                self.worker, set_to_models, subset, shown_metrics),
             lambda shown: self._show_submission_scores(context, shown)))
 
     def _show_submission_scores(self, context: DatasetContext, shown: ShownSplitScores) -> None:
@@ -499,7 +505,8 @@ class _ModelPage:
 
 def register_model_page(archive: ModelArchive,
                         dataset_contexts: T.Mapping[str, DatasetContext],
-                        worker: ScoringWorker, sessions: AccountSessions) -> None:
+                        worker: ScoringWorker, sessions: AccountSessions,
+                        display_settings: DisplaySettingsStore) -> None:
     coding_tables = _CodingTableFiles()
 
     @app.get(CODING_TABLE_DOWNLOAD_PATH)
@@ -552,6 +559,7 @@ def register_model_page(archive: ModelArchive,
     @ui.page(MODEL_PATH, title="Model · iRAP evaluation")
     def model_page(model_id: int, request: Request) -> None:
         account = sessions.get_account()
+        shown_metrics = display_settings.get_shown_metrics()
         with create_page_frame(MODELS_PATH, account):
             try:
                 snapshot = _ModelSnapshot.load(archive, model_id)
@@ -564,6 +572,6 @@ def register_model_page(archive: ModelArchive,
             page.create_details()
             page.create_files()
             page.create_scores(request.query_params.get("split", ""),
-                               request.query_params.getlist(ATTRIBUTE_PARAMETER))
+                               request.query_params.getlist(ATTRIBUTE_PARAMETER), shown_metrics)
             page.create_coding_table_export()
             page.create_actions()

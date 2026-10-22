@@ -27,7 +27,17 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
            background: var(--panel); border-bottom: 1px solid var(--border); }
 .top-bar .title { font-size: 15px; font-weight: bold; }
 .top-bar nav { display: flex; gap: 12px; }
-.top-bar nav a.current { color: var(--text); font-weight: bold; }
+.top-bar nav a.current,
+.top-bar nav .nav-menu-title.current { color: var(--text); font-weight: bold; }
+/* The Admin menu (`page_frame._create_admin_menu`). */
+.top-bar nav .nav-menu { position: relative; }
+.top-bar nav .nav-menu-title { color: var(--accent); cursor: default; }
+.top-bar nav .nav-menu-items { display: none; position: absolute; top: 100%; left: 0; z-index: 10;
+                               flex-direction: column; gap: 6px; padding: 6px 10px;
+                               white-space: nowrap; background: var(--panel);
+                               border: 1px solid var(--border); border-radius: 4px; }
+.top-bar nav .nav-menu:hover .nav-menu-items,
+.top-bar nav .nav-menu:focus-within .nav-menu-items { display: flex; }
 .top-bar > .sign-in { margin-left: auto; }
 .top-bar > .sign-in form { display: flex; align-items: center; gap: 8px; }
 
@@ -73,6 +83,15 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
    stays short. Its `title` shows it. It can be in a line of text, e.g. a title. */
 .truncated-name { display: inline-block; vertical-align: top; max-inline-size: 18em;
                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A line whose names are cut off at its end instead of at a fixed width, e.g. a title. A part of
+   it with a name shrinks with the name. In a table cell, it is as wide as the cell, which the
+   other rows size, instead of widening the table. */
+.truncated-line { display: flex; gap: 0.3em; white-space: nowrap; }
+.truncated-line .truncated-name { max-inline-size: none; }
+.truncated-line > :has(.truncated-name) { display: flex; min-inline-size: 0; }
+/* A part that is cut off before the other parts shrink. It takes at most the space they leave. */
+.truncated-line > .truncated-first { flex: 1 1 0; max-inline-size: max-content; overflow: hidden; }
+td > .truncated-line { inline-size: 0; min-inline-size: 100%; }
 /* A header read from bottom to top, e.g. a method name above a narrow column. Its marks are to
    the right of the name. */
 .data-table th.vertical-header { vertical-align: bottom; }

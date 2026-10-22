@@ -2,16 +2,14 @@
 `accounts`)."""
 
 import html
-import typing as T
 
 from nicegui import ui
 
 from ..accounts import PERMISSION_DESCRIPTIONS, PERMISSIONS, Account, is_admin
 from ..components.account_sessions import AccountSessions
-from ..components.changes import run_change_in_thread
+from ..components.changes import run_admin_change
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import format_utc_time, make_table_html
-from ..components.native_controls import set_status
 from ..components.page_frame import create_key_values, create_page_frame
 from ..components.routes import ACCOUNTS_PATH
 
@@ -47,31 +45,19 @@ def _create_accounts_table(sessions: AccountSessions) -> None:
             js_handler="(e) => { const button = e.target.closest('[data-remove]');"
                        " if (button) emit(button.dataset.remove); }")
 
-    async def run_change(change: T.Callable[[str], Account], done_text: str) -> None:
-        """Runs a change of an account (`run_change_in_thread`) and shows the accounts as they are
-        then, also after a refused change, or reloads the page if the user is no longer an
-        admin."""
-        is_done = await run_change_in_thread(change, sessions.require_account_name,
-                                             status_label)
-        if status_label.client.is_deleted:
-            return
-        if not is_admin(sessions.get_account()):
-            ui.navigate.reload()
-            return
-        if is_done:
-            set_status(status_label, done_text)
-        show_table.refresh()
-
     async def on_permission_changed(name: str, permission: str) -> None:
-        await run_change(lambda actor: accounts.set_permission(name, permission, actor),
-                         f"{name} now has the permission {permission}.")
+        await run_admin_change(lambda actor: accounts.set_permission(name, permission, actor),
+                               sessions, status_label,
+                               f"{name} now has the permission {permission}.",
+                               show_table.refresh)
 
     async def on_remove_clicked(name: str) -> None:
         change = (f"Removes the account {name}, which signs it out. The action log keeps the"
                   f" name. Anyone can register the name again.")
         if await confirm_changes(f"Remove the account {name}", [change], "Remove"):
-            await run_change(lambda actor: accounts.remove_account(name, actor),
-                             f"Removed the account {name}.")
+            await run_admin_change(lambda actor: accounts.remove_account(name, actor), sessions,
+                                   status_label, f"Removed the account {name}.",
+                                   show_table.refresh)
 
     show_table()
     status_label = ui.label().classes("muted")

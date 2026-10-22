@@ -7,7 +7,7 @@ from datetime import datetime
 
 import irap_evaluation as ie
 
-from .archive import Model, Submission
+from .archive import Model, Submission, list_submitters
 
 
 @dc.dataclass(frozen=True)
@@ -66,6 +66,11 @@ class ModelSummary:
         """The fewest and most attributes of a submission, None without one."""
         counts = [s.num_attributes for s in self.submissions]
         return (min(counts), max(counts)) if counts else None
+
+    @property
+    def submitters(self) -> list[str]:
+        """The distinct submitters of the submissions (`archive.list_submitters`)."""
+        return list_submitters(self.submissions)
 
     @property
     def updated_at(self) -> datetime:

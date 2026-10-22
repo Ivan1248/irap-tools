@@ -17,6 +17,7 @@ from .routes import (
     METHODOLOGY_PATH,
     MODELS_PATH,
     SCORES_PATH,
+    SHOWN_METRICS_PATH,
     SIGN_OUT_ENDPOINT_PATH,
     get_register_path,
     get_sign_in_path,
@@ -25,6 +26,8 @@ from .routes import (
 #: (Title, path) of the pages in the navigation of everyone, also of visitors.
 NAVIGATION_PAGES = (("Scores", SCORES_PATH), ("Analysis", ANALYSIS_PATH),
                     ("Models", MODELS_PATH), ("Methodology", METHODOLOGY_PATH))
+#: (Title, path) of the pages in the Admin menu of the navigation, which only admins see.
+ADMIN_PAGES = (("Accounts", ACCOUNTS_PATH), ("Shown metrics", SHOWN_METRICS_PATH))
 
 _STYLES = Path(__file__).with_name("styles.css").read_text(encoding="utf-8")
 
@@ -60,6 +63,19 @@ def _make_sign_in_html(account: Account | None) -> str:
                                page_url, "Sign out")
 
 
+def _create_admin_menu(current_path: str) -> None:
+    """Creates the Admin menu of the navigation, whose links `styles.css` shows while the pointer
+    is over its title or the title has the focus, e.g. after a tap, without state that a render of
+    the page would reset."""
+    is_current = any(path == current_path for _, path in ADMIN_PAGES)
+    with ui.element("div").classes("nav-menu"):
+        TextElement(tag="span", text="Admin ▾").classes(
+            "nav-menu-title current" if is_current else "nav-menu-title").props("tabindex=0")
+        with ui.element("div").classes("nav-menu-items"):
+            for title, path in ADMIN_PAGES:
+                ui.link(title, path).classes("current" if path == current_path else "")
+
+
 @contextlib.contextmanager
 def create_page_frame(current_path: str, account: Account | None,
                       fills_window: bool = False) -> T.Iterator[ui.element]:
@@ -73,14 +89,14 @@ def create_page_frame(current_path: str, account: Account | None,
     """
     ui.add_css(_STYLES)
     ui.query(".nicegui-content").classes("p-0 gap-0" + (" h-screen" if fills_window else ""))
-    pages = (NAVIGATION_PAGES
-             + ((("Action log", ACTION_LOG_PATH),) if can_write(account) else ())
-             + ((("Accounts", ACCOUNTS_PATH),) if is_admin(account) else ()))
+    pages = NAVIGATION_PAGES + ((("Action log", ACTION_LOG_PATH),) if can_write(account) else ())
     with ui.element("header").classes("top-bar w-full"):
         ui.label("iRAP evaluation").classes("title")
         with ui.element("nav"):
             for title, path in pages:
                 ui.link(title, path).classes("current" if path == current_path else "")
+            if is_admin(account):
+                _create_admin_menu(current_path)
         ui.html(_make_sign_in_html(account), sanitize=False).classes("sign-in")
     with ui.element("main").classes(
             "page-content fills-window" if fills_window else "page-content") as content:

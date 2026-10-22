@@ -7,12 +7,7 @@ import irap_evaluation as ie
 import regex  # Unlike `re`, it has timeouts, so that a user's pattern cannot block the server.
 
 from ..datasets import EVALUATION_SET_NAMES, DatasetContext
-from ..method_ranking import PER_ATTRIBUTE_METRIC_NAMES
 
-#: The options of the View select of a page with the attribute averages or one per-attribute
-#: metric (the `metric` parameter, `parse_per_attribute_metric`).
-VIEW_OPTIONS = {"": "Attribute averages",
-                **{m: f"Per attribute: {m}" for m in PER_ATTRIBUTE_METRIC_NAMES}}
 #: The longest time that a name filter may take over all names (`select_matching_names`).
 #: Plain filters take microseconds, while a catastrophic pattern, e.g. '^(\w|\w\w)*$', can take
 #: minutes.
@@ -71,16 +66,32 @@ def parse_evaluation_set(query: T.Mapping[str, str]) -> str:
     return evaluation_set
 
 
-def parse_per_attribute_metric(query: T.Mapping[str, str]) -> str:
+def make_view_options(per_attribute_names: T.Iterable[str]) -> dict[str, str]:
+    """Makes the options of the View select of a page with the attribute averages or one
+    per-attribute metric (the `metric` parameter, `parse_per_attribute_metric`).
+
+    Args:
+        per_attribute_names: The shown per-attribute metrics
+            (`method_ranking.ShownMetrics.per_attribute_names`).
+    """
+    return {"": "Attribute averages", **{m: f"Per attribute: {m}" for m in per_attribute_names}}
+
+
+def parse_per_attribute_metric(query: T.Mapping[str, str],
+                               per_attribute_names: T.Sequence[str]) -> str:
     """Parses the `metric` parameter: a per-attribute metric, or '' for the attribute averages.
 
+    Args:
+        per_attribute_names: The shown per-attribute metrics
+            (`method_ranking.ShownMetrics.per_attribute_names`).
+
     Raises:
-        ValueError: For an unknown metric.
+        ValueError: For a metric that is unknown or hidden.
     """
     metric_name = query.get("metric", "")
-    if metric_name and metric_name not in PER_ATTRIBUTE_METRIC_NAMES:
-        raise ValueError(f"Unknown per-attribute metric {metric_name!r}. Metrics:"
-                         f" {', '.join(PER_ATTRIBUTE_METRIC_NAMES)}.")
+    if metric_name and metric_name not in per_attribute_names:
+        raise ValueError(f"Unknown or hidden per-attribute metric {metric_name!r}. Metrics:"
+                         f" {', '.join(per_attribute_names)}.")
     return metric_name
 
 

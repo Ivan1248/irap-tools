@@ -21,6 +21,7 @@ from ..method_comparison import get_better_method
 from ..method_ranking import (
     RANKING_METRIC_NAMES,
     CellHighlight,
+    ShownMetrics,
     compute_highlights,
     describe_split_use,
     get_method_split_use,
@@ -383,34 +384,36 @@ def _make_sortable_metric_header_html(metric_name: str, is_sorted: bool) -> str:
 
 def make_method_table_html(rows: T.Sequence[MethodScores],
                            method_to_resamples: T.Mapping[str, RowResamples], confidence: float,
-                           sort_metric: str, scope: ScoresScope,
+                           metric_names: T.Sequence[str], sort_metric: str, scope: ScoresScope,
                            comparisons: ReferenceComparisons | None = None) -> str:
-    """Makes a table of method rows × the attribute averages of `RANKING_METRIC_NAMES`.
+    """Makes a table of method rows × attribute averages.
 
     The metric headers have a `data-sort` attribute with the metric name, for a click handler.
 
     Args:
-        method_to_resamples: Method name -> its resampled values of `RANKING_METRIC_NAMES`, or
-            None.
+        method_to_resamples: Method name -> its resampled values of `metric_names`, or None.
         confidence: The confidence of the intervals.
+        metric_names: The attribute averages of the columns, e.g. the shown ones
+            (`ShownMetrics.average_names`).
         scope: For the links to the methods and models, and the marks of the methods that used
             the split.
         comparisons: The comparisons with a reference method, or None.
     """
     metric_headers = "".join(_make_sortable_metric_header_html(n, n == sort_metric)
-                             for n in RANKING_METRIC_NAMES)
-    header = f"<th>Method</th><th>Models</th>{metric_headers}<th>Notes</th>"
+                             for n in metric_names)
+    header = f"<th>Method</th><th>Models</th>{metric_headers}<th>Submitter</th><th>Notes</th>"
     row_resamples = [method_to_resamples.get(r.method_name) for r in rows]
     is_tested = _are_tested(rows)
     metric_columns = [
         _make_compared_cells_html(rows, row_resamples, select_average_value(n), n, confidence,
                                   is_tested=is_tested, comparisons=comparisons)
-        for n in RANKING_METRIC_NAMES]
+        for n in metric_names]
     html_rows = []
     for row, metric_cells in zip(rows, zip(*metric_columns)):
-        cells = _make_row_cells_html(row, metric_cells, len(RANKING_METRIC_NAMES))
+        cells = _make_row_cells_html(row, metric_cells, len(metric_names))
         html_rows.append(f"<tr><td>{_make_method_label_html(row, comparisons, scope)}</td>"
                          f"<td>{_make_model_links_html(row, scope)}</td>{cells}"
+                         f"<td>{html.escape(', '.join(row.submitters))}</td>"
                          f"<td>{_make_notes_html(row)}</td></tr>")
     return (make_table_html_from_header(header, html_rows)
             + _make_method_notes_html(rows, confidence, "column", is_tested, comparisons))
@@ -465,7 +468,7 @@ def _format_num_invalid(scores: MethodScores, attribute: str) -> str:
 
 
 def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamples,
-                                     confidence: float) -> str:
+                                     confidence: float, metric_names: T.Sequence[str]) -> str:
     """Makes a table of the iRAP metrics and invalid predictions of each attribute of a subset, of
     one model or the mean over the models of a method. The attributes are compared with each other
     in each metric column, without tests against the best (bold), which are meant for comparing
@@ -473,8 +476,10 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
 
     Args:
         scores: `scoring.compute_method_scores`, without an error.
-        resamples: Its resampled values of `IRAP_ATTRIBUTE_METRIC_NAMES`, or None.
+        resamples: Its resampled values of `metric_names`, or None.
         confidence: The confidence of the intervals.
+        metric_names: The metrics of the columns, of `IRAP_ATTRIBUTE_METRIC_NAMES`, e.g. the
+            shown ones (`ShownMetrics.attribute_table_names`).
 
     Raises:
         ValueError: If `scores` has an error.
@@ -483,7 +488,7 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
         raise ValueError(f"The scores of {scores.method_name} have an error: {scores.error}")
     attributes = list(metrics.per_attribute[IRAP_ATTRIBUTE_METRIC_NAMES[0]])
     metric_columns = []
-    for n in IRAP_ATTRIBUTE_METRIC_NAMES:
+    for n in metric_names:
         values = [metrics.per_attribute[n].get(a) for a in attributes]
         highlights = compute_highlights(values, None, ie.is_lower_better(n))
         intervals = [_compute_row_interval(resamples, select_attribute_value(n, a), confidence)
@@ -499,14 +504,14 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
                               f'<td class="number">{num_invalid}</td></tr>')
     invalid_header = ("Invalid predictions" if scores.num_models == 1
                       else "Invalid predictions (mean)")
-    number_headers = [*IRAP_ATTRIBUTE_METRIC_NAMES, invalid_header]
+    number_headers = [*metric_names, invalid_header]
     return make_table_html(
         ["Attribute", *number_headers], attribute_rows, number_headers,
-        header_titles={n: ie.describe_metric(n) for n in IRAP_ATTRIBUTE_METRIC_NAMES})
+        header_titles={n: ie.describe_metric(n) for n in metric_names})
 
 
-def make_model_scores_html(scores: MethodScores, resamples: RowResamples,
-                           confidence: float) -> str:
+def make_model_scores_html(scores: MethodScores, resamples: RowResamples, confidence: float,
+                           shown_metrics: ShownMetrics) -> str:
     """Makes the tables of the scores of one model over a subset of the attributes: the attribute
     averages, and the iRAP metrics and invalid predictions of each attribute
     (`_make_attribute_scores_table_html`). `make_model_scores_note_html` explains them.
@@ -515,21 +520,23 @@ def make_model_scores_html(scores: MethodScores, resamples: RowResamples,
         scores: `scoring.compute_method_scores` of the model alone.
         resamples: Its resampled values of `MODEL_SCORES_METRIC_NAMES`, or None.
         confidence: The confidence of the intervals.
+        shown_metrics: The metrics of the tables, those that the model has.
     """
     if scores.metrics is None:
         return f'<div class="error">{html.escape(scores.error or "")}</div>'
     average_rows = [f"<tr><td{make_title_attribute(ie.describe_metric(n))}>{n}</td>"
                     f"{_make_row_value_cell_html(scores, resamples, n, confidence)}</tr>"
-                    for n in scores.metrics.averages]
+                    for n in shown_metrics.average_names if n in scores.metrics.averages]
     average_table = make_table_html(["Average", "Value"], average_rows, number_headers=["Value"])
-    attribute_table = _make_attribute_scores_table_html(scores, resamples, confidence)
+    attribute_table = _make_attribute_scores_table_html(scores, resamples, confidence,
+                                                        shown_metrics.attribute_table_names)
     return f'<div class="score-tables">{average_table}{attribute_table}</div>'
 
 
 def make_method_scores_html(method_scores: MethodScores, method_resamples: RowResamples,
                             seed_scores: T.Sequence[MethodScores],
                             seed_resamples: T.Sequence[RowResamples], confidence: float,
-                            scope: ScoresScope) -> str:
+                            shown_metrics: ShownMetrics, scope: ScoresScope) -> str:
     """Makes the tables of the scores of a method over a subset of the attributes: the attribute
     averages of the mean over its models and of each model alone (`_make_seed_table_html`), and
     the iRAP metrics and invalid predictions of each attribute of the mean
@@ -541,17 +548,19 @@ def make_method_scores_html(method_scores: MethodScores, method_resamples: RowRe
         method_resamples: Its resampled values of `MODEL_SCORES_METRIC_NAMES`, or None.
         seed_scores: `scoring.compute_method_scores` of each model alone, in the order of the
             rows.
-        seed_resamples: The resampled values of each of `seed_scores` of `RANKING_METRIC_NAMES`,
-            or None.
+        seed_resamples: The resampled values of each of `seed_scores` of the shown attribute
+            averages, or None.
         confidence: The confidence of the intervals.
+        shown_metrics: The metrics of the tables.
         scope: For the links to the models.
     """
     seed_table = _make_seed_table_html(method_scores, method_resamples, seed_scores,
-                                       seed_resamples, confidence, scope)
+                                       seed_resamples, confidence,
+                                       shown_metrics.average_names, scope)
     tables_html = f"<div>{seed_table}</div>"
     if method_scores.metrics is not None:
-        attribute_table = _make_attribute_scores_table_html(method_scores, method_resamples,
-                                                            confidence)
+        attribute_table = _make_attribute_scores_table_html(
+            method_scores, method_resamples, confidence, shown_metrics.attribute_table_names)
         tables_html += f'<div><div class="muted">Mean over the seeds</div>{attribute_table}</div>'
     return f'<div class="score-tables">{tables_html}</div>'
 
@@ -559,25 +568,25 @@ def make_method_scores_html(method_scores: MethodScores, method_resamples: RowRe
 def _make_seed_table_html(method_scores: MethodScores, method_resamples: RowResamples,
                           seed_scores: T.Sequence[MethodScores],
                           seed_resamples: T.Sequence[RowResamples], confidence: float,
-                          scope: ScoresScope) -> str:
+                          metric_names: T.Sequence[str], scope: ScoresScope) -> str:
     """Makes a table of the mean over the models of a method and of each model alone (labeled by
-    seed, with a link) × the attribute averages of `RANKING_METRIC_NAMES`. The models are
-    compared with each other in each column, without tests against the best (bold), which are
-    meant for comparing methods. The mean is not shaded.
+    seed, with a link) × the attribute averages `metric_names`. The models are compared with each
+    other in each column, without tests against the best (bold), which are meant for comparing
+    methods. The mean is not shaded.
 
     Args: See `make_method_scores_html`.
     """
     mean_cells = [_make_row_value_cell_html(method_scores, method_resamples, n, confidence)
-                  for n in RANKING_METRIC_NAMES]
+                  for n in metric_names]
     seed_columns = [
         _make_compared_cells_html(seed_scores, seed_resamples, select_average_value(n), n,
                                   confidence, is_tested=False, comparisons=None)
-        for n in RANKING_METRIC_NAMES]
-    num_metrics = len(RANKING_METRIC_NAMES)
+        for n in metric_names]
+    num_metrics = len(metric_names)
     html_rows = [f"<tr><td>Mean</td>"
                  f"{_make_row_cells_html(method_scores, mean_cells, num_metrics)}</tr>"]
     html_rows += [f"<tr><td>{_make_seed_links_html(row, scope)}</td>"
                   f"{_make_row_cells_html(row, metric_cells, num_metrics)}</tr>"
                   for row, metric_cells in zip(seed_scores, zip(*seed_columns), strict=True)]
-    return make_table_html(["Seed", *RANKING_METRIC_NAMES], html_rows, RANKING_METRIC_NAMES,
-                           header_titles={n: ie.describe_metric(n) for n in RANKING_METRIC_NAMES})
+    return make_table_html(["Seed", *metric_names], html_rows, metric_names,
+                           header_titles={n: ie.describe_metric(n) for n in metric_names})

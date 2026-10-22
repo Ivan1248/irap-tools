@@ -16,11 +16,7 @@ import irap_evaluation as ie
 from irap_data import get_dataset_preset
 from irap_data.attrs import get_attrs_to_include
 
-from .method_ranking import (
-    DEFAULT_SORT_METRIC,
-    NOT_WORSE_SIGNIFICANCE_LEVEL,
-    PER_ATTRIBUTE_METRIC_NAMES,
-)
+from .method_ranking import DEFAULT_SORT_METRIC, NOT_WORSE_SIGNIFICANCE_LEVEL, ShownMetrics
 from .scoring import ScoringSettings
 
 #: The extras of the Markdown converter (markdown2) that the text needs: tables, and
@@ -134,8 +130,8 @@ def _make_attributes_markdown() -> str:
 """
 
 
-def _make_metrics_markdown() -> str:
-    descriptions = "\n".join(f"- {ie.describe_metric(n)}" for n in PER_ATTRIBUTE_METRIC_NAMES)
+def _make_metrics_markdown(per_attribute_names: T.Iterable[str]) -> str:
+    descriptions = "\n".join(f"- {ie.describe_metric(n)}" for n in per_attribute_names)
     return rf"""
 A metric of an attribute is computed from all segments of the evaluation set that have a label of
 the attribute, pooled, e.g. from the attribute's confusion matrix over these segments.
@@ -273,28 +269,39 @@ whose models used the shown split:
 """
 
 
-def make_methodology_sections(settings: ScoringSettings,
-                              dataset_names: T.Sequence[str]) -> list[MethodologySection]:
-    """Makes the sections of the Methodology page.
-
-    Args:
-        dataset_names: The configured datasets, whose reference windows the text gives.
+def check_described_settings(settings: ScoringSettings) -> None:
+    """Checks that the text describes how the settings score invalid attribute predictions and
+    missing attributes.
 
     Raises:
-        ValueError: If the settings score invalid attribute predictions or missing attributes
-            otherwise than the text says.
+        ValueError: If it does not.
     """
     if (settings.null_policy, settings.missing_attribute_policy) != ("first_class", "invalid"):
         raise ValueError(f"The methodology text describes the null policy 'first_class' and the"
                          f" missing attribute policy 'invalid', not {settings.null_policy!r} and"
                          f" {settings.missing_attribute_policy!r}.")
+
+
+def make_methodology_sections(settings: ScoringSettings, dataset_names: T.Sequence[str],
+                              shown_metrics: ShownMetrics) -> list[MethodologySection]:
+    """Makes the sections of the Methodology page.
+
+    Args:
+        dataset_names: The configured datasets, whose reference windows the text gives.
+        shown_metrics: The metrics whose descriptions the text lists.
+
+    Raises:
+        ValueError: See `check_described_settings`.
+    """
+    check_described_settings(settings)
     return [
         MethodologySection("methods", "Models and methods", _METHODS_MARKDOWN),
         MethodologySection(EVALUATION_SETS_SECTION, "Evaluation sets",
                            _make_evaluation_sets_markdown(dataset_names)),
         MethodologySection("attributes", "Attributes and invalid predictions",
                            _make_attributes_markdown()),
-        MethodologySection("metrics", "Metrics", _make_metrics_markdown()),
+        MethodologySection("metrics", "Metrics",
+                           _make_metrics_markdown(shown_metrics.per_attribute_names)),
         MethodologySection(INTERVALS_SECTION, "Confidence intervals",
                            _make_intervals_markdown(settings)),
         MethodologySection(COMPARISONS_SECTION, "Comparing methods",

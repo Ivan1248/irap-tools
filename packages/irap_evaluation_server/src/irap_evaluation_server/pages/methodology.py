@@ -9,7 +9,13 @@ from nicegui import ui
 from ..components.account_sessions import AccountSessions
 from ..components.page_frame import create_page_frame
 from ..components.routes import METHODOLOGY_PATH, get_library_path
-from ..methodology import MARKDOWN_EXTRAS, MethodologySection, make_methodology_sections
+from ..display_settings import DisplaySettingsStore
+from ..methodology import (
+    MARKDOWN_EXTRAS,
+    MethodologySection,
+    check_described_settings,
+    make_methodology_sections,
+)
 from ..scoring import ScoringSettings
 from ..vendor_libraries import MATHJAX_SCRIPT
 
@@ -35,20 +41,23 @@ def _make_document_markdown(sections: T.Sequence[MethodologySection]) -> str:
 
 
 def register_methodology_page(settings: ScoringSettings, dataset_names: T.Sequence[str],
-                              math_error: str | None, sessions: AccountSessions) -> None:
+                              math_error: str | None, sessions: AccountSessions,
+                              display_settings: DisplaySettingsStore) -> None:
     """
     Args:
         math_error: Why MathJax is missing (`vendor_libraries.ensure_library_files`), or None.
             The formulas are then shown as TeX.
+        display_settings: The shown metrics, whose descriptions the page lists.
 
     Raises:
-        ValueError: See `make_methodology_sections`.
+        ValueError: See `check_described_settings`.
     """
-    document_markdown = _make_document_markdown(make_methodology_sections(settings,
-                                                                          dataset_names))
+    check_described_settings(settings)  # At the start, not at the first visit.
 
     @ui.page(METHODOLOGY_PATH, title="Methodology · iRAP evaluation")
     async def methodology_page() -> None:
+        document_markdown = _make_document_markdown(make_methodology_sections(
+            settings, dataset_names, display_settings.get_shown_metrics()))
         with create_page_frame(METHODOLOGY_PATH, sessions.get_account()):
             if math_error is None:
                 ui.add_head_html(_MATHJAX_HEAD_HTML)

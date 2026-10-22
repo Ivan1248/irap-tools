@@ -226,6 +226,12 @@ class Submission:
                             early_stopping_splits=self.early_stopping_splits, seed=self.model.seed)
 
 
+def list_submitters(submissions: T.Iterable[Submission]) -> list[str]:
+    """Lists the distinct submitters of submissions, in the order of their first upload."""
+    return list(dict.fromkeys(
+        s.submitter for s in sorted(submissions, key=lambda s: s.uploaded_at)))
+
+
 @dc.dataclass(frozen=True)
 class ActionLogEntry:
     """An action on the archive.
