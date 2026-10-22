@@ -75,7 +75,12 @@ A model is identified by its dataset, method name and seed. All its files must h
 
 #### Details field of an ensemble
 
-An ensemble written by `irap_evaluation` is a `probs` file whose `context_offsets` are the union of its members' offsets (or null if any member's offsets are unknown). Its training splits are the union of its members' training splits (null if any are unknown), and its early stopping splits are the union of its members' early stopping splits that are not training splits of the ensemble (`make_ensemble_model_info`). Its method name is given, or by default made of the sorted method names of its members with their seeds, e.g. `resnet-seq_seeds0-4+vit-l` for the seeds 0 to 4 of `resnet-seq` and the unseeded `vit-l`.
+An ensemble written by `irap_evaluation.ensemble_predictions` is a `probs` file whose `details["ensemble"]` has:
+
+| Field | Type | Content |
+|---|---|---|
+| `segment_combination`, `attribute_combination` | `str` | Which segments and attributes of the members it combines: `same`, `intersection` or `union` (`MemberCombination`). |
+| `members` | `list[dict]` | Per member: `model` (its [model field](#model-field)), `context_offsets`, `weight`, `attributes` and `num_segments` (the number of segments it predicts). |
 
 ## Examples
 

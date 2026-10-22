@@ -22,6 +22,7 @@ from irap_evaluation.predictions import (
     PredictionHeader,
     Predictions,
     add_invalid_attributes,
+    add_invalid_segments,
     align_classes,
     check_class_codes,
     check_split_names,
@@ -218,6 +219,16 @@ def test_select_segments():
         select_segments(_predictions(), ["s4"])
     with pytest.raises(PredictionFormatError, match="unique"):
         select_segments(_predictions(), ["s1", "s1"])
+
+
+def test_add_invalid_segments():
+    predictions = _predictions()
+    added = add_invalid_segments(predictions, ["s4", "s1", "s4"])
+    assert added.segment_ids == predictions.segment_ids + ("s4",)
+    for attr in predictions.attributes:
+        assert not added.is_valid[attr][-1]
+        np.testing.assert_array_equal(added.probs[attr][:-1], predictions.probs[attr])
+    assert add_invalid_segments(predictions, ["s1"]) is predictions
 
 
 def test_read_prediction_header(tmp_path):

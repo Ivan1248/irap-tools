@@ -451,8 +451,8 @@ def _validate_predictions(predictions: Predictions) -> None:
 
 def _replace_unvalidated(predictions: Predictions, **changes) -> Predictions:
     """`dataclasses.replace` without `_validate_predictions`, for changes that keep the
-    invariants: selecting segments or attributes, reordering classes, and adding invalid attribute
-    predictions.
+    invariants: selecting segments or attributes, reordering classes, and adding invalid segments
+    or attribute predictions.
     The checks scan every probability, which takes about a second for 100k segments and 50
     attributes."""
     if "probs" in changes:
@@ -580,6 +580,19 @@ def add_invalid_attributes(predictions: Predictions,
         probs={**predictions.probs,
                **{attr: np.full((predictions.num_segments, len(codes)), np.nan, dtype=np.float32)
                   for attr, codes in missing.items()}})
+
+
+def add_invalid_segments(predictions: Predictions, segment_ids: T.Iterable[str]) -> Predictions:
+    """Appends the segments of `segment_ids` that the predictions do not predict, with every
+    attribute prediction invalid. Predicted segments are kept as they are."""
+    predicted = set(predictions.segment_ids)
+    missing = tuple(dict.fromkeys(sid for sid in segment_ids if sid not in predicted))
+    if not missing:
+        return predictions
+    return _replace_unvalidated(
+        predictions, segment_ids=predictions.segment_ids + missing,
+        probs={attr: np.concatenate([v, np.full((len(missing), v.shape[1]), np.nan, v.dtype)])
+               for attr, v in predictions.probs.items()})
 
 
 def select_segments(predictions: Predictions, segment_ids: T.Sequence[str]) -> Predictions:

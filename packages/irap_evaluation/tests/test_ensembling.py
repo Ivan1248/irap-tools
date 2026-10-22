@@ -101,11 +101,59 @@ def test_weights_must_be_finite_and_positive_per_member(weights):
         ensemble_predictions(members, "e", weights=weights)
 
 
-def test_members_must_cover_the_same_segments_unless_intersected():
+def test_segment_combinations():
     first = _probs(CLASS_CODES, [[0.8, 0.2], [0.6, 0.4]], _header("m1"))
     other = Predictions.from_probabilities(_header("m2"), CLASS_CODES, ["s2", "s3"],
                                            {"a": np.array([[0.5, 0.5], [0.1, 0.9]])})
-    with pytest.raises(PredictionFormatError, match="different segments"):
+    with pytest.raises(PredictionFormatError,
+                       match=r"same segments, but m1 lacks 1 of the 3 segments \(s3\); m2 lacks 1"
+                             r" of the 3 segments \(s1\)\. Combine their intersection or union"):
         ensemble_predictions([first, other], "e")
-    ensemble = ensemble_predictions([first, other], "e", intersect_segments=True)
+    ensemble = ensemble_predictions([first, other], "e", segment_combination="intersection")
     assert ensemble.segment_ids == ("s2",)
+    ensemble = ensemble_predictions([first, other], "e", segment_combination="union")
+    assert ensemble.segment_ids == ("s1", "s2", "s3")
+    np.testing.assert_allclose(ensemble.probs["a"], [[0.8, 0.2], [0.55, 0.45], [0.1, 0.9]],
+                               rtol=1e-6)
+    details = ensemble.header.model.details["ensemble"]
+    assert (details["segment_combination"], details["attribute_combination"]) == ("union", "same")
+    assert [m["num_segments"] for m in details["members"]] == [2, 2]
+    disjoint = Predictions.from_probabilities(_header("m3"), CLASS_CODES, ["s3"],
+                                              {"a": np.array([[0.5, 0.5]])})
+    with pytest.raises(PredictionFormatError,
+                       match=r"no common segments: m1 predicts 2 \(s1, s2\); m3 predicts 1 \(s3\)"):
+        ensemble_predictions([first, disjoint], "e", segment_combination="intersection")
+
+
+def test_attribute_combinations():
+    first = _probs(CLASS_CODES, [[0.8, 0.2], [0.6, 0.4]], _header("m1"))
+    other = Predictions.from_probabilities(
+        _header("m2"), {**REVERSED_CLASS_CODES, "b": (3, 4)}, ["s1", "s2"],
+        {"a": np.array([[0.6, 0.4], [0.2, 0.8]]), "b": np.array([[0.3, 0.7], [0.9, 0.1]])})
+    with pytest.raises(PredictionFormatError,
+                       match=r"same attributes, but m1 lacks 1 of the 2 attributes \(b\)\."):
+        ensemble_predictions([first, other], "e")
+    ensemble = ensemble_predictions([first, other], "e", attribute_combination="intersection")
+    assert ensemble.attributes == ("a",)
+    ensemble = ensemble_predictions([first, other], "e", attribute_combination="union")
+    assert ensemble.attribute_to_irap_codes == {"a": (1, 2), "b": (3, 4)}
+    # `other` predicts the classes of 'a' in the order (2, 1).
+    np.testing.assert_allclose(ensemble.probs["a"], [[0.6, 0.4], [0.7, 0.3]], rtol=1e-6)
+    np.testing.assert_allclose(ensemble.probs["b"], other.probs["b"], rtol=1e-6)
+    members = ensemble.header.model.details["ensemble"]["members"]
+    assert [m["attributes"] for m in members] == [["a"], ["a", "b"]]
+
+
+def test_members_must_predict_the_same_classes_of_an_attribute():
+    first = _probs(CLASS_CODES, [[0.8, 0.2], [0.6, 0.4]], _header("m1"))
+    other = _probs({"a": (1, 3)}, [[0.5, 0.5], [0.1, 0.9]], _header("m2"))
+    with pytest.raises(PredictionFormatError,
+                       match=r"different classes of 'a': m1 has iRAP codes \[1, 2\]; m2 has iRAP"
+                             r" codes \[1, 3\]\."):
+        ensemble_predictions([first, other], "e")
+
+
+def test_unknown_combination_is_an_error():
+    members = [_probs(CLASS_CODES, [[0.8, 0.2], [0.6, 0.4]], _header(f"m{i}")) for i in range(2)]
+    with pytest.raises(ValueError, match="combination of segments must be one of"):
+        ensemble_predictions(members, "e", segment_combination="all")

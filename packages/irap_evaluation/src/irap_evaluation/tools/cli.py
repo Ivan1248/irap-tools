@@ -17,7 +17,7 @@ import pandas as pd
 from irap_data.metadata import load_irap_metadata
 
 from ..bootstrap import BootstrapInterval, compare_methods, compute_bootstrap_intervals
-from ..ensembling import ensemble_predictions
+from ..ensembling import MEMBER_COMBINATIONS, ensemble_predictions
 from ..evaluation import (
     ATTRIBUTE_SELECTIONS,
     MISSING_ATTRIBUTE_POLICIES,
@@ -314,7 +314,8 @@ def run_ensemble(args: argparse.Namespace) -> None:
     predictions_seq = _read_prediction_files(args.files)
     ensemble = ensemble_predictions(
         predictions_seq, args.name, method_display_name=args.display_name, seed=args.model_seed,
-        weights=args.weights, intersect_segments=args.intersect_segments)
+        weights=args.weights, segment_combination=args.segment_combination,
+        attribute_combination=args.attribute_combination)
     write_predictions(args.output, ensemble)
     print(f"Wrote the mean of {len(predictions_seq)} prediction files as the method"
           f" {ensemble.header.model.method_name!r}"
@@ -434,9 +435,14 @@ def make_argument_parser() -> argparse.ArgumentParser:
     ensemble.add_argument("-o", "--output", type=Path, required=True)
     ensemble.add_argument("--weights", type=float, nargs="+", default=None,
                           help="A positive weight per file. Default: equal weights.")
-    ensemble.add_argument("--intersect-segments", action="store_true",
-                          help="Combine the segments that all files predict, rather than"
-                               " requiring the same segments.")
+    for noun in ("segment", "attribute"):
+        ensemble.add_argument(f"--{noun}-combination", choices=MEMBER_COMBINATIONS,
+                              default="same",
+                              help=f"Which {noun}s to combine if the files predict different ones."
+                                   f" same: none, the command fails. intersection: those that"
+                                   f" every file predicts. union: those that any file predicts,"
+                                   f" where a file that does not predict one counts as invalid."
+                                   f" Default: same.")
     ensemble.set_defaults(run=run_ensemble)
 
     export = commands.add_parser("export-coding-table",

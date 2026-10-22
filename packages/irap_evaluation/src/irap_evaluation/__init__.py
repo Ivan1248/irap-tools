@@ -28,7 +28,13 @@ from .bootstrap import (
     compute_resampled_differences,
     resample_model_metrics,
 )
-from .ensembling import ensemble_predictions, make_ensemble_method_name, make_ensemble_model_info
+from .ensembling import (
+    MEMBER_COMBINATIONS,
+    MemberCombination,
+    ensemble_predictions,
+    make_ensemble_method_name,
+    make_ensemble_model_info,
+)
 from .evaluation import (
     AttributeSelection,
     ClassMetrics,
@@ -86,6 +92,7 @@ from .predictions import (
     Predictions,
     SplitUse,
     add_invalid_attributes,
+    add_invalid_segments,
     align_classes,
     check_class_codes,
     check_split_names,

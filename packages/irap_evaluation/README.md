@@ -34,7 +34,9 @@ DATA=/data/IRAP_Vietnam   # the metadata directory of the release, e.g. IRAP_BIH
 # Check files.
 irap-eval validate resnet.val.predictions.parquet vit.val.predictions.parquet
 
-# Ensemble two models (the weighted mean of their distributions).
+# Ensemble two models (the weighted mean of their distributions). By default, they must predict the
+# same segments and attributes; --segment-combination and --attribute-combination can choose their
+# intersection or union.
 irap-eval ensemble resnet.val.predictions.parquet vit.val.predictions.parquet \
     --name resnet+vit -o resnet+vit.val.predictions.parquet
 
