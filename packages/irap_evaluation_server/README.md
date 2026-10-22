@@ -14,7 +14,7 @@ A web app that keeps an archive of model predictions, scores them, and compares,
 | Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins, in the Admin menu. |
 | Shown metrics | `/shown-metrics` | The attribute averages that the pages show, which admins choose. Only for admins, in the Admin menu. |
 
-Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles, and see the action log, which shows the account name of each change.
+Anyone who can open the app can view it and download files. Only signed-in [accounts](#accounts) with write permission can upload, replace and delete files, delete models and methods, edit descriptions and method display names, and create ensembles, and see the action log, which shows the account name of each change.
 
 ## Installation and start
 
@@ -74,7 +74,7 @@ Users register and sign in with the links in the top bar. An account has one of 
 | Permission | Can |
 |---|---|
 | view | View, like visitors without an account. |
-| write | Also upload, replace and delete files, delete models, edit descriptions and method display names, and create ensembles. |
+| write | Also upload, replace and delete files, delete models and methods, edit descriptions and method display names, and create ensembles. |
 | admin | Also download the per-class scores of [protected splits](#protected-splits), change the permissions of the accounts and remove them, on the Accounts page, and choose the [shown metrics](#hidden-metrics). |
 
 The first account to register is an admin. Later accounts can view until an admin gives them more. The app keeps at least one admin: it refuses to remove the last admin or to take away its admin permission.
@@ -191,7 +191,7 @@ A `.zip` archive uploads the files of one model on several splits at once. Every
 
 ### Deletion
 
-Deletion is permanent. The Model page deletes a file, or the whole model with all its files, after a confirmation. An upload or an ensemble also deletes the files that it replaces, after a confirmation. A deleted file is removed with its scores, and it cannot be restored, only uploaded again. The last file of a model is deleted only with the model, so every model has a file. Deleting the last model of a method also removes the method's display name. The action log keeps the actions on deleted models and files, and their ids are not reused.
+Deletion is permanent. The Model page deletes a file, or the whole model with all its files, and the Method page deletes a whole method with all its models, after a confirmation. An upload or an ensemble also deletes the files that it replaces, after a confirmation. A deleted file is removed with its scores, and it cannot be restored, only uploaded again. The last file of a model is deleted only with the model, so every model has a file. Deleting the last model of a method also removes the method's display name. The action log keeps the actions on deleted models and files, and their ids are not reused.
 
 To keep a copy, the Model page downloads the files of a model, e.g. an ensemble, as one `.zip` archive (`/api/models/<id>/predictions.zip`), which can be uploaded again.
 

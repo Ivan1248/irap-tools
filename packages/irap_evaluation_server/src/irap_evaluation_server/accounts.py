@@ -4,8 +4,8 @@ Anyone can view the archive, also without an account. The permission of an accou
 (`Permission`) says what else it may do: 'view' nothing else, 'write' also change the archive
 and see the action log, and 'admin' also download the per-class scores of the protected splits
 (`config.DatasetConfig.is_protected_split`), change the permissions of the accounts and remove
-them, and choose the shown metrics (`display_settings`). The first account to register is an admin, and later ones can view until an admin
-gives them more. There is always an admin.
+them, and choose the shown metrics (`display_settings`). The first account to register is an
+admin, and later ones can view until an admin gives them more. There is always an admin.
 
 The accounts are in `accounts.sqlite3` in the data directory, apart from the archive. Passwords
 are stored as scrypt hashes. Account names are unique regardless of the case of ASCII letters.
@@ -27,7 +27,7 @@ Permission = T.Literal["view", "write", "admin"]
 PERMISSIONS: tuple[Permission, ...] = T.get_args(Permission)
 PERMISSION_DESCRIPTIONS: T.Mapping[Permission, str] = {
     "view": "Can view, like visitors without an account.",
-    "write": "Can also upload, replace and delete files, delete models, edit"
+    "write": "Can also upload, replace and delete files, delete models and methods, edit"
              " descriptions, create ensembles and see the action log.",
     "admin": "Can also download the per-class scores of the splits that are not analysed, e.g."
              " test, change the permissions of the accounts and remove them, and choose the"

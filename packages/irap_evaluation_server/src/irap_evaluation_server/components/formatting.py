@@ -175,10 +175,12 @@ def _make_action_details_html(details: T.Mapping[str, T.Any]) -> str:
                    f"</span> {to_html(k, v)}</div>" for k, v in details.items())
 
 
-#: The text of each `archive.ActionKind` in the action log.
+#: The text of each `archive.ActionKind` and of the action that did another, its detail "by"
+#: (e.g. `ModelArchive.delete_method`), in the action log.
 _ACTION_TEXTS = {"upload": "upload", "ensemble": "ensemble", "delete": "delete file",
                  "delete_model": "delete model", "edit_description": "edit description",
-                 "edit_method_display_name": "edit method display name"}
+                 "edit_method_display_name": "edit method display name",
+                 "delete_method": "delete method"}
 
 
 def make_action_table_html(entries: T.Sequence[ActionLogEntry],

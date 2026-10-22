@@ -7,13 +7,14 @@ import typing as T
 
 import irap_evaluation as ie
 from fastapi import Request
-from nicegui import ui
+from nicegui import run, ui
 
 from ..accounts import can_write
 from ..archive import ActionLogEntry, ModelArchive
 from ..components.account_sessions import AccountSessions
 from ..components.attribute_filter import AttributeSubset
 from ..components.changes import load_after_change, run_change_in_thread, run_refreshes
+from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import (
     format_context_offsets,
     format_evaluation_set_title,
@@ -127,14 +128,16 @@ class _MethodPage:
         self.refreshes: list[T.Callable[[], None]] = []
 
     async def run_change(self, change: T.Callable[[str], T.Any], status_label: ui.label) -> None:
-        """Runs a change of the method (`run_change_in_thread`) and shows the method as it is
-        then, also after a refused change, e.g. of a method that another user has changed. Goes to
-        the Models page if the method no longer has models.
+        """Runs a change of the method (`run_change_in_thread`), rescores what it affects and
+        shows the method as it is then, also after a refused change, e.g. of a method that another
+        user has changed. Goes to the Models page if the method no longer has models.
 
         Args:
             change: Gets the actor (`get_actor`).
         """
-        await run_change_in_thread(change, self.get_actor, status_label)
+        if await run_change_in_thread(change, self.get_actor, status_label):
+            await run.io_bound(self.worker.update_method_submissions, self.dataset,
+                               self.method_name)
         snapshot = await load_after_change(
             functools.partial(_MethodSnapshot.load, self.archive, self.dataset, self.method_name,
                               self.can_write),
@@ -160,10 +163,26 @@ class _MethodPage:
             ui.html(f"Method {make_truncated_name_html(group.shown_method_name)}",
                     sanitize=False).classes("section-title truncated-line")
             create_key_values(rows)
+            if self.can_write:
+                create_native_button("Delete method", on_delete_method_clicked)
 
         async def on_display_name_saved(display_name: str) -> None:
             await self.run_change(lambda actor: self.archive.set_method_display_name(
                 self.dataset, self.method_name, display_name, actor=actor), status_label)
+
+        async def on_delete_method_clicked() -> None:
+            group = self.snapshot.group
+            seeds = ", ".join(m.model.seed_label for m in group.models)
+            display_name_text = ("" if group.method_display_name is None
+                                 else ", and its display name")
+            changes = [f"Permanently deletes the method {group.method_name} on {self.dataset}:"
+                       f" its {len(group.models)} models ({seeds}) with all their files and their"
+                       f" scores{display_name_text}. To keep a copy, first download the files"
+                       f" (.zip) of each model on its Model page, which can be uploaded again."]
+            if await confirm_changes(f"Delete method {group.shown_method_name}", changes,
+                                     "Delete"):
+                await self.run_change(lambda actor: self.archive.delete_method(
+                    self.dataset, self.method_name, actor=actor), status_label)
 
         display_name = {"text": self.snapshot.group.method_display_name or ""}
         with ui.element("section").classes("panel"):

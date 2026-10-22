@@ -6,10 +6,10 @@ its dataset, method name and seed. Its submissions (`Submission`) are its predic
 one per split. A submission of a split that the model already has replaces the old one, which is
 deleted. Deletion is permanent: deleting a submission removes its row and its file, and the score
 cache then deletes its scores (`scoring.ScoreStore.delete_scorings_of_deleted_submissions`).
-Deleting a model removes it with all its submissions. The last submission of a model is deleted
-only with the model, so each model has a submission. The action log keeps the actions on deleted
-models and submissions. Each action records who did it, the name of an account that can write
-(`accounts`).
+Deleting a model removes it with all its submissions, and deleting a method removes all its models
+on a dataset. The last submission of a model is deleted only with the model, so each model has a
+submission. The action log keeps the actions on deleted models and submissions. Each action
+records who did it, the name of an account that can write (`accounts`).
 
 A method on a dataset can have a display name, which the pages show instead of the method name.
 An update sets it, given with the update or from the files that have one
@@ -605,6 +605,23 @@ def _delete_submission_row(connection: sqlite3.Connection, submission: Submissio
                 {"split": submission.split, **details})
 
 
+def _delete_model_rows(connection: sqlite3.Connection, model: Model, actor: str,
+                       details: T.Mapping[str, T.Any]) -> list[Submission]:
+    """Deletes a model and its submissions from the index, and the display name of its method if
+    no other model of the method on the dataset remains, and logs it. Returns the deleted
+    submissions."""
+    submissions = _list_model_submissions(connection, model.id)
+    for submission in submissions:
+        _delete_submission_row(connection, submission, actor, {"by": "delete_model"})
+    connection.execute("DELETE FROM models WHERE id = ?", (model.id,))
+    connection.execute(
+        "DELETE FROM methods WHERE dataset = ? AND method_name = ? AND NOT EXISTS"
+        " (SELECT 1 FROM models WHERE dataset = ? AND method_name = ?)",
+        (model.dataset, model.method_name, model.dataset, model.method_name))
+    _log_action(connection, actor, "delete_model", model, None, details)
+    return submissions
+
+
 def _set_description(connection: sqlite3.Connection, model: Model, description: str,
                      actor: str) -> None:
     """Changes the description of a model, if it differs, and logs it."""
@@ -1138,15 +1155,26 @@ class ModelArchive:
         actor = _check_actor(actor)
         with begin_write(self.database_path) as connection:
             model = _get_model(connection, model_id)
-            submissions = _list_model_submissions(connection, model_id)
-            for submission in submissions:
-                _delete_submission_row(connection, submission, actor, {"by": "delete_model"})
-            connection.execute("DELETE FROM models WHERE id = ?", (model_id,))
-            connection.execute(
-                "DELETE FROM methods WHERE dataset = ? AND method_name = ? AND NOT EXISTS"
-                " (SELECT 1 FROM models WHERE dataset = ? AND method_name = ?)",
-                (model.dataset, model.method_name, model.dataset, model.method_name))
-            _log_action(connection, actor, "delete_model", model, None, {})
+            submissions = _delete_model_rows(connection, model, actor, {})
+            deleted_dirs = self._list_deleted_submission_dirs(connection)
+        self._remove_submission_dirs(deleted_dirs)
+        return submissions
+
+    def delete_method(self, dataset: str, method_name: str, *, actor: str) -> list[Submission]:
+        """Deletes all models of a method on a dataset permanently, as `delete_model` does, with
+        their display name. Returns the deleted submissions.
+
+        Raises:
+            LookupError: If the method has no models on the dataset, e.g. since another user
+                deleted them.
+            ValueError: If `actor` is empty.
+        """
+        actor = _check_actor(actor)
+        with begin_write(self.database_path) as connection:
+            submissions = []
+            for model in _get_method_models(connection, dataset, method_name):
+                submissions += _delete_model_rows(connection, model, actor,
+                                                  {"by": "delete_method"})
             deleted_dirs = self._list_deleted_submission_dirs(connection)
         self._remove_submission_dirs(deleted_dirs)
         return submissions

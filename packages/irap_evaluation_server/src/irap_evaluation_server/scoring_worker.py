@@ -264,6 +264,11 @@ class ScoringWorker:
         upload that replaced some of them."""
         self.update_submissions(self.archive.list_model_submissions(model.id))
 
+    def update_method_submissions(self, dataset: str, method_name: str) -> None:
+        """Calls `update_submissions` with all submissions of a method on a dataset after a
+        change, e.g. a deletion of the method."""
+        self.update_submissions(self.archive.list_method_submissions(dataset, method_name))
+
     def update_all_submissions(self) -> None:
         """Calls `update_submissions` with every submission, e.g. at the start of the
         server, since the metadata, the settings or the scoring code may have changed."""

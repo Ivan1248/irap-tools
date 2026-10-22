@@ -312,6 +312,31 @@ def test_delete_a_model(archive, two_split_contexts):
     assert again.model.id not in {model.id, other.model.id}
 
 
+def test_delete_a_method(archive, two_split_contexts):
+    predictions = with_model(make_model(two_split_contexts, model_seed=1),
+                             method_display_name="M")
+    first = add_model(archive, two_split_contexts, predictions)
+    second = add_model(archive, two_split_contexts, with_split(predictions, OTHER_SPLIT))
+    third = add_model(archive, two_split_contexts, make_model(two_split_contexts, model_seed=2))
+    other = add_model(archive, two_split_contexts, make_model(two_split_contexts, name="o"))
+    deleted = archive.delete_method("vietnam", "m", actor="Bo")
+    assert [s.id for s in deleted] == [second.id, first.id, third.id]
+    assert archive.list_models() == [other.model]
+    assert [p.name for p in archive.submissions_dir.iterdir()] == [str(other.id)]
+    assert [(a.action, a.model_label, a.submission_id, a.details) for a in archive.list_actions(
+        model_ids=[first.model.id, third.model.id])[:5]] == [
+        ("delete_model", "m/seed2", None, {"by": "delete_method"}),
+        ("delete", "m/seed2", third.id, {"split": SPLIT, "by": "delete_model"}),
+        ("delete_model", "m/seed1", None, {"by": "delete_method"}),
+        ("delete", "m/seed1", first.id, {"split": SPLIT, "by": "delete_model"}),
+        ("delete", "m/seed1", second.id, {"split": OTHER_SPLIT, "by": "delete_model"})]
+    with pytest.raises(LookupError):
+        archive.delete_method("vietnam", "m", actor="Bo")
+    # The display name is deleted with the method.
+    again = add_model(archive, two_split_contexts, make_model(two_split_contexts, model_seed=1))
+    assert again.model.method_display_name is None
+
+
 def test_download_and_upload_the_files_of_a_model(archive, two_split_contexts):
     predictions = make_model(two_split_contexts)
     submissions = [add_model(archive, two_split_contexts, predictions),
@@ -337,6 +362,7 @@ def test_actions_need_an_actor(archive, dataset_contexts):
     submission = add_model(archive, dataset_contexts, make_model(dataset_contexts))
     for change in (lambda: archive.delete_submission(submission.id, actor=""),
                    lambda: archive.delete_model(submission.model.id, actor=""),
+                   lambda: archive.delete_method("vietnam", "m", actor=""),
                    lambda: archive.set_model_description(submission.model.id, "x", actor=""),
                    lambda: archive.set_method_display_name("vietnam", "m", "x", actor="")):
         with pytest.raises(ValueError, match="actor of an action"):
