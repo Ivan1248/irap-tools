@@ -61,17 +61,18 @@ def get_irap_metric_names(min_class_supports: T.Sequence[int] = IRAP_CLASS_SUPPO
         output_kind: The metrics of predicted distributions are included for 'probs'.
     """
     is_probabilistic = output_kind == "probs"
-    averaged = [*("a" + name for name in IRAP_ATTRIBUTE_METRIC_NAMES), "aA"]
+    averaged = [*IRAP_ATTRIBUTE_METRIC_NAMES, "A"]  # The per-attribute names of the averages.
     per_attribute = ["mF1", "A", "n", "MCC"]
     if is_probabilistic:
-        averaged += ["aNLL", "aBrier", "amNLL"]
+        averaged += ["NLL", "Brier", "mNLL"]
         per_attribute += ["NLL", "Brier", "mNLL"]
     for n in min_class_supports:
-        averaged.append(f"a{IRAP_MAIN_METRIC}{SUPPORT_SUFFIX}{n}")
-        per_attribute += [f"{IRAP_MAIN_METRIC}{SUPPORT_SUFFIX}{n}", f"nc{SUPPORT_SUFFIX}{n}"]
+        main_name = f"{IRAP_MAIN_METRIC}{SUPPORT_SUFFIX}{n}"
+        averaged.append(main_name)
+        per_attribute += [main_name, f"nc{SUPPORT_SUFFIX}{n}"]
         if is_probabilistic:
-            averaged.append(f"amNLL{SUPPORT_SUFFIX}{n}")
-    return (*averaged, *per_attribute)
+            averaged.append(f"mNLL{SUPPORT_SUFFIX}{n}")
+    return (*map(get_attribute_average_name, averaged), *per_attribute)
 
 
 # Metric names #####################################################################################
@@ -109,6 +110,18 @@ def parse_metric_name(name: str) -> ParsedMetricName:
                          f" mean over classes.")
     return ParsedMetricName(is_averaged=is_averaged, name=name[1:] if is_averaged else name,
                             base=base, min_support=min_support)
+
+
+def get_attribute_average_name(name: str) -> str:
+    """Returns the name of the attribute average of a per-attribute metric, e.g. 'amF1' for
+    'mF1'.
+
+    Raises:
+        ValueError: For an invalid name (`parse_metric_name`) or an attribute average.
+    """
+    if parse_metric_name(name).is_averaged:
+        raise ValueError(f"Metric {name!r} is already an attribute average.")
+    return "a" + name
 
 
 def is_per_class_metric(name: str) -> bool:
@@ -188,8 +201,17 @@ def describe_metric(name: str,
         description += " Lower is better." if is_lower_better(name) else " Higher is better."
     if not parsed.is_averaged:
         return description
-    return (f"The mean over attributes of {parsed.name}, leaving out those where it is"
-            f" undefined.\n{description}")
+    return f"{describe_attribute_average(parsed.name)}\n{description}"
+
+
+def describe_attribute_average(name: str) -> str:
+    """Describes the attribute average of a metric in a sentence, e.g. 'The mean over attributes of
+    mF1, …' for `name='mF1'`.
+
+    Args:
+        name: The name of the per-attribute metric, or words for it, e.g. 'the metric'.
+    """
+    return f"The mean over attributes of {name}, leaving out those where it is undefined."
 
 
 def add_per_attribute_metric_names(metric_names: T.Sequence[str]) -> tuple[str, ...]:
