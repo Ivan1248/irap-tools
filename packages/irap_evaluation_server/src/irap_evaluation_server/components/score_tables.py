@@ -419,23 +419,35 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
             + _make_method_notes_html(rows, confidence, "column", is_tested, comparisons))
 
 
+def get_per_attribute_table_metric_names(metric_name: str) -> tuple[str, str]:
+    """Returns the metrics of `make_per_attribute_table_html` of `metric_name`, e.g. for
+    `ScoringWorker.get_method_resamples`: the metric and its attribute average."""
+    return metric_name, ie.get_attribute_average_name(metric_name)
+
+
 def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
                                   method_to_resamples: T.Mapping[str, RowResamples],
                                   confidence: float, metric_name: str,
                                   attributes: T.Sequence[str], scope: ScoresScope,
                                   comparisons: ReferenceComparisons | None = None) -> str:
     """Makes a table of attribute rows × method columns of one per-attribute metric, for the rows
-    without an error, in their order.
+    without an error, in their order. The first row has the attribute average of the metric.
 
     Args:
-        method_to_resamples: Method name -> its resampled values of `metric_name`, or None.
+        method_to_resamples: Method name -> its resampled values of
+            `get_per_attribute_table_metric_names(metric_name)`, or None.
         scope: For the links to the methods, and the marks of the methods that used the split.
         comparisons: The comparisons with a reference method, or None.
     """
     rows = [r for r in rows if r.metrics is not None]
     row_resamples = [method_to_resamples.get(r.method_name) for r in rows]
     is_tested = _are_tested(rows)
-    html_rows = []
+    average_name = ie.get_attribute_average_name(metric_name)
+    average_cells = _make_compared_cells_html(
+        rows, row_resamples, select_average_value(average_name), average_name, confidence,
+        is_tested=is_tested, comparisons=comparisons)
+    html_rows = [f"<tr><td{make_title_attribute(ie.describe_metric(average_name))}>Average</td>"
+                 f"{''.join(average_cells)}</tr>"]
     for attribute in attributes:
         cells = _make_compared_cells_html(
             rows, row_resamples, select_attribute_value(metric_name, attribute), metric_name,
@@ -460,10 +472,10 @@ def _make_row_value_cell_html(row: MethodScores, resamples: RowResamples, averag
                                 _compute_row_interval(resamples, select_value, confidence))
 
 
-def _format_num_invalid(scores: MethodScores, attribute: str) -> str:
-    """Formats the number of invalid predictions of an attribute, the mean over the models if
-    there are several."""
-    counts = [m.scores.num_invalid[attribute] for m in scores.models]
+def _format_num_invalid(scores: MethodScores, attributes: T.Sequence[str]) -> str:
+    """Formats the number of invalid predictions of the attributes, the mean over the models and
+    the attributes if there are several."""
+    counts = [m.scores.num_invalid[a] for m in scores.models for a in attributes]
     return str(counts[0]) if len(counts) == 1 else f"{sum(counts) / len(counts):.1f}"
 
 
@@ -472,7 +484,8 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
     """Makes a table of the iRAP metrics and invalid predictions of each attribute of a subset, of
     one model or the mean over the models of a method. The attributes are compared with each other
     in each metric column, without tests against the best (bold), which are meant for comparing
-    methods.
+    methods. The first row has the attribute averages and the mean number of invalid predictions,
+    and is not shaded.
 
     Args:
         scores: `scoring.compute_method_scores`, without an error.
@@ -495,10 +508,15 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
                      for a in attributes]
         metric_columns.append([make_value_cell_html(v, i, highlight=h)
                                for v, i, h in zip(values, intervals, highlights)])
-    attribute_rows = []
+    average_cells = [_make_row_value_cell_html(scores, resamples,
+                                               ie.get_attribute_average_name(n), confidence)
+                     for n in metric_names]
+    average_title = make_title_attribute(ie.describe_attribute_average("the metric"))
+    attribute_rows = [f"<tr><td{average_title}>Average</td>{''.join(average_cells)}"
+                      f'<td class="number">{_format_num_invalid(scores, attributes)}</td></tr>']
     for attribute, metric_cells in zip(attributes, zip(*metric_columns)):
         is_missing = attribute in scores.missing_attributes
-        num_invalid = (f"{_format_num_invalid(scores, attribute)}"
+        num_invalid = (f"{_format_num_invalid(scores, [attribute])}"
                        f"{' (not predicted)' if is_missing else ''}")
         attribute_rows.append(f"<tr><td>{html.escape(attribute)}</td>{''.join(metric_cells)}"
                               f'<td class="number">{num_invalid}</td></tr>')

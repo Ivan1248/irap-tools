@@ -25,6 +25,7 @@ from ..components.routes import ATTRIBUTE_PARAMETER, SCORES_PATH, make_query_pat
 from ..components.score_tables import (
     ReferenceComparisons,
     ScoresScope,
+    get_per_attribute_table_metric_names,
     make_method_table_html,
     make_per_attribute_table_html,
 )
@@ -199,7 +200,8 @@ def _compute_method_table(worker: ScoringWorker, average_names: T.Sequence[str],
     table_html, comparison_errors = "", []
     if shown:
         confidence = worker.settings.confidence
-        metric_names = (view.metric_name,) if view.metric_name else average_names
+        metric_names = (get_per_attribute_table_metric_names(view.metric_name)
+                        if view.metric_name else average_names)
         method_to_resamples = {
             r.method_name: worker.get_method_resamples(r, subset.selected, metric_names)
             for r in shown}

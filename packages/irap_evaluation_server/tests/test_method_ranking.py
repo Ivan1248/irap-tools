@@ -59,7 +59,7 @@ def make_scored_model(submission_id, attribute_to_value, method_name="m",
                       missing_attributes=(), training_splits=()):
     """Makes a scored model whose iRAP metrics of each attribute equal the given value."""
     metrics = ie.MetricValues(
-        averages={f"a{n}": math.nan for n in IRAP_ATTRIBUTE_METRIC_NAMES},
+        averages={ie.get_attribute_average_name(n): math.nan for n in IRAP_ATTRIBUTE_METRIC_NAMES},
         per_attribute={n: dict(attribute_to_value) for n in IRAP_ATTRIBUTE_METRIC_NAMES})
     scores = EvaluationSetScores(
         evaluation_set="reference", context_offsets=(0,), evaluation_set_fingerprint="f",
@@ -255,20 +255,24 @@ def test_method_tables_escape_names():
 
 
 def test_method_scores_have_the_mean_of_the_models():
-    models = [make_scored_model(i, {"x": 0.2 * i}) for i in (1, 2)]
-    models[1] = dc.replace(models[1], scores=dc.replace(models[1].scores, num_invalid={"x": 4}))
-    seed_scores = [compute_method_scores(m.submission.label, [m], ["x"]) for m in models]
+    attributes = ["x", "y"]
+    models = [make_scored_model(i, {"x": 0.2 * i, "y": 0.1}) for i in (1, 2)]
+    models[1] = dc.replace(models[1], scores=dc.replace(models[1].scores,
+                                                        num_invalid={"x": 4, "y": 6}))
+    seed_scores = [compute_method_scores(m.submission.label, [m], attributes) for m in models]
     scope = ScoresScope("vietnam", "val", ())
 
     def make_html(method_scores):
         return make_method_scores_html(method_scores, None, seed_scores, [None, None], 0.95,
                                        ShownMetrics.from_hidden(()), scope)
 
-    assert "3.5" in make_html(compute_method_scores("m", models, ["x"]))  # Invalid predictions.
+    tables_html = make_html(compute_method_scores("m", models, attributes))
+    # Invalid predictions of x, y, and their mean in the Average row.
+    assert all(n in tables_html for n in ("3.5", "4.5", "4.0"))
     # Without the attribute table of a mean with an error.
     offset_models = [models[0], dc.replace(models[1], scores=dc.replace(
         models[1].scores, context_offsets=(1,), evaluation_set_fingerprint="g"))]
-    tables_html = make_html(compute_method_scores("m", offset_models, ["x"]))
+    tables_html = make_html(compute_method_scores("m", offset_models, attributes))
     assert "cannot be combined" in tables_html and "Invalid predictions" not in tables_html
 
 

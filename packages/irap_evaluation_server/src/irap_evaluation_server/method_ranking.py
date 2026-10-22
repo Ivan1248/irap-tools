@@ -23,7 +23,7 @@ from .scoring import (
 
 #: The columns of the method table, of which admins can hide some (`ShownMetrics`).
 RANKING_METRIC_NAMES = IRAP_AVERAGE_METRIC_NAMES
-DEFAULT_SORT_METRIC = f"a{IRAP_MAIN_METRIC}"
+DEFAULT_SORT_METRIC = ie.get_attribute_average_name(IRAP_MAIN_METRIC)
 #: The metrics that admins can hide: all but the main one, which is the default sort.
 HIDEABLE_METRIC_NAMES = tuple(n for n in RANKING_METRIC_NAMES if n != DEFAULT_SORT_METRIC)
 
