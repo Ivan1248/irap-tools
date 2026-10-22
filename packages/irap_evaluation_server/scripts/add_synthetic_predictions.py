@@ -154,7 +154,7 @@ def main():
     plan = plan_ensemble(submissions, DATASET, members, LABELED_SPLITS)
     update = prepare_ensemble(archive, context, plan, method_name=None,
                               method_display_name="Strong ensemble", seed=0,
-                              intersect_segments=False,
+                              segment_combination="same", attribute_combination="same",
                               description="Ensemble of strong-probs seeds 1-3.")
     created = archive.apply_model_update(update, submitter=SUBMITTER)
     print("Ensemble: " + ", ".join(f"#{s.id} {s.label} {s.split}" for s in created))

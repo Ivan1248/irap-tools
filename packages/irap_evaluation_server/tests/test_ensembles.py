@@ -55,7 +55,8 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
     members = [member(submissions, "a", 2.0), member(submissions, "b")]
     plan = plan_ensemble(archive.list_submissions(), "vietnam", members, SPLITS)
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                              method_display_name="Ensemble", seed=7, intersect_segments=False,
+                              method_display_name="Ensemble", seed=7,
+                              segment_combination="same", attribute_combination="same",
                               description="test")
     assert update.confirmations == []
     created = archive.apply_model_update(update, submitter="Bo")
@@ -84,7 +85,8 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
 
     # The model exists now, so another ensemble with its name and seed replaces its files.
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                              method_display_name=None, seed=7, intersect_segments=False,
+                              method_display_name=None, seed=7,
+                              segment_combination="same", attribute_combination="same",
                               description=None)
     assert len(update.confirmations) == 2
     discard_model_update(update)
@@ -96,7 +98,8 @@ def test_an_ensemble_gets_the_default_method_name(archive, two_split_contexts, s
                          [member(submissions, "b"), member(submissions, "a")], SPLITS)
     assert plan.make_model_info().method_name == "a_seed1+b_seed0"
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name=None,
-                              method_display_name=None, seed=0, intersect_segments=False,
+                              method_display_name=None, seed=0,
+                              segment_combination="same", attribute_combination="same",
                               description=None)
     created = archive.apply_model_update(update, submitter="Bo")
     assert {(s.label, s.model.method_display_name) for s in created} == {
@@ -107,7 +110,8 @@ def _prepare(archive, two_split_contexts, submissions, names):
     plan = plan_ensemble(archive.list_submissions(), "vietnam",
                          [member(submissions, n) for n in names], SPLITS)
     return prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                            method_display_name=None, seed=0, intersect_segments=False,
+                            method_display_name=None, seed=0,
+                            segment_combination="same", attribute_combination="same",
                             description=None)
 
 
@@ -169,6 +173,7 @@ def test_ensemble_files_are_removed_if_it_fails(archive, two_split_contexts, sub
     monkeypatch.setattr(ie, "ensemble_predictions", fail_on_second_split)
     with pytest.raises(ie.PredictionFormatError, match="Refused"):
         prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
-                         method_display_name=None, seed=0, intersect_segments=False,
+                         method_display_name=None, seed=0,
+                         segment_combination="same", attribute_combination="same",
                          description=None)
     assert not list(archive.uploads_dir.iterdir())

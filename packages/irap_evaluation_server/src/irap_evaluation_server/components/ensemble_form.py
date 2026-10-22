@@ -19,12 +19,18 @@ from .native_controls import (
     create_native_button,
     create_native_checkbox,
     create_native_input,
+    create_native_select,
     set_native_input_placeholder,
     set_status,
 )
 from .page_frame import create_collapsible_panel
 
 _NO_MEMBERS_TEXT = "Select at least 2 models in the table above."
+_COMBINATION_TEXTS: dict[ie.MemberCombination, str] = {
+    "same": "refuse",
+    "intersection": "those that every member predicts",
+    "union": "all that any member predicts",
+}
 
 
 def _parse_members(models: T.Sequence[Model],
@@ -75,7 +81,8 @@ class _ModelInputs:
     display_name: str = ""
     seed_text: str = "0"
     description: str = ""
-    intersect_segments: bool = False
+    segment_combination: ie.MemberCombination = "same"
+    attribute_combination: ie.MemberCombination = "same"
 
 
 class EnsembleForm:
@@ -228,7 +235,8 @@ class EnsembleForm:
                 self.archive, self.dataset_contexts[plan.dataset], plan,
                 method_name=parse_optional_text(self.inputs.method_name),
                 method_display_name=parse_optional_text(self.inputs.display_name),
-                seed=seed, intersect_segments=self.inputs.intersect_segments,
+                seed=seed, segment_combination=self.inputs.segment_combination,
+                attribute_combination=self.inputs.attribute_combination,
                 description=parse_optional_text(self.inputs.description), actor=actor)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             if not client.is_deleted:
@@ -282,10 +290,17 @@ class EnsembleForm:
                     create_native_input("Description", "",
                                         lambda v: setattr(self.inputs, "description", v),
                                         placeholder="blank: keep the model's", size=40)
-                create_native_checkbox(
-                    "Only the segments that every member predicts (needed for members with"
-                    " different context offsets)", False,
-                    lambda v: setattr(self.inputs, "intersect_segments", v))
+                with ui.element("div").classes("form-row"):
+                    create_native_select(
+                        "Segments if the members predict different ones", _COMBINATION_TEXTS,
+                        "same", lambda v: setattr(self.inputs, "segment_combination", v))
+                    create_native_select(
+                        "Attributes if the members predict different ones", _COMBINATION_TEXTS,
+                        "same", lambda v: setattr(self.inputs, "attribute_combination", v))
+                ui.label("Members with different context offsets predict different segments."
+                         " With all segments or attributes, a member that does not predict one"
+                         " counts as invalid, so an attribute that only one member predicts is"
+                         " that member's prediction.").classes("muted")
                 with ui.element("div").classes("form-row items-center"):
                     self._create_button = create_native_button("Create",
                                                                self._on_create_clicked)
@@ -295,13 +310,15 @@ class EnsembleForm:
 
 async def _create(archive: ModelArchive, context: DatasetContext, plan: EnsemblePlan, *,
                   method_name: str | None, method_display_name: str | None, seed: int | None,
-                  intersect_segments: bool, description: str | None,
+                  segment_combination: ie.MemberCombination,
+                  attribute_combination: ie.MemberCombination, description: str | None,
                   actor: str) -> list[Submission]:
     """Makes the ensemble files (`ensembles.prepare_ensemble`), asks the user to confirm the
     changes, if any, and stores them.
 
     Args:
-        method_name, method_display_name, description: See `ensembles.prepare_ensemble`.
+        method_name, method_display_name, segment_combination, attribute_combination,
+            description: See `ensembles.prepare_ensemble`.
         actor: The name of the signed-in account.
 
     Returns:
@@ -315,7 +332,8 @@ async def _create(archive: ModelArchive, context: DatasetContext, plan: Ensemble
     client = ui.context.client
     update = await run.io_bound(prepare_ensemble, archive, context, plan,
                                 method_name=method_name, method_display_name=method_display_name,
-                                seed=seed, intersect_segments=intersect_segments,
+                                seed=seed, segment_combination=segment_combination,
+                                attribute_combination=attribute_combination,
                                 description=description)
     if update is None:  # The server is stopping.
         return []

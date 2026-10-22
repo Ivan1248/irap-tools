@@ -59,7 +59,7 @@ DATABASE_FILE_NAME = "archive.sqlite3"
 #: The version of the database schema (`PRAGMA user_version`). A database of an older version is
 #: migrated (`_MIGRATIONS`). Version 1 is the schema of commit c084f1a (2026-10-12), the first in
 #: production.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _drop_score_cache(connection: sqlite3.Connection) -> None:
@@ -74,8 +74,32 @@ def _drop_score_cache(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _replace_intersect_segments(connection: sqlite3.Connection) -> None:
+    """Migrates version 2 to 3: replaces 'intersect_segments' in the details of each ensemble
+    action by 'segment_combination' and 'attribute_combination' (`ensembles.prepare_ensemble`).
+    Ensembles of version 2 required the same attributes.
+
+    Raises:
+        KeyError: If an ensemble action has no 'intersect_segments'.
+    """
+    rows = connection.execute("SELECT id, details FROM actions WHERE action = 'ensemble'")
+    for action_id, details_json in rows.fetchall():
+        old_details = json.loads(details_json)
+        if "intersect_segments" not in old_details:
+            raise KeyError(f"The ensemble action {action_id} has no 'intersect_segments'.")
+        combinations = {
+            "segment_combination": "intersection" if old_details["intersect_segments"] else "same",
+            "attribute_combination": "same"}
+        # The combinations take the place of 'intersect_segments' in the action log.
+        details = {}
+        for key, value in old_details.items():
+            details.update(combinations if key == "intersect_segments" else {key: value})
+        connection.execute("UPDATE actions SET details = ? WHERE id = ?",
+                           (json.dumps(details), action_id))
+
+
 #: Version v -> the migration from v to v + 1 (`database.initialize_schema`).
-_MIGRATIONS: dict[int, Migration] = {1: _drop_score_cache}
+_MIGRATIONS: dict[int, Migration] = {1: _drop_score_cache, 2: _replace_intersect_segments}
 
 #: SQLite stores integers as signed 64-bit values.
 _SQLITE_INTEGER_RANGE = range(-2**63, 2**63)

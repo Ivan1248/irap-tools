@@ -1,6 +1,7 @@
 import dataclasses as dc
 import hashlib
 import io
+import json
 import os
 
 import irap_evaluation as ie
@@ -16,7 +17,12 @@ from run_helpers import (
 from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server import archive as archive_module
-from irap_evaluation_server.archive import ModelArchive, NewSubmission, make_label_file_name
+from irap_evaluation_server.archive import (
+    SCHEMA_VERSION,
+    ModelArchive,
+    NewSubmission,
+    make_label_file_name,
+)
 from irap_evaluation_server.database import connect
 from irap_evaluation_server.uploads import apply_upload, plan_upload
 
@@ -486,6 +492,24 @@ def test_the_score_cache_is_dropped_from_an_archive_of_version_1(archive, datase
     ModelArchive(archive.data_dir)
     with connect(archive.database_path) as connection:
         names = {r["name"] for r in connection.execute("SELECT name FROM sqlite_master")}
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert not names & {"submission_scorings", "result_cache", "result_submissions",
                         "delete_submission_results"}
+
+
+def test_intersect_segments_is_replaced_in_an_archive_of_version_2(archive):
+    old_details = [{"members": [], "intersect_segments": True, "notes": []},
+                   {"members": [], "intersect_segments": False}]
+    with connect(archive.database_path) as connection:
+        for i, details in enumerate(old_details):
+            connection.execute("INSERT INTO actions VALUES (?, '', '', 'ensemble', 1, 'e', 1, ?)",
+                               (i, json.dumps(details)))
+        connection.execute("PRAGMA user_version = 2")
+    ModelArchive(archive.data_dir)
+    with connect(archive.database_path) as connection:
+        new_details = [json.loads(r["details"])
+                       for r in connection.execute("SELECT details FROM actions ORDER BY id")]
+    assert new_details == [
+        {"members": [], "segment_combination": "intersection", "attribute_combination": "same",
+         "notes": []},
+        {"members": [], "segment_combination": "same", "attribute_combination": "same"}]

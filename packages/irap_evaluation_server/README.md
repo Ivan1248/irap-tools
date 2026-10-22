@@ -239,8 +239,8 @@ The "Create an ensemble" form of the Models page creates the weighted mean of th
 - The ensemble is a model with the given method name, display name and seed (0 in a new form). A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
 - It gets a file for each split where every member has a file, and these replace all files of an existing model of that name, which are deleted, so that all its files are of the same members.
 - Its training splits are the union of its members', and its early stopping splits are its members' that are not training splits (`irap_evaluation.make_ensemble_model_info`).
-- Members with different context offsets predict different segments. "Only the segments that every member predicts" keeps their common segments.
-- Its files are checked, confirmed and scored like uploads, and the action log records the members and weights. If a member's file changes before the ensemble is stored, the ensemble is refused and can be created again.
+- Members that predict different segments or attributes are refused by default. The form can instead combine those that every member predicts, or all that any member predicts, where a member that does not predict one counts as invalid (`irap_evaluation.MemberCombination`). Members with different context offsets predict different segments. With all attributes, an attribute that only one member predicts is that member's prediction.
+- Its files are checked, confirmed and scored like uploads, and the action log records the members, weights and combinations of segments and attributes. If a member's file changes before the ensemble is stored, the ensemble is refused and can be created again.
 
 ## Coding tables
 

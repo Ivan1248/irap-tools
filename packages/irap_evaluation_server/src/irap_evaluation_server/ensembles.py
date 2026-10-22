@@ -97,7 +97,8 @@ def prepare_ensemble(
     method_name: str | None,
     method_display_name: str | None,
     seed: int | None,
-    intersect_segments: bool,
+    segment_combination: ie.MemberCombination,
+    attribute_combination: ie.MemberCombination,
     description: str | None,
 ) -> ModelUpdate:
     """Makes the ensemble of each split of a plan, checks each as an upload
@@ -116,14 +117,15 @@ def prepare_ensemble(
         method_display_name: The method display name of the ensemble's model, or None to keep
             the method's.
         seed: The seed of the ensemble's model.
-        intersect_segments: Whether the ensemble predicts only the segments that all members
-            predict, e.g. for members with different context offsets (see
-            `irap_evaluation.ensemble_predictions`).
+        segment_combination: Which segments to combine if the members predict different ones,
+            e.g. members with different context offsets (`irap_evaluation.MemberCombination`).
+        attribute_combination: Which attributes to combine if the members predict different
+            ones (`irap_evaluation.MemberCombination`).
         description: The new description of the model, or None to keep it.
 
     Raises:
         irap_evaluation.PredictionFormatError: If the members cannot be combined, e.g. they
-            predict other segments and `intersect_segments` is False.
+            predict other segments and `segment_combination` is 'same'.
         ValueError: If `irap_evaluation.select_evaluation_sets` refuses an ensemble, or
             `ModelArchive.plan_model_update` refuses the update.
     """
@@ -135,7 +137,8 @@ def prepare_ensemble(
             ensemble = ie.ensemble_predictions(
                 [ie.read_predictions(archive.get_predictions_path(s.id)) for s in submissions],
                 method_name, method_display_name=method_display_name, seed=seed, weights=weights,
-                intersect_segments=intersect_segments)
+                segment_combination=segment_combination,
+                attribute_combination=attribute_combination)
             notes = context.check_new_predictions(ensemble)
             paths.append(path := archive.make_upload_path("ensemble.predictions.parquet"))
             ie.write_predictions(path, ensemble)
@@ -144,7 +147,8 @@ def prepare_ensemble(
                     "members": [{"submission_id": s.id, "model_id": s.model.id,
                                  "label": s.label, "weight": w}
                                 for s, w in zip(submissions, weights, strict=True)],
-                    "intersect_segments": intersect_segments}, notes=notes))
+                    "segment_combination": segment_combination,
+                    "attribute_combination": attribute_combination}, notes=notes))
         return archive.plan_model_update(
             new_submissions, action="ensemble", description=description, replaces_all_files=True,
             source_submissions=[s for ss in plan.split_to_submissions.values() for s in ss])

@@ -17,7 +17,8 @@ _ACTION_DETAIL_LABELS = {"file_name": "File", "archive_member": "File in the arc
                          "notes": "Notes", "original_seed": "Seed in the file",
                          "uploaded_file_sha256": "SHA-256 of the uploaded file",
                          "replaced_submission_id": "Replaced file",
-                         "members": "Members", "intersect_segments": "Only common segments",
+                         "members": "Members", "segment_combination": "Combined segments",
+                         "attribute_combination": "Combined attributes",
                          "old_description": "Old description", "description": "Description",
                          "old_display_name": "Old display name", "display_name": "Display name",
                          "split": "Split", "by": "Part of"}
