@@ -10,6 +10,7 @@ from ..components.account_sessions import AccountSessions
 from ..components.changes import run_admin_change
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import format_utc_time, make_table_html
+from ..components.native_controls import NATIVE_CHOICE_ATTRIBUTES
 from ..components.page_frame import create_key_values, create_page_frame
 from ..components.routes import ACCOUNTS_PATH
 
@@ -19,7 +20,7 @@ def _make_account_row_html(account: Account) -> str:
     options = "".join(f'<option value="{p}"{" selected" if p == account.permission else ""}>'
                       f"{p}</option>" for p in PERMISSIONS)
     return (f"<tr><td>{name}</td>"
-            f'<td><select class="native-control" data-permission-of="{name}">{options}</select>'
+            f'<td><select {NATIVE_CHOICE_ATTRIBUTES} data-permission-of="{name}">{options}</select>'
             f"</td><td>{format_utc_time(account.registered_at)}</td>"
             f'<td><button class="native-control" type="button" data-remove="{name}">Remove'
             f"</button></td></tr>")

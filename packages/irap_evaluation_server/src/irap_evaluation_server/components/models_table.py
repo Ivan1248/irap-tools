@@ -18,6 +18,7 @@ from .formatting import (
     make_title_attribute,
     make_truncated_name_html,
 )
+from .native_controls import NATIVE_CHOICE_ATTRIBUTES
 
 #: The `js_handler` of the 'change' event of a `ui.html` with a table with checkboxes
 #: (`make_models_table_html`), which emits [the model id, whether it is checked].
@@ -112,7 +113,7 @@ def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Seque
             model = summary.model
             checkbox_html = ("" if selected_model_ids is None else
                              f'<td class="model-selection"><input type="checkbox"'
-                             f' class="native-control" data-model-id="{model.id}"'
+                             f' {NATIVE_CHOICE_ATTRIBUTES} data-model-id="{model.id}"'
                              f'{" checked" if model.id in selected_model_ids else ""}></td>')
             label_html = (f"<span{make_title_attribute(model.shown_label)}>"
                           f"{make_model_link_html(model.id, model.seed_label)}</span>")

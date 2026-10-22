@@ -11,6 +11,12 @@ user is therefore stored in the element's props: for a select, so that a render 
 the initial `value`, and for a checkbox, so that `checked` matches the DOM and
 `set_native_checkbox_checked` can set it back to an earlier state. A text input has no `value`
 prop (see `create_native_input`), so that text that is being typed is not reset either.
+
+When the user returns to a page, e.g. with Back, the server creates a new page, but the browser
+restores the state of checkboxes, which the new page's state is not. Checkboxes and selects
+therefore have `autocomplete="off"`, also in hand-written HTML (`NATIVE_CHOICE_ATTRIBUTES`). Text
+inputs keep it on, so that the browser suggests earlier entries, which it does not restore
+(checked in Edge).
 """
 
 import json
@@ -18,6 +24,9 @@ import typing as T
 
 from nicegui import ui
 from nicegui.elements.mixins.text_element import TextElement
+
+#: The attributes of a checkbox or select in hand-written HTML (see the module docstring).
+NATIVE_CHOICE_ATTRIBUTES = 'class="native-control" autocomplete="off"'
 
 
 def _on_user_change(element: ui.element, prop: str,
@@ -57,7 +66,7 @@ def _create_select(label: str, value: str, on_change: T.Callable[[str], T.Any],
         select = ui.element("select").classes("native-control")
         # No tooltip for a value without an option, e.g. a reference method without scores,
         # for which the browser selects no option.
-        select.props.update(value=value, title=option_texts.get(value, ""))
+        select.props.update(value=value, title=option_texts.get(value, ""), autocomplete="off")
         with select:
             for group_label, options in groups.items():
                 if group_label is None:
@@ -144,7 +153,7 @@ def create_native_checkbox(label: str, value: bool, on_change: T.Callable[[bool]
     """
     with ui.element("label").classes("flex items-center gap-1"):
         element = ui.element("input").classes("native-control")
-        element.props.update(type="checkbox", checked=value)
+        element.props.update(type="checkbox", checked=value, autocomplete="off")
         if is_label_html:
             ui.html(label, sanitize=False)
         else:
