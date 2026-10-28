@@ -12,7 +12,7 @@ import typing as T
 import irap_evaluation as ie
 import numpy as np
 
-from .scoring import MethodScores, are_scored_on_same_set
+from .method_scores import MethodScores, are_scored_on_same_set
 
 
 def list_comparable_methods(rows: T.Iterable[MethodScores]) -> list[MethodScores]:
@@ -24,9 +24,10 @@ def list_comparable_methods(rows: T.Iterable[MethodScores]) -> list[MethodScores
 def get_comparison_error(row: MethodScores, reference: MethodScores) -> str | None:
     """Returns why a method cannot be compared with the reference method, or None if it can.
 
-    Both are means over the same attributes (`scoring.compute_method_scores`) without an error.
+    Both are means over the same attributes (`method_scores.compute_method_scores`) without an
+    error.
     """
-    if not are_scored_on_same_set((*row.models, *reference.models)):
+    if not are_scored_on_same_set((*row.scored_models, *reference.scored_models)):
         return "The methods are scored on different evaluation sets."
     return None
 
@@ -41,7 +42,7 @@ def compare_with_reference(
     without the probabilistic ones if one has hard predictions.
 
     Args:
-        rows: Means over the same attributes as `reference` (`scoring.compute_method_scores`).
+        rows: Means over the same attributes as `reference` (`method_scores.compute_method_scores`).
         method_to_resamples: Method name -> the resampled values of the method over the
             attributes, or None, e.g. for a method with an error, for the rows and the reference.
         reference: The reference method, without an error.

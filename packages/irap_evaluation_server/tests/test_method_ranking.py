@@ -29,13 +29,9 @@ from irap_evaluation_server.method_ranking import (
     sort_method_scores,
     sort_scored_models,
 )
+from irap_evaluation_server.method_scores import MethodScores, ScoredModel, compute_method_scores
 from irap_evaluation_server.model_listing import summarize_models_by_method
-from irap_evaluation_server.scoring import (
-    EvaluationSetScores,
-    MethodScores,
-    ScoredModel,
-    compute_method_scores,
-)
+from irap_evaluation_server.scoring import EvaluationSetScores
 
 _TIME = datetime(2026, 10, 3, tzinfo=timezone.utc)
 
@@ -70,12 +66,14 @@ def make_scored_model(submission_id, attribute_to_value, method_name="m",
                                        training_splits=training_splits), scores)
 
 
-def make_method_scores(method_name, averages, error=None, training_splits=()):
+def make_method_scores(method_name, averages, error=None, training_splits=(), attributes=("x",)):
     return MethodScores(
         method_name=method_name,
-        models=(make_scored_model(1, {"x": 0.5}, method_name, training_splits=training_splits),),
+        scored_models=(make_scored_model(1, {"x": 0.5}, method_name,
+                                         training_splits=training_splits),),
+        attributes=attributes,
         metrics=None if error else ie.MetricValues(averages=averages, per_attribute={}),
-        error=error, missing_attributes=())
+        error=error)
 
 
 def test_sort_method_scores():
@@ -92,10 +90,10 @@ def test_sort_method_scores():
 def test_ties_are_sorted_by_shown_method_name():
     def make_row(method_name, method_display_name):
         row = make_method_scores(method_name, {"amF1": 0.5})
-        [model] = row.models
+        [model] = row.scored_models
         submission = dc.replace(model.submission, model=make_model_row(
             1, method_name, method_display_name=method_display_name))
-        return dc.replace(row, models=(dc.replace(model, submission=submission),))
+        return dc.replace(row, scored_models=(dc.replace(model, submission=submission),))
 
     rows = [make_row("a", "z"), make_row("b", None)]
     assert [r.shown_method_name for r in rows] == ["z", "b"]
@@ -242,7 +240,7 @@ def test_method_tables_escape_names():
     models = [make_scored_model(1, {"x": 0.2, "y": 0.4}, method_name="<m>",
                                 missing_attributes=("y",))]
     rows = [*rank_methods(models, ["x", "y"], "amF1"),
-            make_method_scores("<n>", {}, error="Models <differ>.")]
+            make_method_scores("<n>", {}, error="Models <differ>.", attributes=("x", "y"))]
     resamples = ie.MetricValues(averages={"amF1": np.linspace(0.1, 0.3, 20)}, per_attribute={})
     scope = ScoresScope("vietnam", "val", ("x",))
     table = make_method_table_html(rows, {"<m>": resamples}, 0.95, ["amF1"], "amF1", scope)
@@ -250,7 +248,7 @@ def test_method_tables_escape_names():
     assert "method=%3Cm%3E" in table  # The link to the Method page.
     assert "Models &lt;differ&gt;." in table
 
-    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", ["x", "y"], scope)
+    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", scope)
     assert "<m>" not in per_attribute and "<n>" not in per_attribute
 
 

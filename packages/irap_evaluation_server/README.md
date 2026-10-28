@@ -259,7 +259,8 @@ irap_evaluation_server/
 ├─ accounts.py              AccountStore: the accounts, their permissions and password hashes
 ├─ uploads.py               The checks of uploaded files and .zip archives, and their planned updates
 ├─ model_listing.py         The models of the Models and Method pages, grouped by method
-├─ scoring.py               Scoring settings, the score cache, means over models and resampled values
+├─ scoring.py               Scoring settings and the score cache
+├─ method_scores.py         Means over the models of a method and their resampled values
 ├─ scoring_worker.py        The background thread that scores, and the resampled values in memory
 ├─ method_ranking.py        The rows of the method table, their order, highlights and marks of used splits
 ├─ method_comparison.py     Comparisons with a reference method
@@ -279,7 +280,7 @@ The logic modules (all but `components`, `pages` and `server`) do not import Nic
 uv run --project packages/irap_evaluation_server --extra test python -m pytest packages/irap_evaluation_server/tests
 ```
 
-A data directory is in production since 2026-10-12, so a change of a database schema needs a new schema version and a migration from the previous one: `SCHEMA_VERSION` and `_MIGRATIONS` in `archive.py` and `accounts.py` (see `database.initialize_schema`). A change of the score cache tables needs only a new `scoring.SCORE_CACHE_VERSION`. The server refuses tables that differ from those of their version, so a forgotten version shows at the next start.
+A data directory is in production since 2026-10-12, so a change of a database schema needs a new schema version and a migration from the previous one: `SCHEMA_VERSION` and `_MIGRATIONS` in `archive.py`, `accounts.py` and `display_settings.py` (see `database.initialize_schema`). A change of the score cache tables needs only a new `scoring.SCORE_CACHE_VERSION`. The server refuses tables that differ from those of their version, so a forgotten version shows at the next start.
 
 [`scripts/add_synthetic_predictions.py`](scripts/add_synthetic_predictions.py) fills an archive with synthetic Vietnam predictions and those of an ensemble, e.g. to try the pages:
 

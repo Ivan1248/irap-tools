@@ -47,7 +47,7 @@ from ..method_ranking import (
     rank_methods,
     select_shown_methods,
 )
-from ..scoring import MethodScores, ScoredModel
+from ..method_scores import MethodScores, ScoredModel
 from ..scoring_worker import ScoringWorker, SubmissionScorings
 
 #: Plural for the model-compatible sets, since each method is scored on its own.
@@ -203,7 +203,7 @@ def _compute_method_table(worker: ScoringWorker, average_names: T.Sequence[str],
         metric_names = (get_per_attribute_table_metric_names(view.metric_name)
                         if view.metric_name else average_names)
         method_to_resamples = {
-            r.method_name: worker.get_method_resamples(r, subset.selected, metric_names)
+            r.method_name: worker.get_method_resamples(r, metric_names)
             for r in shown}
         comparisons = None
         if reference is not None:
@@ -213,8 +213,7 @@ def _compute_method_table(worker: ScoringWorker, average_names: T.Sequence[str],
         scope = ScoresScope(view.dataset, view.split, subset.to_query())
         if view.metric_name:
             table_html = make_per_attribute_table_html(
-                shown, method_to_resamples, confidence, view.metric_name, subset.selected, scope,
-                comparisons)
+                shown, method_to_resamples, confidence, view.metric_name, scope, comparisons)
         else:
             table_html = make_method_table_html(
                 shown, method_to_resamples, confidence, average_names, view.sort_metric, scope,

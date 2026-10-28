@@ -16,19 +16,21 @@ import numpy as np
 
 from .archive import Model, ModelArchive, Submission
 from .datasets import EVALUATION_SET_NAMES, DatasetContext
-from .scoring import (
-    SCORING_SETTINGS,
+from .method_scores import (
     MethodScores,
     ScoredModel,
+    combine_method_resamples,
+    select_scored_models,
+)
+from .scoring import (
+    SCORING_SETTINGS,
     ScoreStore,
     ScoringSettings,
     SubmissionScoring,
-    combine_method_resamples,
     get_unscored_reason,
     is_scoring_current,
     make_unscored_scoring,
     score_submission,
-    select_scored_models,
 )
 
 _logger = logging.getLogger(__name__)
@@ -60,7 +62,7 @@ class SubmissionScorings:
 
     def select_scored_models(self, evaluation_set: str) -> list[ScoredModel]:
         """Selects the submissions with current scores on the evaluation set with this name
-        (`scoring.select_scored_models`)."""
+        (`method_scores.select_scored_models`)."""
         return select_scored_models(self.submissions, self.current, evaluation_set)
 
     def group_scored_models_by_set(self) -> dict[str, list[ScoredModel]]:
@@ -276,23 +278,22 @@ class ScoringWorker:
 
     # Resampled values #############################################################################
 
-    def get_method_resamples(self, row: MethodScores, attributes: T.Sequence[str],
-                             metric_names: T.Collection[str]
+    def get_method_resamples(self, row: MethodScores, metric_names: T.Collection[str]
                              ) -> ie.MetricValues[np.ndarray] | None:
-        """Returns the resampled values of a method over `attributes`
-        (`scoring.combine_method_resamples`), or None if the method has an error, or the
+        """Returns the resampled values of a method over the attributes of `row`
+        (`method_scores.combine_method_resamples`), or None if the method has an error, or the
         resampled values of a model are no longer stored, e.g. since it was deleted after its
         scores were read. The values are cached in memory, and must not be changed.
 
         Args:
-            row: `scoring.compute_method_scores` over `attributes`.
-            metric_names: See `scoring.combine_method_resamples`.
+            row: `method_scores.compute_method_scores`.
+            metric_names: See `method_scores.combine_method_resamples`.
         """
         if row.error is not None:
             return None
         models = tuple((m.submission.id, m.scores.evaluation_set,
-                        m.scores.evaluation_set_fingerprint) for m in row.models)
-        return self._get_cached_method_resamples(row.method_name, models, tuple(attributes),
+                        m.scores.evaluation_set_fingerprint) for m in row.scored_models)
+        return self._get_cached_method_resamples(row.method_name, models, row.attributes,
                                                  tuple(metric_names))
 
     def _compute_method_resamples(self, method_name: str, models: tuple[tuple[int, str, str], ...],

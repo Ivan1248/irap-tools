@@ -8,7 +8,7 @@ from nicegui import background_tasks, run, ui
 
 from ..archive import Submission
 from ..method_ranking import collect_scored_attributes
-from ..scoring import ScoredModel
+from ..method_scores import ScoredModel
 from ..scoring_worker import ScoringWorker, SubmissionScorings
 from .attribute_filter import AttributeFilter, AttributeSubset
 from .latest_updates import LatestUpdates

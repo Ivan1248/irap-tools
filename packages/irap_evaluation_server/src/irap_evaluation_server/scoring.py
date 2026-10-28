@@ -4,9 +4,8 @@
 A submission is scored once on all its evaluation sets and all scored attributes
 (`SubmissionScoring`), and again only when its scoring is out of date. The scoring also stores
 the metrics of the submission in each bootstrap resample of road sequences (`resample_result`).
-Means over the models of a method (`compute_method_scores`), and their resampled values, from
-which intervals and paired comparisons follow (`combine_method_resamples`), are computed from
-these when they are shown, also over a subset of the attributes.
+The scores of the methods (`method_scores`) are computed from these when they are shown, also
+over a subset of the attributes.
 
 Scorings carry fingerprints of what they depend on: the scoring settings and code
 (`ScoringSettings.fingerprint`), and the evaluation sets
@@ -34,7 +33,7 @@ from irap_evaluation.metrics import parse_metric_name
 from irap_evaluation.reports.evaluation_report import to_json_dict
 
 from .archive import DATABASE_FILE_NAME as ARCHIVE_DATABASE_FILE_NAME
-from .archive import ModelArchive, Submission, get_method_description, list_submitters
+from .archive import ModelArchive, Submission
 from .database import begin_write, connect, get_utc_now, initialize_schema
 from .datasets import DatasetContext
 
@@ -150,12 +149,11 @@ def resample_result(result: ie.EvaluationResult,
     resample (`irap_evaluation.resample_model_metrics`): (num_resamples,) float32 arrays, which
     are half the size of float64 ones and precise enough for intervals and differences."""
     names = [n for n in RESAMPLED_METRIC_NAMES if n in result.metrics.names]
-    return _to_float32(ie.resample_model_metrics(result, names,
-                                                 num_resamples=settings.num_resamples,
-                                                 seed=settings.bootstrap_seed))
+    return metric_values_to_float32(ie.resample_model_metrics(
+        result, names, num_resamples=settings.num_resamples, seed=settings.bootstrap_seed))
 
 
-def _to_float32(values: ie.MetricValues[np.ndarray]) -> ie.MetricValues[np.ndarray]:
+def metric_values_to_float32(values: ie.MetricValues[np.ndarray]) -> ie.MetricValues[np.ndarray]:
     """Converts resampled values to float32, in which they are stored (`resample_result`)."""
     return ie.map_metric_values(lambda v: v.astype(np.float32), values)
 
@@ -574,182 +572,3 @@ def score_submission(
         scored_at=scored_at,
         evaluation_set_scores=tuple(EvaluationSetScores.from_result(r) for r in results))
     return scoring, {r.evaluation_set.name: to_json_dict(r) for r in results}, resamples
-
-
-# Methods ##########################################################################################
-
-@dc.dataclass(frozen=True)
-class ScoredModel:
-    """A model with the scores of its submission of one split on one evaluation set."""
-
-    submission: Submission
-    scores: EvaluationSetScores
-
-
-def get_model_evaluation_set(context: DatasetContext,
-                             scored_model: ScoredModel) -> ie.EvaluationSet:
-    """Returns the evaluation set that the scores of a model are of.
-
-    Raises:
-        ValueError: If the submission no longer has the set, or the set has changed since the
-            scoring (its fingerprint differs).
-    """
-    submission, scores = scored_model.submission, scored_model.scores
-    name_to_set = context.get_submission_evaluation_sets(submission.split,
-                                                         submission.context_offsets)
-    if scores.evaluation_set not in name_to_set:
-        raise ValueError(f"File #{submission.id} of {submission.label} has no evaluation set"
-                         f" {scores.evaluation_set!r}.")
-    if name_to_set[scores.evaluation_set].fingerprint != scores.evaluation_set_fingerprint:
-        raise ValueError(f"The {scores.evaluation_set} set of file #{submission.id} of"
-                         f" {submission.label} has changed since it was scored.")
-    return name_to_set[scores.evaluation_set]
-
-
-@dc.dataclass(frozen=True)
-class MethodScores:
-    """The scores of a method on an evaluation set over a subset of the attributes: the means
-    over its models (`irap_evaluation.compute_mean_metrics`).
-
-    Attributes:
-        models: In the order of their submission ids.
-        metrics: None if there is an `error`.
-        error: Why the means cannot be computed, e.g. the models differ in output kind or are not
-            scored on an attribute of the subset, or None.
-        missing_attributes: The attributes of the subset that some model does not predict,
-            in the order of the subset.
-    """
-
-    method_name: str
-    models: tuple[ScoredModel, ...]
-    metrics: ie.MetricValues[float] | None
-    error: str | None
-    missing_attributes: tuple[str, ...]
-
-    @property
-    def num_models(self) -> int:
-        return len(self.models)
-
-    @property
-    def shown_method_name(self) -> str:
-        """The shown method name of the models (`archive.Model.shown_method_name`), which is the
-        same for the models of a method, or `method_name` if there are no models."""
-        return (self.models[0].submission.model.shown_method_name if self.models
-                else self.method_name)
-
-    @property
-    def description(self) -> str:
-        """`archive.get_method_description` of the models."""
-        return get_method_description(m.submission.model for m in self.models)
-
-    @property
-    def submitters(self) -> list[str]:
-        """The distinct submitters of the submissions of the models
-        (`archive.list_submitters`)."""
-        return list_submitters(m.submission for m in self.models)
-
-
-def select_scored_models(submissions: T.Iterable[Submission],
-                         submission_id_to_scoring: T.Mapping[int, SubmissionScoring],
-                         evaluation_set: str) -> list[ScoredModel]:
-    """Selects the submissions that are scored on the evaluation set with this name, with those
-    scores.
-
-    Args:
-        submissions: Of one split, so that the submissions of a method are its models.
-        submission_id_to_scoring: The current scorings (see `is_scoring_current`).
-    """
-    models = []
-    for submission in submissions:
-        scoring = submission_id_to_scoring.get(submission.id)
-        if scoring is not None and (scores := scoring.get_scores(evaluation_set)) is not None:
-            models.append(ScoredModel(submission, scores))
-    return models
-
-
-def group_scored_models_by_method(
-        models: T.Iterable[ScoredModel]) -> dict[str, list[ScoredModel]]:
-    """Groups models by method name, in the order of their submission ids."""
-    method_to_models: dict[str, list[ScoredModel]] = {}
-    for model in sorted(models, key=lambda m: m.submission.id):
-        method_to_models.setdefault(model.submission.model.method_name, []).append(model)
-    return method_to_models
-
-
-def are_scored_on_same_set(models: T.Iterable[ScoredModel]) -> bool:
-    """Checks whether models are scored on the same evaluation set (the same fingerprint), so
-    that their resampled values are paired: of the same resamples of the same road sequences."""
-    return len({m.scores.evaluation_set_fingerprint for m in models}) <= 1
-
-
-def get_combination_error(models: T.Sequence[ScoredModel]) -> str | None:
-    """Returns why the models cannot be combined in means (`compute_method_scores`) or resampled
-    values (`combine_method_resamples`), or None if they can."""
-    if not models:
-        return "At least one model is required."
-    if not are_scored_on_same_set(models):
-        offsets = ", ".join(f"{m.submission.label}: {m.scores.context_offsets}" for m in models)
-        return (f"The models are scored on different segments (context offsets {offsets}), so"
-                f" they cannot be combined.")
-    if len({(m.scores.metrics.names, m.scores.attributes) for m in models}) > 1:
-        return ("The models differ in metrics or attributes, e.g. hard and probabilistic"
-                " predictions, so they cannot be combined.")
-    return None
-
-
-def compute_method_scores(method_name: str, models: T.Sequence[ScoredModel],
-                          attributes: T.Sequence[str]) -> MethodScores:
-    """Computes the means over the models of a method of their metrics over `attributes`.
-
-    Errors of combining the models, and attributes that they are not scored on, are in
-    `MethodScores.error`, so that a page can show them next to the other methods.
-
-    Raises:
-        ValueError: If `attributes` is empty.
-    """
-    if not attributes:
-        raise ValueError("At least one attribute is required.")
-    models = tuple(sorted(models, key=lambda m: m.submission.id))
-    unpredicted = {a for m in models for a in m.scores.missing_attributes}
-    error = get_combination_error(models)
-    if error is None and (unscored := [a for a in attributes
-                                       if a not in models[0].scores.attributes]):
-        error = (f"The models are not scored on {', '.join(unscored)}, e.g. since their"
-                 f" evaluation set has no labels of them.")
-    metrics = None if error is not None else ie.compute_mean_metrics(
-        [ie.select_metric_attributes(m.scores.metrics, attributes) for m in models])
-    return MethodScores(method_name=method_name, models=models, metrics=metrics, error=error,
-                        missing_attributes=tuple(a for a in attributes if a in unpredicted))
-
-
-# Resampled values #################################################################################
-
-def combine_method_resamples(method_name: str,
-                             model_resamples: T.Sequence[ie.MetricValues[np.ndarray]],
-                             attributes: T.Sequence[str], metric_names: T.Collection[str],
-                             seed: int) -> ie.MetricValues[np.ndarray]:
-    """Computes the resampled values of a method over `attributes` from those of its models
-    (`ScoreStore.get_resamples`): their averages over the attributes
-    (`irap_evaluation.select_metric_attributes`), combined with the variation between the models
-    (`irap_evaluation.combine_model_resamples`). The values are float32, like the stored ones.
-
-    Args:
-        metric_names: The metrics to compute, e.g. those that a page shows, since all metrics of
-            all attributes take tens of milliseconds per method. Those that the models lack are
-            left out.
-        seed: `ScoringSettings.bootstrap_seed`.
-
-    Raises:
-        ValueError: If `metric_names` has metrics that are not stored (`RESAMPLED_METRIC_NAMES`),
-            `attributes` is empty or has attributes without values, or the models differ in
-            metrics or attributes.
-    """
-    if unstored := [n for n in metric_names if n not in RESAMPLED_METRIC_NAMES]:
-        raise ValueError(f"The resampled values of {unstored} are not stored.")
-    # The averages need their per-attribute values.
-    needed_names = ie.add_per_attribute_metric_names(list(metric_names))
-    return _to_float32(ie.combine_model_resamples(
-        [ie.select_metric_names(
-            ie.select_metric_attributes(ie.select_metric_names(r, needed_names), attributes),
-            metric_names)
-         for r in model_resamples], method_name, seed=seed))

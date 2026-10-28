@@ -13,13 +13,13 @@ from irap_evaluation.metrics import (
     parse_metric_name,
 )
 
-from .scoring import (
-    IRAP_AVERAGE_METRIC_NAMES,
+from .method_scores import (
     MethodScores,
     ScoredModel,
     compute_method_scores,
     group_scored_models_by_method,
 )
+from .scoring import IRAP_AVERAGE_METRIC_NAMES
 
 #: The columns of the method table, of which admins can hide some (`ShownMetrics`).
 RANKING_METRIC_NAMES = IRAP_AVERAGE_METRIC_NAMES
@@ -182,7 +182,7 @@ def sort_scored_models(models: T.Iterable[ScoredModel], metric: str,
 
 def rank_methods(models: T.Iterable[ScoredModel], attributes: T.Sequence[str],
                  sort_metric: str) -> list[MethodScores]:
-    """Computes the scores of each method over `attributes` (`scoring.compute_method_scores`),
+    """Computes the scores of each method over `attributes` (`method_scores.compute_method_scores`),
     sorted by `sort_metric` (`sort_method_scores`).
 
     Raises:
@@ -198,7 +198,7 @@ def get_method_split_use(row: MethodScores, split: str) -> ie.SplitUse:
     """Returns what the models of a method used `split` for
     (`irap_evaluation.ModelInfo.get_split_use`), which is the same for all of them
     (`irap_evaluation.check_method_models`)."""
-    return row.models[0].submission.model_info.get_split_use(split)
+    return row.scored_models[0].submission.model_info.get_split_use(split)
 
 
 def describe_split_use(split_use: ie.SplitUse, split: str) -> str:

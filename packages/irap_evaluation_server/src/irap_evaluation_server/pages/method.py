@@ -45,8 +45,8 @@ from ..components.score_tables import (
 from ..datasets import DatasetContext
 from ..display_settings import DisplaySettingsStore
 from ..method_ranking import ShownMetrics
+from ..method_scores import MethodScores, ScoredModel, compute_method_scores
 from ..model_listing import MethodGroup, group_submissions_by_split, summarize_models_by_method
-from ..scoring import MethodScores, ScoredModel, compute_method_scores
 from ..scoring_worker import ScoringWorker
 
 
@@ -88,7 +88,7 @@ def _make_set_score_tables_html(worker: ScoringWorker, method_name: str,
     def get_resamples(scores: MethodScores) -> ie.MetricValues | None:
         # The metrics of the Model page also for the models, whose resampled values are then
         # cached for both pages.
-        return worker.get_method_resamples(scores, subset.selected, MODEL_SCORES_METRIC_NAMES)
+        return worker.get_method_resamples(scores, MODEL_SCORES_METRIC_NAMES)
 
     set_to_tables_html = {}
     for name, models in set_to_models.items():

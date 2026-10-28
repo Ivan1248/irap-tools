@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from nicegui import app, run, ui
 from starlette.background import BackgroundTask
 
-from ..accounts import can_write, is_admin
+from ..accounts import Account, can_see_class_scores, can_write
 from ..archive import (
     ADDING_ACTION_KINDS,
     ARCHIVE_SUFFIX,
@@ -82,12 +82,12 @@ from ..components.score_tables import (
     make_model_scores_note_html,
 )
 from ..components.split_scores_panel import ShownSplitScores, create_split_scores_panel
-from ..config import DatasetConfig
 from ..datasets import DatasetContext
 from ..display_settings import DisplaySettingsStore
 from ..method_ranking import ShownMetrics
+from ..method_scores import ScoredModel, compute_method_scores
 from ..model_listing import ModelSummary, group_submissions_by_split
-from ..scoring import ScoredModel, compute_method_scores, remove_class_scores
+from ..scoring import remove_class_scores
 from ..scoring_worker import ScoringWorker
 
 
@@ -97,12 +97,6 @@ def _make_attachment_header(file_name: str) -> str:
     quoted = urllib.parse.quote(file_name)
     return (f'attachment; filename="{file_name}"' if quoted == file_name
             else f"attachment; filename*=utf-8''{quoted}")
-
-
-def _can_see_class_scores(config: DatasetConfig, split: str, is_admin: bool) -> bool:
-    """Returns whether an account can see the per-class scores of a split, which are only for
-    admins on a protected split (`DatasetConfig.is_protected_split`)."""
-    return is_admin or not config.is_protected_split(split)
 
 
 @dc.dataclass(frozen=True)
@@ -141,8 +135,7 @@ def _make_set_score_tables_html(worker: ScoringWorker,
     set_to_tables_html = {}
     for name, [model] in set_to_models.items():
         scores = compute_method_scores(model.submission.label, [model], subset.selected)
-        resamples = worker.get_method_resamples(scores, subset.selected,
-                                                MODEL_SCORES_METRIC_NAMES)
+        resamples = worker.get_method_resamples(scores, MODEL_SCORES_METRIC_NAMES)
         set_to_tables_html[name] = make_model_scores_html(scores, resamples,
                                                           worker.settings.confidence,
                                                           shown_metrics)
@@ -184,22 +177,21 @@ class _ModelPage:
     def __init__(self, archive: ModelArchive,
                  dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
                  coding_tables: _CodingTableFiles, get_actor: T.Callable[[], str],
-                 can_write: bool, is_admin: bool, snapshot: _ModelSnapshot):
+                 account: Account | None, snapshot: _ModelSnapshot):
         """
         Args:
             coding_tables: Shared by the pages.
             get_actor: See `run_change_in_thread`.
-            can_write: Whether the account that was signed in when the page was created could
-                write.
-            is_admin: Whether that account was an admin.
+            account: The account that was signed in when the page was created, which decides
+                what the page shows, or None.
         """
         self.archive = archive
         self.dataset_contexts = dataset_contexts
         self.worker = worker
         self.coding_tables = coding_tables
         self.get_actor = get_actor
-        self.can_write = can_write
-        self.is_admin = is_admin
+        self.account = account
+        self.can_write = can_write(account)
         self.model_id = snapshot.model.id
         #: What the panels show, loaded again after each change.
         self.snapshot = snapshot
@@ -380,8 +372,7 @@ class _ModelPage:
         if (explanation := ie.explain_split_use(split_use, submission.split)) is not None:
             ui.label(explanation).classes("error" if split_use == "training" else "muted")
         is_analysed = not context.config.is_protected_split(submission.split)
-        can_see_class_scores = _can_see_class_scores(context.config, submission.split,
-                                                     self.is_admin)
+        shows_class_scores = can_see_class_scores(self.account, context.config, submission.split)
         for name, [model] in shown.set_to_models.items():
             ui.label(format_evaluation_set_title(
                 name, format_context_offsets(model.scores.context_offsets))).classes(
@@ -391,7 +382,7 @@ class _ModelPage:
             with ui.element("div").classes("form-row"):
                 ui.link("Download the scores over all attributes (JSON)",
                         get_scores_download_path(submission.id, name))
-                if not can_see_class_scores:
+                if not shows_class_scores:
                     ui.label(f"Without per-class scores, since the labels of the"
                              f" {submission.split} split are protected.").classes("muted")
                 if is_analysed:
@@ -545,8 +536,7 @@ def register_model_page(archive: ModelArchive,
         if report is None or context is None:
             raise HTTPException(status_code=404, detail=f"File #{submission_id} has no"
                                                         f" scores on the {evaluation_set} set.")
-        if not _can_see_class_scores(context.config, submission.split,
-                                     is_admin(sessions.get_account())):
+        if not can_see_class_scores(sessions.get_account(), context.config, submission.split):
             report = remove_class_scores(report)
         file_name = make_label_file_name(
             submission.label, f".{submission.split}.{evaluation_set}.scores.json")
@@ -564,8 +554,7 @@ def register_model_page(archive: ModelArchive,
                 ui.label(str(e)).classes("error")
                 return
             page = _ModelPage(archive, dataset_contexts, worker, coding_tables,
-                              sessions.require_writer_name, can_write(account),
-                              is_admin(account), snapshot)
+                              sessions.require_writer_name, account, snapshot)
             page.create_details()
             page.create_files()
             page.create_scores(request.query_params.get("split", ""),

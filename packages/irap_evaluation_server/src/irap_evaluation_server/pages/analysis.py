@@ -51,6 +51,7 @@ from ..method_ranking import (
     select_model_metrics,
     sort_scored_models,
 )
+from ..method_scores import ScoredModel, get_model_evaluation_set
 from ..prediction_analysis import (
     AlignedPredictions,
     AlignedPredictionsCache,
@@ -61,7 +62,7 @@ from ..prediction_analysis import (
     get_segment_detail,
     select_cell_segments,
 )
-from ..scoring import ScoredModel, ScoreStore, get_model_evaluation_set
+from ..scoring import ScoreStore
 from ..scoring_worker import ScoringWorker
 
 #: The metric that orders the models, and that their options show.

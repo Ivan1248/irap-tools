@@ -20,6 +20,7 @@ import typing as T
 from datetime import datetime
 from pathlib import Path
 
+from .config import DatasetConfig
 from .database import Migration, begin_write, connect, get_utc_now, initialize_schema
 
 Permission = T.Literal["view", "write", "admin"]
@@ -88,6 +89,12 @@ def can_write(account: Account | None) -> bool:
 
 def is_admin(account: Account | None) -> bool:
     return account is not None and account.permission == "admin"
+
+
+def can_see_class_scores(account: Account | None, config: DatasetConfig, split: str) -> bool:
+    """Returns whether an account, or a visitor (None), can see the per-class scores of a split,
+    which are only for admins on a protected split (`DatasetConfig.is_protected_split`)."""
+    return is_admin(account) or not config.is_protected_split(split)
 
 
 def hash_password(password: str) -> str:

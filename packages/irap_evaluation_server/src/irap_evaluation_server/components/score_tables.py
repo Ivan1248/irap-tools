@@ -26,8 +26,8 @@ from ..method_ranking import (
     describe_split_use,
     get_method_split_use,
 )
+from ..method_scores import MethodScores, are_scored_on_same_set
 from ..methodology import COMPARISONS_SECTION, EVALUATION_SETS_SECTION, INTERVALS_SECTION
-from ..scoring import MethodScores, are_scored_on_same_set
 from .formatting import (
     format_context_offsets,
     make_link_html,
@@ -314,7 +314,7 @@ def _make_seed_links_html(row: MethodScores, scope: ScoresScope) -> str:
     """Makes a link to each model of a row, labeled by its seed."""
     return ", ".join(scope.make_model_link_html(m.submission.model.id,
                                                 m.submission.model.seed_label)
-                     for m in row.models)
+                     for m in row.scored_models)
 
 
 def _make_model_links_html(row: MethodScores, scope: ScoresScope) -> str:
@@ -333,8 +333,8 @@ def _make_row_cells_html(row: MethodScores, metric_cells: T.Iterable[str],
 def _are_tested(rows: T.Iterable[MethodScores]) -> bool:
     """Returns whether the values of the rows are tested against the best
     (`compute_highlights`), which needs the rows with values on the same evaluation set
-    (`scoring.are_scored_on_same_set`)."""
-    return are_scored_on_same_set(m for r in rows if r.metrics is not None for m in r.models)
+    (`method_scores.are_scored_on_same_set`)."""
+    return are_scored_on_same_set(m for r in rows if r.metrics is not None for m in r.scored_models)
 
 
 def _make_method_notes_html(rows: T.Sequence[MethodScores], confidence: float,
@@ -367,9 +367,9 @@ def _make_notes_html(row: MethodScores) -> str:
     if row.missing_attributes:
         title_attribute = make_title_attribute(", ".join(row.missing_attributes))
         notes.append(f"<span{title_attribute}>{len(row.missing_attributes)} not predicted</span>")
-    if row.models[0].scores.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME:
-        notes.append(
-            f"context offsets {format_context_offsets(row.models[0].scores.context_offsets)}")
+    first_scores = row.scored_models[0].scores
+    if first_scores.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME:
+        notes.append(f"context offsets {format_context_offsets(first_scores.context_offsets)}")
     return "<br>".join(notes)
 
 
@@ -430,18 +430,24 @@ def get_per_attribute_table_metric_names(metric_name: str) -> tuple[str, str]:
 
 def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
                                   method_to_resamples: T.Mapping[str, RowResamples],
-                                  confidence: float, metric_name: str,
-                                  attributes: T.Sequence[str], scope: ScoresScope,
+                                  confidence: float, metric_name: str, scope: ScoresScope,
                                   comparisons: ReferenceComparisons | None = None) -> str:
     """Makes a table of attribute rows × method columns of one per-attribute metric, for the rows
     without an error, in their order. The first row has the attribute average of the metric.
 
     Args:
+        rows: Over the same attribute subset.
         method_to_resamples: Method name -> its resampled values of
             `get_per_attribute_table_metric_names(metric_name)`, or None.
         scope: For the links to the methods, and the marks of the methods that used the split.
         comparisons: The comparisons with a reference method, or None.
+
+    Raises:
+        ValueError: If there are no rows, or they are over different attribute subsets.
     """
+    if len(subsets := {r.attributes for r in rows}) != 1:
+        raise ValueError(f"The rows must be over one attribute subset, not {len(subsets)}.")
+    [attributes] = subsets
     rows = [r for r in rows if r.metrics is not None]
     row_resamples = [method_to_resamples.get(r.method_name) for r in rows]
     is_tested = _are_tested(rows)
@@ -478,7 +484,7 @@ def _make_row_value_cell_html(row: MethodScores, resamples: RowResamples, averag
 def _format_num_invalid(scores: MethodScores, attributes: T.Sequence[str]) -> str:
     """Formats the number of invalid predictions of the attributes, the mean over the models and
     the attributes if there are several."""
-    counts = [m.scores.num_invalid[a] for m in scores.models for a in attributes]
+    counts = [m.scores.num_invalid[a] for m in scores.scored_models for a in attributes]
     return str(counts[0]) if len(counts) == 1 else f"{sum(counts) / len(counts):.1f}"
 
 
@@ -491,7 +497,7 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
     and is not shaded.
 
     Args:
-        scores: `scoring.compute_method_scores`, without an error.
+        scores: `method_scores.compute_method_scores`, without an error.
         resamples: Its resampled values of `metric_names`, or None.
         confidence: The confidence of the intervals.
         metric_names: The metrics of the columns, of `IRAP_ATTRIBUTE_METRIC_NAMES`, e.g. the
@@ -502,7 +508,7 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
     """
     if (metrics := scores.metrics) is None:
         raise ValueError(f"The scores of {scores.method_name} have an error: {scores.error}")
-    attributes = list(metrics.per_attribute[IRAP_ATTRIBUTE_METRIC_NAMES[0]])
+    attributes = scores.attributes
     metric_columns = []
     for n in metric_names:
         values = [metrics.per_attribute[n].get(a) for a in attributes]
@@ -538,7 +544,7 @@ def make_model_scores_html(scores: MethodScores, resamples: RowResamples, confid
     (`_make_attribute_scores_table_html`). `make_model_scores_note_html` explains them.
 
     Args:
-        scores: `scoring.compute_method_scores` of the model alone.
+        scores: `method_scores.compute_method_scores` of the model alone.
         resamples: Its resampled values of `MODEL_SCORES_METRIC_NAMES`, or None.
         confidence: The confidence of the intervals.
         shown_metrics: The metrics of the tables, those that the model has.
@@ -565,9 +571,9 @@ def make_method_scores_html(method_scores: MethodScores, method_resamples: RowRe
     `make_method_scores_note_html` explains them.
 
     Args:
-        method_scores: `scoring.compute_method_scores` of the models of the method.
+        method_scores: `method_scores.compute_method_scores` of the models of the method.
         method_resamples: Its resampled values of `MODEL_SCORES_METRIC_NAMES`, or None.
-        seed_scores: `scoring.compute_method_scores` of each model alone, in the order of the
+        seed_scores: `method_scores.compute_method_scores` of each model alone, in the order of the
             rows.
         seed_resamples: The resampled values of each of `seed_scores` of the shown attribute
             averages, or None.

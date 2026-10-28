@@ -7,7 +7,7 @@ import typing as T
 import irap_evaluation as ie
 
 from ..datasets import DatasetContext
-from ..scoring import ScoredModel
+from ..method_scores import ScoredModel
 from .attribute_filter import AttributeSubset
 from .routes import ANALYSIS_PATH, ATTRIBUTE_PARAMETER, make_query_path
 from .view_queries import parse_dataset, parse_evaluation_set, select_default_split
@@ -149,7 +149,8 @@ def resolve_view(view: AnalysisView, models: T.Sequence[ScoredModel], subset: At
             least one. By default, model A is the first.
         subset: The attribute subset of the page. By default, the attribute is the first of it
             that model A is scored on.
-        get_evaluation_set: The evaluation set of a model (`scoring.get_model_evaluation_set`).
+        get_evaluation_set: The evaluation set of a model
+            (`method_scores.get_model_evaluation_set`).
 
     Raises:
         ValueError: If model A or B is not among the models, B cannot be compared with A, the

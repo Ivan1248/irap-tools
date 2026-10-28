@@ -11,7 +11,8 @@ from irap_evaluation.reports.evaluation_report import to_labeled_metric_values
 from synthetic_vietnam import SPLIT, make_predictions
 
 from irap_evaluation_server.archive import ModelArchive
-from irap_evaluation_server.scoring import score_predictions, select_scored_models
+from irap_evaluation_server.method_scores import select_scored_models
+from irap_evaluation_server.scoring import score_predictions
 from irap_evaluation_server.uploads import apply_upload, plan_upload
 
 #: The second split of the `two_split_contexts` fixture.

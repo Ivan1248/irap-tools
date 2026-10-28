@@ -18,11 +18,11 @@ from irap_evaluation_server.method_comparison import (
     get_better_method,
     get_comparison_error,
 )
-from irap_evaluation_server.scoring import (
-    RESAMPLED_METRIC_NAMES,
+from irap_evaluation_server.method_scores import (
     compute_method_scores,
     group_scored_models_by_method,
 )
+from irap_evaluation_server.scoring import RESAMPLED_METRIC_NAMES
 
 
 @pytest.fixture
@@ -43,8 +43,7 @@ def _compare(worker, method_to_models, name_a, name_b, attributes):
     page does."""
     row_a, row_b = (compute_method_scores(n, method_to_models[n], attributes)
                     for n in (name_a, name_b))
-    method_to_resamples = {r.method_name: worker.get_method_resamples(r, attributes,
-                                                                      RESAMPLED_METRIC_NAMES)
+    method_to_resamples = {r.method_name: worker.get_method_resamples(r, RESAMPLED_METRIC_NAMES)
                            for r in (row_a, row_b)}
     method_to_differences, errors = compare_with_reference(
         [row_a, row_b], method_to_resamples, row_b, worker.settings.confidence)
@@ -87,8 +86,8 @@ def test_get_comparison_error(method_to_models):
     attributes = method_to_models["a"][0].scores.attributes
     row_a, row_b = (compute_method_scores(n, method_to_models[n], attributes) for n in "ab")
     assert get_comparison_error(row_a, row_b) is None
-    [model_b] = row_b.models
-    other_set = dc.replace(row_b, models=(dc.replace(model_b, scores=dc.replace(
+    [model_b] = row_b.scored_models
+    other_set = dc.replace(row_b, scored_models=(dc.replace(model_b, scores=dc.replace(
         model_b.scores, evaluation_set_fingerprint="other")),))
     assert "different evaluation sets" in get_comparison_error(row_a, other_set)
 

@@ -9,7 +9,8 @@ cache then deletes its scores (`scoring.ScoreStore.delete_scorings_of_deleted_su
 Deleting a model removes it with all its submissions, and deleting a method removes all its models
 on a dataset. The last submission of a model is deleted only with the model, so each model has a
 submission. The action log keeps the actions on deleted models and submissions. Each action
-records who did it, the name of an account that can write (`accounts`).
+records who did it, the name of an account that can write. The archive does not check
+permissions, its callers do (`accounts.can_write`).
 
 A method on a dataset can have a display name, which the pages show instead of the method name.
 An update sets it, given with the update or from the files that have one

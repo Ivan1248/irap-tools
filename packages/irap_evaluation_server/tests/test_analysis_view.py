@@ -9,7 +9,7 @@ from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server.components.analysis_view import AnalysisView, resolve_view
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
-from irap_evaluation_server.scoring import get_model_evaluation_set
+from irap_evaluation_server.method_scores import get_model_evaluation_set
 
 
 @pytest.fixture
