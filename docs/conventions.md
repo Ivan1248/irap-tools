@@ -19,7 +19,9 @@ See [`../AGENTS.md`](../AGENTS.md) for broader coding guidelines that apply acro
 
 Names used outside a small local scope should be specific: `compute_split_labels`, not `compute_labels`.
 
-Boolean attributes and stored state should read as an affirmative statement (`self.is_selected`, `is_model_selection_same_as_with_context`), not a bare adjective or a question. Keyword-argument switches keep their established form: `allow_missing_attributes=True`, `use_ncontext_filter=False`, `normalize=False`.
+A boolean that describes a state should read as an affirmative statement, not a bare adjective or a question. An attribute completes the sentence begun by its owner (`self.is_selected`), so its name does not repeat the owner. A variable has no owner, so its name starts with its own subject (`target_is_set`).
+
+A boolean argument that tells a function what to do is named as a command (`allow_missing_attributes=True`, `use_ncontext_filter=False`, `normalize=False`) and passed by keyword, so that call sites name each flag.
 
 Name an identifier after the quantity it represents, not the symbol used for it in a formula: `learning_rate` over `alpha`, `std_dev` over `sigma`. Exceptions: conventional symbols (`x`, `y`) and short loop indices.
 
