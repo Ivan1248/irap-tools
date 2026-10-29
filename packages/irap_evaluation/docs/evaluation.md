@@ -34,16 +34,18 @@ For context offsets $o_1, \ldots, o_m$, the evaluation set of a split holds its 
 3. **Context**: for a segment at position $p$ of a sequence of length $L$, every $p + o_j$ lies in $[0, L)$, and the segment there has an image. Context segments need no label.
 4. **N-context (BH only)**: the segment and the 10 segments on each side of it in its sequence are all in the same `seg_to_res/<split>.pickle` (train, val or test).
 
-A file is scored on up to two sets:
+A file is scored on up to three sets:
 
 - **Reference set**: offsets −4 … 0 for Vietnam and −10 … 10 for BH (`DATASET_PRESETS`). It is the same for every model, so its scores are comparable across models.
+- **Full set**: offsets 0, i.e. every segment of the split with an image and labels (`get_full_set`). It is also the same for every model, and contains every other set. Only models that predict all its segments are scored on it, e.g. models without context or with padding for missing context segments.
 - **Model-compatible set**: the model's own offsets, from the file header or `--context-offsets`. This is the set of the training-time evaluation. If the offsets lie within the reference window, the model-compatible set contains the reference set.
 
 `select_evaluation_sets` (used by `irap-eval evaluate`) selects the sets as follows:
 
 - A file that lacks segments of its model-compatible set is incomplete or of another metadata build, and is refused.
 - A model whose offsets reach beyond the reference window lacks some reference segments. It is scored only on its model-compatible set, with a note, or refused if its offsets are unknown.
-- If the two sets are equal, the model-compatible set is left out.
+- A model that lacks segments of the full set is not scored on it, with a note.
+- If the model-compatible set equals the reference set or the full set, it is left out.
 - A set without labels, e.g. of an unlabeled split, is left out with a note. The file must still cover its segments as above.
 
 ## Attributes

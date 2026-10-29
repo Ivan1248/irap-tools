@@ -1,6 +1,6 @@
 """Evaluation sets: the segments of a split that predictions are scored on, with their labels.
 
-`docs/evaluation.md` defines the reference set and the model-compatible set.
+`docs/evaluation.md` defines the reference set, the full set and the model-compatible set.
 """
 
 import dataclasses as dc
@@ -21,7 +21,10 @@ from irap_data.metadata import (
 )
 
 REFERENCE_SET_NAME = "reference"
+FULL_SET_NAME = "full"
 MODEL_COMPATIBLE_SET_NAME = "compatible"
+#: The names of the sets that are the same for every model (`get_shared_evaluation_sets`).
+SHARED_EVALUATION_SET_NAMES = (REFERENCE_SET_NAME, FULL_SET_NAME)
 
 
 @dc.dataclass(frozen=True)
@@ -31,8 +34,9 @@ class EvaluationSet:
     Attributes:
         dataset: The iRAP release, a key of `irap_data.DATASET_PRESETS`.
         split: The split, e.g. 'val'.
-        name: Identifies the set in reports, e.g. `REFERENCE_SET_NAME` (`get_reference_set`) or
-            `MODEL_COMPATIBLE_SET_NAME` (`get_model_compatible_set`).
+        name: Identifies the set in reports, e.g. `REFERENCE_SET_NAME` (`get_reference_set`),
+            `FULL_SET_NAME` (`get_full_set`) or `MODEL_COMPATIBLE_SET_NAME`
+            (`get_model_compatible_set`).
         context_offsets: The context offsets that selected the segments, also of a subset
             (see `select_evaluation_subset`).
         vocabulary: The attributes and classes of the dataset.
@@ -96,7 +100,7 @@ def get_evaluation_set(metadata: IRAPMetadata, dataset: str, split: str,
     It has the segments with a complete context window for `context_offsets`, selected with
     `irap_data.select_preset_split_segments`. The offsets of a model give its model-compatible
     set (`get_model_compatible_set`), and (0,) selects every segment of the split that has an
-    image and labels.
+    image and labels (`get_full_set`).
 
     Args:
         name: See `EvaluationSet.name`.
@@ -123,6 +127,24 @@ def get_reference_set(metadata: IRAPMetadata, dataset: str, split: str) -> Evalu
     return get_evaluation_set(metadata, dataset, split,
                               get_dataset_preset(dataset).reference_context_offsets,
                               REFERENCE_SET_NAME)
+
+
+def get_full_set(metadata: IRAPMetadata, dataset: str, split: str) -> EvaluationSet:
+    """The full set of a split, named `FULL_SET_NAME`, the same for every model: every segment of
+    the split that has an image and labels, the evaluation set of the context offsets (0,).
+
+    It contains every other evaluation set of the split.
+    """
+    return get_evaluation_set(metadata, dataset, split, (0,), FULL_SET_NAME)
+
+
+def get_shared_evaluation_sets(metadata: IRAPMetadata, dataset: str,
+                               split: str) -> dict[str, EvaluationSet]:
+    """The evaluation sets of a split that are the same for every model, so that models can be
+    compared on them, by name (`SHARED_EVALUATION_SET_NAMES`): the reference set and the full
+    set."""
+    return {REFERENCE_SET_NAME: get_reference_set(metadata, dataset, split),
+            FULL_SET_NAME: get_full_set(metadata, dataset, split)}
 
 
 def get_model_compatible_set(metadata: IRAPMetadata, dataset: str, split: str,
@@ -162,19 +184,19 @@ def select_evaluation_subset(evaluation_set: EvaluationSet, is_selected: np.ndar
 
 def select_evaluation_sets(
     predicted_segment_ids: T.Collection[str],
-    reference_set: EvaluationSet,
+    shared_sets: T.Collection[EvaluationSet],
     model_compatible_set: EvaluationSet | None,
 ) -> tuple[list[EvaluationSet], list[str]]:
-    """The evaluation sets to score a model on: the reference set, if the model predicts all its
-    segments, and the model-compatible set, if it is known and has other segments than the
-    reference set.
+    """The evaluation sets to score a model on: each shared set of which the model predicts all
+    segments, and the model-compatible set, if it is known and has other segments than each
+    shared set.
 
     A set without labels, e.g. of an unlabeled split (`irap_data.is_unlabeled_split`), is left
     out, but the predictions must still cover its segments as above.
 
     Args:
         predicted_segment_ids: The segments that the model predicts.
-        reference_set: See `get_reference_set`.
+        shared_sets: See `get_shared_evaluation_sets`.
         model_compatible_set: See `get_model_compatible_set`. None if the model's context
             offsets are unknown.
 
@@ -182,8 +204,8 @@ def select_evaluation_sets(
         The evaluation sets, and notes on why a set is left out.
 
     Raises:
-        ValueError: If segments of `model_compatible_set` have no prediction, or reference
-            segments have none and `model_compatible_set` is None.
+        ValueError: If segments of `model_compatible_set` have no prediction, or segments of
+            each shared set have none and `model_compatible_set` is None.
     """
     predicted = set(predicted_segment_ids)
 
@@ -197,27 +219,27 @@ def select_evaluation_sets(
             f" segments of the model-compatible set (context offsets"
             f" {model_compatible_set.context_offsets}), so the predictions are incomplete or of"
             f" another metadata build.")
-    num_missing = count_missing(reference_set)
-    missing_note = (f"No predictions for {num_missing} of the {reference_set.num_segments}"
-                    f" reference segments")
-    if num_missing and model_compatible_set is None:
-        raise ValueError(
-            f"{missing_note} and no context offsets, so the model cannot be scored. If its"
-            f" context window reaches beyond the reference window"
-            f" {reference_set.context_offsets}, give its context offsets. Otherwise, the file is"
-            f" incomplete or of another metadata build.")
     evaluation_sets, notes = [], []
-    if num_missing:
-        notes.append(f"{missing_note}, so the model is not scored on the reference set (context"
-                     f" offsets {reference_set.context_offsets}).")
-    else:
-        evaluation_sets.append(reference_set)
+    for shared_set in shared_sets:
+        if num_missing := count_missing(shared_set):
+            notes.append(f"No predictions for {num_missing} of the {shared_set.num_segments}"
+                         f" segments of the {shared_set.name} set (context offsets"
+                         f" {shared_set.context_offsets}), so the model is not scored on it.")
+        else:
+            evaluation_sets.append(shared_set)
     if model_compatible_set is None:
+        if not evaluation_sets:
+            raise ValueError(" ".join([
+                *notes, "Without context offsets, the model cannot be scored. If its context"
+                " window reaches beyond those of these sets, give its context offsets."
+                " Otherwise, the file is incomplete or of another metadata build."]))
         notes.append("No context offsets, so the model is not scored on its model-compatible"
                      " set.")
-    elif model_compatible_set.segment_ids == reference_set.segment_ids:
+    elif equal_set_names := [s.name for s in shared_sets
+                             if s.segment_ids == model_compatible_set.segment_ids]:
         notes.append(f"The context offsets {model_compatible_set.context_offsets} select the"
-                     f" segments of the reference set, so the model-compatible set is left out.")
+                     f" segments of the {equal_set_names[0]} set, so the model-compatible set is"
+                     f" left out.")
     else:
         evaluation_sets.append(model_compatible_set)
     labeled_sets = []

@@ -59,7 +59,7 @@ Run `irap-eval <command> --help` for all options.
 
 ### Outputs of `evaluate`
 
-`evaluate` scores each file on two [evaluation sets](docs/evaluation.md#evaluation-sets): `reference`, the same for all models, and `compatible`, which matches the model's context offsets. Nulls in a file are scored according to `--null-policy` ([invalid attribute predictions](docs/evaluation.md#invalid-attribute-predictions)). It also takes the files of a model on several splits, which must agree in the model's training and early stopping splits.
+`evaluate` scores each file on up to three [evaluation sets](docs/evaluation.md#evaluation-sets): `reference`, the same for all models, `full`, all segments with an image, for the models that predict all of them, and `compatible`, which matches the model's context offsets. Nulls in a file are scored according to `--null-policy` ([invalid attribute predictions](docs/evaluation.md#invalid-attribute-predictions)). It also takes the files of a model on several splits, which must agree in the model's training and early stopping splits.
 
 Models are labeled `<method>` or `<method>/seed<seed>`. Every output records `split_use`: whether the model was trained on the scored split, used it for early stopping, may have been trained on it, or held it out ([terms](docs/evaluation.md#terms)). `evaluate` writes to `--out`:
 
@@ -96,7 +96,9 @@ print(ie.compute_method_metrics(method_to_results["resnet"]).averages["amF1"],
 differences = ie.compare_methods(method_to_results["resnet"], method_to_results["vit"], ["amF1"])
 print(differences.averages["amF1"])  # MetricDifference(difference, interval)
 
-# Other evaluation sets: the model-compatible set of some offsets, and a subset, e.g. one region.
+# Other evaluation sets: the full set, the model-compatible set of some offsets, and a subset,
+# e.g. one region.
+full_set = ie.get_full_set(metadata, "vietnam", "val")
 model_compatible_set = ie.get_model_compatible_set(metadata, "vietnam", "val", (0, -1, -4))
 north_set = ie.select_evaluation_subset(reference_set, is_north, name="north")
 ```

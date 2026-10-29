@@ -32,6 +32,7 @@ from ..evaluation_sets import (
     EvaluationSet,
     get_model_compatible_set,
     get_reference_set,
+    get_shared_evaluation_sets,
     select_evaluation_sets,
 )
 from ..methods import check_prediction_file_models
@@ -133,19 +134,19 @@ def _score(predictions: Predictions, evaluation_set: EvaluationSet, *, null_poli
 def _select_model_evaluation_sets(
     predictions: Predictions,
     context_offsets: tuple[int, ...] | None,
-    reference_set_f: T.Callable[[str, str], EvaluationSet],
+    shared_sets_f: T.Callable[[str, str], T.Mapping[str, EvaluationSet]],
     model_compatible_set_f: T.Callable[[str, str, tuple[int, ...]], EvaluationSet],
 ) -> list[EvaluationSet]:
     """`select_evaluation_sets` for a model, with its notes printed, and a note if it used the
     split (`_explain_split_use`)."""
     header = predictions.header
     name = header.model.label
-    reference_set = reference_set_f(header.dataset, header.split)
     model_compatible_set = None if context_offsets is None else model_compatible_set_f(
         header.dataset, header.split, tuple(context_offsets))
     try:
-        evaluation_sets, notes = select_evaluation_sets(predictions.segment_ids, reference_set,
-                                                        model_compatible_set)
+        evaluation_sets, notes = select_evaluation_sets(
+            predictions.segment_ids, shared_sets_f(header.dataset, header.split).values(),
+            model_compatible_set)
     except ValueError as e:
         raise ValueError(f"Model {name!r}: {e}") from e
     if evaluation_sets and (split_use_note := _explain_split_use(header.model, header.split)):
@@ -189,8 +190,8 @@ def run_evaluate(args: argparse.Namespace) -> None:
     metadata = load_irap_metadata(args.metadata_dir)
     for predictions in predictions_seq:
         check_split_names(predictions.header.model, metadata.splits)
-    # Cached, since the models of a release and split share their reference set.
-    reference_set_f = functools.cache(functools.partial(get_reference_set, metadata))
+    # Cached, since the shared sets are the same for all models of a release and split.
+    shared_sets_f = functools.cache(functools.partial(get_shared_evaluation_sets, metadata))
     model_compatible_set_f = functools.cache(functools.partial(get_model_compatible_set, metadata))
     score = functools.partial(
         _score, null_policy=args.null_policy, attribute_selection=args.attributes,
@@ -203,7 +204,7 @@ def run_evaluate(args: argparse.Namespace) -> None:
             predictions,
             method_context_offsets.get(predictions.header.model.method_name,
                                        predictions.header.context_offsets),
-            reference_set_f, model_compatible_set_f)]
+            shared_sets_f, model_compatible_set_f)]
     if not results:
         raise ValueError("No model has an evaluation set with labels (see the notes above), so"
                          " nothing is scored.")
@@ -331,9 +332,10 @@ def make_argument_parser() -> argparse.ArgumentParser:
     validate.set_defaults(run=run_validate)
 
     evaluate = commands.add_parser(
-        "evaluate", help="Score prediction files on the reference set and, if the context offsets"
-                         " of a method are known, on its model-compatible set. Methods with several"
-                         " models also get the means over their models.")
+        "evaluate", help="Score prediction files on the reference set, on the full set if they"
+                         " predict all its segments, and, if the context offsets of a method are"
+                         " known, on its model-compatible set. Methods with several models also"
+                         " get the means over their models.")
     evaluate.add_argument("metadata_dir", type=Path, help="Metadata directory of the release.")
     evaluate.add_argument("files", nargs="+", type=Path, help="Prediction files.")
     evaluate.add_argument("--out", type=Path, required=True, help="Output directory.")

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from irap_data.metadata import load_irap_metadata
-from irap_evaluation.evaluation_sets import get_reference_set
+from irap_evaluation.evaluation_sets import get_full_set, get_reference_set
 
 from synthetic_vietnam import SPLIT, make_predictions, write_metadata_dir
 
@@ -21,6 +21,11 @@ def metadata(metadata_dir):
 @pytest.fixture
 def reference_set(metadata):
     return get_reference_set(metadata, "vietnam", SPLIT)
+
+
+@pytest.fixture
+def full_set(metadata):
+    return get_full_set(metadata, "vietnam", SPLIT)
 
 
 @pytest.fixture

@@ -47,12 +47,16 @@ from .evaluation import (
     select_result_attributes,
 )
 from .evaluation_sets import (
+    FULL_SET_NAME,
     MODEL_COMPATIBLE_SET_NAME,
     REFERENCE_SET_NAME,
+    SHARED_EVALUATION_SET_NAMES,
     EvaluationSet,
     get_evaluation_set,
+    get_full_set,
     get_model_compatible_set,
     get_reference_set,
+    get_shared_evaluation_sets,
     select_evaluation_sets,
     select_evaluation_subset,
 )

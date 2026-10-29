@@ -55,9 +55,11 @@ def test_evaluate_ensemble_compare_export(metadata_dir, metadata, tmp_path, caps
     long_table = pd.read_csv(out / "summary_long.csv")
     assert set(long_table["model"]) == {"a", "b", "ens"}
     assert (long_table["ci_num_undefined"] >= 0).all()
-    # a and b are also scored on their own sets, ens has no offsets.
-    assert set(long_table.groupby("model")["evaluation_set"].unique().map(tuple)) == \
-           {("reference", "compatible"), ("reference",)}
+    # All predict every segment. a is also scored on its own set, the offsets 0 of b select the
+    # full set, and ens has no offsets.
+    assert long_table.groupby("model")["evaluation_set"].unique().map(tuple).to_dict() == {
+        "a": ("reference", "full", "compatible"), "b": ("reference", "full"),
+        "ens": ("reference", "full")}
     per_attribute = pd.read_csv(out / "per_attribute_mF1_vietnam_val_reference.csv",
                                 index_col=0)
     assert list(per_attribute.columns) == ["a", "b", "ens"]
@@ -139,7 +141,8 @@ def test_methods_with_several_models(metadata_dir, metadata, tmp_path, capsys):
     methods = pd.read_csv(out / "method_averages_vietnam_val_reference.csv", index_col=0)
     assert methods["models"].to_dict() == {"a": 3, "b": 2}  # c has a single model
     a_models = long_table[(long_table["method"] == "a") & (long_table["attribute"] == "average")
-                          & (long_table["metric"] == "mF1")]
+                          & (long_table["metric"] == "mF1")
+                          & (long_table["evaluation_set"] == "reference")]
     assert methods.loc["a", "mF1"] == pytest.approx(a_models["value"].mean())
     assert methods.loc["a", "mF1 low"] <= methods.loc["a", "mF1"] <= methods.loc["a", "mF1 high"]
 
@@ -242,7 +245,7 @@ def test_models_that_miss_reference_segments_are_scored_on_their_own_set(
                                              context_offsets=(0, -6)))
     out = tmp_path / "results"
     assert main(["evaluate", str(metadata_dir), str(path), "--out", str(out)]) == 0
-    assert "not scored on the reference set" in capsys.readouterr().out
+    assert "segments of the reference set" in capsys.readouterr().out
     long_table = pd.read_csv(out / "summary_long.csv")
     assert set(long_table["evaluation_set"]) == {"compatible"}
 
@@ -261,7 +264,7 @@ def test_a_model_that_cannot_be_scored_on_any_set_is_an_error(metadata_dir, meta
     assert "Model 'b': No predictions for 1 of" in capsys.readouterr().err
 
 
-def test_a_model_with_the_reference_offsets_is_scored_only_on_the_reference_set(
+def test_a_model_with_the_reference_offsets_is_not_scored_on_its_model_compatible_set(
         metadata_dir, metadata, tmp_path, capsys):
     offsets = get_dataset_preset("vietnam").reference_context_offsets
     path = tmp_path / "ref.predictions.parquet"
@@ -270,7 +273,8 @@ def test_a_model_with_the_reference_offsets_is_scored_only_on_the_reference_set(
     out = tmp_path / "results"
     assert main(["evaluate", str(metadata_dir), str(path), "--out", str(out)]) == 0
     assert "model-compatible set is left out" in capsys.readouterr().out
-    assert [p.name for p in (out / "ref").iterdir()] == ["metrics_vietnam_val_reference.json"]
+    assert (sorted(p.name for p in (out / "ref").iterdir())
+            == ["metrics_vietnam_val_full.json", "metrics_vietnam_val_reference.json"])
 
 
 def test_the_library_does_not_import_the_reports_or_the_tools():
