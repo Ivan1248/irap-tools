@@ -7,11 +7,6 @@ import typing as T
 
 import irap_evaluation as ie
 import numpy as np
-from irap_evaluation.metrics import (
-    IRAP_ATTRIBUTE_METRIC_NAMES,
-    IRAP_MAIN_METRIC,
-    parse_metric_name,
-)
 
 from .method_scores import (
     MethodScores,
@@ -23,7 +18,7 @@ from .scoring import IRAP_AVERAGE_METRIC_NAMES
 
 #: The columns of the method table, of which admins can hide some (`ShownMetrics`).
 RANKING_METRIC_NAMES = IRAP_AVERAGE_METRIC_NAMES
-DEFAULT_SORT_METRIC = ie.get_attribute_average_name(IRAP_MAIN_METRIC)
+DEFAULT_SORT_METRIC = ie.get_attribute_average_name(ie.IRAP_MAIN_METRIC)
 #: The metrics that admins can hide: all but the main one, which is the default sort.
 HIDEABLE_METRIC_NAMES = tuple(n for n in RANKING_METRIC_NAMES if n != DEFAULT_SORT_METRIC)
 
@@ -53,13 +48,13 @@ class ShownMetrics:
     def per_attribute_names(self) -> tuple[str, ...]:
         """The per-attribute metrics of the shown averages, e.g. mF1 of amF1, for the
         per-attribute view."""
-        return tuple(parse_metric_name(n).name for n in self.average_names)
+        return tuple(ie.parse_metric_name(n).name for n in self.average_names)
 
     @property
     def attribute_table_names(self) -> tuple[str, ...]:
-        """The metrics of `IRAP_ATTRIBUTE_METRIC_NAMES` whose averages are shown, e.g. for the
-        tables of the metrics of each attribute."""
-        return tuple(n for n in IRAP_ATTRIBUTE_METRIC_NAMES if n in self.per_attribute_names)
+        """The metrics of `irap_evaluation.IRAP_ATTRIBUTE_METRIC_NAMES` whose averages are shown,
+        e.g. for the tables of the metrics of each attribute."""
+        return tuple(n for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES if n in self.per_attribute_names)
 
 
 #: The level of the one-sided test of whether a value is worse than the best

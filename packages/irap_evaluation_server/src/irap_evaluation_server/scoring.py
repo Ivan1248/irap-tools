@@ -29,7 +29,6 @@ import irap_evaluation as ie
 import numpy as np
 from irap_data.attrs import get_attrs_to_include
 from irap_data.metadata import IGNORE_LABEL_INDEX, ClassVocabulary
-from irap_evaluation.metrics import parse_metric_name
 from irap_evaluation.reports.evaluation_report import to_json_dict
 
 from .archive import DATABASE_FILE_NAME as ARCHIVE_DATABASE_FILE_NAME
@@ -49,7 +48,7 @@ ScoringStatus = T.Literal["scored", "failed", "error"]
 #: The attribute averages of the iRAP protocol, amF1 first. Hard predictions lack the
 #: probabilistic ones.
 IRAP_AVERAGE_METRIC_NAMES = tuple(n for n in ie.get_irap_metric_names(output_kind="probs")
-                                  if parse_metric_name(n).is_averaged)
+                                  if ie.parse_metric_name(n).is_averaged)
 #: The metrics whose resampled values are stored (`resample_result`): `IRAP_AVERAGE_METRIC_NAMES`
 #: and their per-attribute values, from which the averages over a subset of the attributes are
 #: computed.

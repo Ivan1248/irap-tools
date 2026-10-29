@@ -4,7 +4,6 @@
 import html
 
 import irap_evaluation as ie
-from irap_evaluation.metrics import parse_metric_name
 from nicegui import ui
 
 from ..accounts import is_admin
@@ -20,7 +19,7 @@ from ..method_ranking import HIDEABLE_METRIC_NAMES, RANKING_METRIC_NAMES
 def _make_metric_label_html(metric_name: str, is_hideable: bool) -> str:
     """Makes the name of an attribute average with the description of its per-attribute
     metric, which the per-attribute view shows too."""
-    description = ie.describe_metric(parse_metric_name(metric_name).name)
+    description = ie.describe_metric(ie.parse_metric_name(metric_name).name)
     if not is_hideable:
         description += " The main metric, always shown."
     return f'<b>{metric_name}</b> <span class="muted">{html.escape(description)}</span>'

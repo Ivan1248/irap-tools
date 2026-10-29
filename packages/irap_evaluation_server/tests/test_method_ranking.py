@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 import irap_evaluation as ie
 import numpy as np
 import pytest
-from irap_evaluation.metrics import IRAP_ATTRIBUTE_METRIC_NAMES
 
 from irap_evaluation_server.archive import Model, Submission
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
@@ -55,8 +54,9 @@ def make_scored_model(submission_id, attribute_to_value, method_name="m",
                       missing_attributes=(), training_splits=()):
     """Makes a scored model whose iRAP metrics of each attribute equal the given value."""
     metrics = ie.MetricValues(
-        averages={ie.get_attribute_average_name(n): math.nan for n in IRAP_ATTRIBUTE_METRIC_NAMES},
-        per_attribute={n: dict(attribute_to_value) for n in IRAP_ATTRIBUTE_METRIC_NAMES})
+        averages={ie.get_attribute_average_name(n): math.nan
+                  for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES},
+        per_attribute={n: dict(attribute_to_value) for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES})
     scores = EvaluationSetScores(
         evaluation_set="reference", context_offsets=(0,), evaluation_set_fingerprint="f",
         attributes=tuple(attribute_to_value),

@@ -15,7 +15,6 @@ import typing as T
 
 import irap_evaluation as ie
 import numpy as np
-from irap_evaluation.metrics import IRAP_ATTRIBUTE_METRIC_NAMES
 
 from ..method_comparison import get_better_method
 from ..method_ranking import (
@@ -57,7 +56,7 @@ _SINGLE_MODEL_NOTE = (f'"{_SINGLE_MODEL_MARK}": its intervals do not cover the v
 
 #: The metrics of `make_model_scores_html` and `make_method_scores_html`, e.g. for
 #: `ScoringWorker.get_method_resamples`.
-MODEL_SCORES_METRIC_NAMES = (*RANKING_METRIC_NAMES, *IRAP_ATTRIBUTE_METRIC_NAMES)
+MODEL_SCORES_METRIC_NAMES = (*RANKING_METRIC_NAMES, *ie.IRAP_ATTRIBUTE_METRIC_NAMES)
 
 
 @dc.dataclass(frozen=True)
@@ -500,8 +499,9 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
         scores: `method_scores.compute_method_scores`, without an error.
         resamples: Its resampled values of `metric_names`, or None.
         confidence: The confidence of the intervals.
-        metric_names: The metrics of the columns, of `IRAP_ATTRIBUTE_METRIC_NAMES`, e.g. the
-            shown ones (`ShownMetrics.attribute_table_names`).
+        metric_names: The metrics of the columns, of
+            `irap_evaluation.IRAP_ATTRIBUTE_METRIC_NAMES`, e.g. the shown ones
+            (`ShownMetrics.attribute_table_names`).
 
     Raises:
         ValueError: If `scores` has an error.
