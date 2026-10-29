@@ -15,7 +15,13 @@ import typing as T
 
 import numpy as np
 
-from .evaluation import EvaluationResult, check_method_models
+from .evaluation import EvaluationResult
+from .methods import (
+    check_method_results,
+    check_models_have_same_metrics,
+    check_results_are_comparable,
+    compute_method_metrics,
+)
 from .metrics import MetricValues, compute_grouped_metrics, map_metric_values
 
 
@@ -123,92 +129,6 @@ def _check_confidence(confidence: float) -> None:
         raise ValueError(f"The confidence must be in [0, 1], got {confidence}.")
 
 
-def _check_comparable(result_a: EvaluationResult, result_b: EvaluationResult) -> None:
-    set_a, set_b = result_a.evaluation_set, result_b.evaluation_set
-    label_a, label_b = result_a.model.label, result_b.model.label
-    if (set_a.segment_ids, set_a.segment_sequence_ids) != \
-            (set_b.segment_ids, set_b.segment_sequence_ids):
-        raise ValueError(f"{label_a!r} and {label_b!r} are on different segments. Compare them on"
-                         f" the reference set, which is the same for every method.")
-    if result_a.attributes != result_b.attributes:
-        raise ValueError(f"{label_a!r} and {label_b!r} score different attributes:"
-                         f" {sorted(set(result_a.attributes) ^ set(result_b.attributes))}.")
-    if result_a.null_policy != result_b.null_policy:
-        raise ValueError(f"{label_a!r} and {label_b!r} use different null policies:"
-                         f" {result_a.null_policy!r} and {result_b.null_policy!r}.")
-    if result_a.null_policy == "exclude" and any(
-            n > 0 for r in (result_a, result_b) for n in r.num_invalid.values()):
-        raise ValueError("With null_policy='exclude', the invalid attribute predictions of each"
-                         " model are left out, so the models are scored on different segments."
-                         " Use null_policy='first_class'.")
-
-
-def _have_same_metrics(values_a: MetricValues, values_b: MetricValues) -> bool:
-    """Whether the values are of the same metrics and, per metric, of the same attributes."""
-    return values_a.names == values_b.names and all(
-        values_a.per_attribute[n].keys() == values_b.per_attribute[n].keys()
-        for n in values_a.per_attribute)
-
-
-def _check_model_values(model_values: T.Sequence[MetricValues]) -> None:
-    if not model_values:
-        raise ValueError("At least one model is required.")
-    if not all(_have_same_metrics(v, model_values[0]) for v in model_values[1:]):
-        raise ValueError("The models differ in metrics or attributes.")
-
-
-def _check_models(models: T.Sequence[EvaluationResult]) -> None:
-    """Checks that `models` are results of the models of one method (see `check_method_models`),
-    comparable with each other and with the same metrics."""
-    if not models:
-        raise ValueError("A method needs at least one model.")
-    if len(names := {r.model.method_name for r in models}) > 1:
-        raise ValueError(f"The models are of different methods: {sorted(names)}.")
-    check_method_models(r.model for r in models)
-    for model in models[1:]:
-        _check_comparable(models[0], model)
-        if not _have_same_metrics(model.metrics, models[0].metrics):
-            raise ValueError(f"The models {models[0].model.label!r} and {model.model.label!r}"
-                             f" have different metrics.")
-
-
-def _compute_mean(*values: float) -> float:
-    """The mean, or the value itself if all values are equal, which keeps ints (e.g. `n`) and
-    avoids rounding."""
-    if all(v == values[0] for v in values):
-        return values[0]
-    return float(np.mean(values))
-
-
-def compute_mean_metrics(model_metrics: T.Sequence[MetricValues[float]]) -> MetricValues[float]:
-    """Computes the mean of each metric over models, e.g. of their metrics over a subset of the
-    attributes (`metrics.select_metric_attributes`). `compute_method_metrics` also checks the
-    models.
-
-    Raises:
-        ValueError: If `model_metrics` is empty, or the models differ in metrics or attributes.
-    """
-    _check_model_values(model_metrics)
-    return map_metric_values(_compute_mean, *model_metrics)
-
-
-def compute_method_metrics(models: T.Sequence[EvaluationResult]) -> MetricValues[float]:
-    """Computes the metrics of a method: the mean of each metric over its models.
-
-    Args:
-        models: The results of the models of the method.
-
-    Raises:
-        ValueError: If `models` is empty, the results are not of the models of one method that
-            `check_method_models` accepts, with the same metrics, or two models are not
-            comparable: they differ in segments, sequences, attributes or null policy, or use
-            `null_policy='exclude'` with invalid attribute predictions, which scores them on
-            different segments.
-    """
-    _check_models(models)
-    return compute_mean_metrics([r.metrics for r in models])
-
-
 def resample_model_metrics(result: EvaluationResult,
                            metric_names: T.Sequence[str] | None = None, *,
                            num_resamples: int = 1000, seed: int = 0) -> MetricValues[np.ndarray]:
@@ -250,7 +170,7 @@ def combine_model_resamples(model_resamples: T.Sequence[MetricValues[np.ndarray]
         ValueError: If there are no models, or they differ in metrics, attributes or the number
             of resamples.
     """
-    _check_model_values(model_resamples)
+    check_models_have_same_metrics(model_resamples)
     if len(num_resamples := {_get_num_resamples(v) for v in model_resamples}) > 1:
         raise ValueError(f"The models differ in the number of resamples: {sorted(num_resamples)}.")
     model_t_values = _draw_model_t_values(len(model_resamples), num_resamples.pop(), method_name,
@@ -283,7 +203,7 @@ def compute_bootstrap_intervals(
     confidence: float = 0.95,
     seed: int = 0,
 ) -> MetricValues[BootstrapInterval]:
-    """Computes confidence intervals of the metrics of a method (`compute_method_metrics`).
+    """Computes confidence intervals of the metrics of a method (`methods.compute_method_metrics`).
 
     Args:
         models: The results of the models of the method. With a single model, the intervals
@@ -292,10 +212,10 @@ def compute_bootstrap_intervals(
 
     Raises:
         ValueError: If the evaluation set is empty, `num_resamples` < 1, `confidence` is not in
-            [0, 1], or `models` are not valid for `compute_method_metrics`.
+            [0, 1], or `models` are not valid for `methods.check_method_results`.
     """
     _check_confidence(confidence)
-    _check_models(models)
+    check_method_results(models)
     resampled = _resample_method_metrics(models, models[0].metrics.names, num_resamples, seed)
     return map_metric_values(lambda v: compute_percentile_interval(v, confidence), resampled)
 
@@ -318,14 +238,15 @@ def compare_methods(
             None means the attribute averages that both have.
 
     Raises:
-        ValueError: If the models of a method are not valid for `compute_method_metrics`, the
-            models of a are not comparable with those of b in the same sense, a method lacks a
-            metric, `num_resamples` < 1 or `confidence` is not in [0, 1].
+        ValueError: If the models of a method are not valid for `methods.check_method_results`,
+            the models of a are not comparable with those of b
+            (`methods.check_results_are_comparable`), a method lacks a metric, `num_resamples` < 1
+            or `confidence` is not in [0, 1].
     """
     _check_confidence(confidence)
-    _check_models(models_a)
-    _check_models(models_b)
-    _check_comparable(models_a[0], models_b[0])
+    check_method_results(models_a)
+    check_method_results(models_b)
+    check_results_are_comparable(models_a[0], models_b[0])
     metrics_a, metrics_b = models_a[0].metrics, models_b[0].metrics
     if metric_names is None:
         metric_names = [n for n in metrics_a.averages if n in metrics_b.averages]
@@ -352,7 +273,7 @@ def compute_resampled_differences(resampled_a: MetricValues[np.ndarray],
         resampled_a: The resampled values of method a (`combine_model_resamples`).
         resampled_b: Those of method b, on the same resamples, e.g. on the same evaluation set
             with the same seed.
-        metrics_a: The metrics of method a, e.g. `compute_method_metrics`.
+        metrics_a: The metrics of method a, e.g. `methods.compute_method_metrics`.
         metrics_b: Those of method b.
 
     Raises:

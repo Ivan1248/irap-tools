@@ -9,17 +9,19 @@ from irap_data.attrs import filter_labeled_attrs, get_attrs_to_include
 from irap_data.metadata import IGNORE_LABEL_INDEX, ClassVocabulary
 
 from .evaluation_sets import EvaluationSet
-from .metrics import (
+from .metric_names import (
     MACRO_METRIC_TO_PER_CLASS,
     PROBABILISTIC_METRICS,
+    add_per_attribute_metric_names,
+    get_irap_metric_names,
+    is_per_class_metric,
+)
+from .metrics import (
     ClassificationStatistics,
     MetricValues,
-    add_per_attribute_metric_names,
     compute_classification_metrics,
     compute_classification_statistics,
     compute_grouped_metrics,
-    get_irap_metric_names,
-    is_per_class_metric,
     map_metric_values,
     sum_statistics,
 )
@@ -38,8 +40,8 @@ from .predictions import (
 #: - 'first_class': as class 0 in the metrics of the predicted classes and as the uniform
 #:   distribution in NLL and Brier.
 #: - 'exclude': not scored, like a missing label. Results with invalid attribute predictions are
-#:   then scored on different segments, so the means over models and the comparisons of
-#:   `bootstrap` refuse them.
+#:   then scored on different segments, so the means over models (`methods`) and the comparisons
+#:   of `bootstrap` refuse them.
 #: `docs/evaluation.md#invalid-attribute-predictions` gives the reasons.
 NullPolicy = T.Literal["first_class", "exclude"]
 NULL_POLICIES: tuple[str, ...] = T.get_args(NullPolicy)
@@ -91,8 +93,8 @@ def select_evaluated_attributes(
 
 def get_default_metric_names(output_kind: OutputKind) -> tuple[str, ...]:
     """The metrics that `evaluate_predictions` computes by default: the iRAP protocol
-    (`metrics.get_irap_metric_names`) for the output kind, with the per-attribute value of each
-    average (`metrics.add_per_attribute_metric_names`), so that
+    (`metric_names.get_irap_metric_names`) for the output kind, with the per-attribute value of
+    each average (`metric_names.add_per_attribute_metric_names`), so that
     `metrics.select_metric_attributes` can average the metrics over a subset of the attributes."""
     return add_per_attribute_metric_names(get_irap_metric_names(output_kind=output_kind))
 
@@ -131,48 +133,6 @@ class EvaluationResult:
     @property
     def attributes(self) -> tuple[str, ...]:
         return tuple(self.statistics)
-
-
-def check_method_models(models: T.Iterable[ModelInfo]) -> None:
-    """Checks that the models of each method can be averaged: they are distinct (different seeds,
-    or a single model without a seed), and have the same training and early stopping splits,
-    since a method is one training recipe.
-
-    Args:
-        models: The models of one dataset, e.g. of the files of one split, each once.
-
-    Raises:
-        ValueError: If a method has a seed twice, several models of which one lacks a seed, or
-            models with different training or early stopping splits.
-    """
-    name_to_models: dict[str, list[ModelInfo]] = {}
-    for model in models:
-        name_to_models.setdefault(model.method_name, []).append(model)
-    for name, method_models in name_to_models.items():
-        seeds = [m.seed for m in method_models]
-        if len(seeds) > 1 and None in seeds:
-            raise ValueError(f"Method {name!r} has {len(seeds)} models, so each needs a seed.")
-        if len(set(seeds)) < len(seeds):
-            raise ValueError(f"Method {name!r} has several models with the same seed.")
-        if len({(m.training_splits, m.early_stopping_splits) for m in method_models}) > 1:
-            raise ValueError(f"The models of method {name!r} have different training or early"
-                             f" stopping splits. Models trained on other data belong to another"
-                             f" method.")
-
-
-def group_models_by_method(
-        results: T.Iterable[EvaluationResult]) -> dict[str, tuple[EvaluationResult, ...]]:
-    """Groups results by method name, in the order of `results`.
-
-    Raises:
-        ValueError: See `check_method_models`.
-    """
-    results = list(results)
-    check_method_models(r.model for r in results)
-    name_to_results: dict[str, list[EvaluationResult]] = {}
-    for result in results:
-        name_to_results.setdefault(result.model.method_name, []).append(result)
-    return {name: tuple(rs) for name, rs in name_to_results.items()}
 
 
 def align_to_evaluation_set(
@@ -338,7 +298,7 @@ class ClassMetrics:
         support: (K,) int64 number of labeled segments per class.
         confusion_matrix: (K, K) int64 counts, rows = ground truth, columns = prediction.
         metrics: Name -> (K,) float64 values, e.g. 'P', 'R', 'F1' (see
-            `metrics.PER_CLASS_METRICS`).
+            `metric_names.PER_CLASS_METRICS`).
     """
 
     irap_codes: tuple[int, ...]

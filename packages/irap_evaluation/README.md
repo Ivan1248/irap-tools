@@ -128,7 +128,9 @@ The layers import only downward:
 ```
 irap_evaluation/
 ├─ predictions, prediction_io                        The Predictions datatype and the file format
-├─ evaluation_sets, metrics, evaluation, bootstrap   Scoring, intervals and comparisons
+├─ metric_names, metrics                             Metric names, statistics and computation
+├─ evaluation_sets, evaluation                       Scoring a model on an evaluation set
+├─ methods, bootstrap                                Means over models, intervals and comparisons
 ├─ ensembling                                        Combining predictions
 ├─ reports/                                          Tables and JSON documents of results
 │                                                    (evaluation_report), coding tables

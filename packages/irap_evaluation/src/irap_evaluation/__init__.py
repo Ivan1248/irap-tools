@@ -22,8 +22,6 @@ from .bootstrap import (
     combine_model_resamples,
     compare_methods,
     compute_bootstrap_intervals,
-    compute_mean_metrics,
-    compute_method_metrics,
     compute_percentile_interval,
     compute_resampled_differences,
     resample_model_metrics,
@@ -42,11 +40,9 @@ from .evaluation import (
     MissingAttributePolicy,
     NullPolicy,
     align_to_evaluation_set,
-    check_method_models,
     compute_class_metrics,
     evaluate_predictions,
     get_default_metric_names,
-    group_models_by_method,
     select_evaluated_attributes,
     select_result_attributes,
 )
@@ -60,25 +56,41 @@ from .evaluation_sets import (
     select_evaluation_sets,
     select_evaluation_subset,
 )
-from .metrics import (
-    ClassificationStatistics,
-    MetricValues,
+from .file_names import MAX_FILE_NAME_BYTES, shorten_file_name, to_valid_file_name
+from .methods import (
+    check_method_models,
+    check_method_results,
+    check_models_have_same_metrics,
+    check_prediction_file_models,
+    check_results_are_comparable,
+    compute_mean_metrics,
+    compute_method_metrics,
+    group_models_by_method,
+)
+from .metric_names import (
+    IRAP_ATTRIBUTE_METRIC_NAMES,
+    IRAP_MAIN_METRIC,
+    ParsedMetricName,
     add_per_attribute_metric_names,
-    compute_classification_metrics,
-    compute_classification_statistics,
-    compute_grouped_metrics,
-    compute_multi_attribute_metrics,
     describe_attribute_average,
     describe_metric,
     get_attribute_average_name,
     get_irap_metric_names,
     is_lower_better,
+    parse_metric_name,
+)
+from .metrics import (
+    ClassificationStatistics,
+    MetricValues,
+    compute_classification_metrics,
+    compute_classification_statistics,
+    compute_grouped_metrics,
+    compute_multi_attribute_metrics,
     map_metric_values,
     select_metric_attributes,
     select_metric_names,
     sum_statistics,
 )
-from .file_names import MAX_FILE_NAME_BYTES, shorten_file_name, to_valid_file_name
 from .prediction_io import (
     make_prediction_file_name,
     read_prediction_header,

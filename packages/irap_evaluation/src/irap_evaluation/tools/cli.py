@@ -4,7 +4,6 @@ Run `irap-eval <command> --help` for the options of each command.
 """
 
 import argparse
-import collections
 import dataclasses as dc
 import functools
 import sys
@@ -26,7 +25,6 @@ from ..evaluation import (
     EvaluationResult,
     MissingAttributePolicy,
     NullPolicy,
-    check_method_models,
     evaluate_predictions,
     select_evaluated_attributes,
 )
@@ -36,17 +34,12 @@ from ..evaluation_sets import (
     get_reference_set,
     select_evaluation_sets,
 )
-from ..metrics import (
-    IRAP_MAIN_METRIC,
-    MetricValues,
-    get_irap_metric_names,
-    map_metric_values,
-    parse_metric_name,
-)
+from ..methods import check_prediction_file_models
+from ..metric_names import IRAP_MAIN_METRIC, get_irap_metric_names, parse_metric_name
+from ..metrics import MetricValues, map_metric_values
 from ..prediction_io import read_predictions, write_predictions
 from ..predictions import (
     ModelInfo,
-    PredictionHeader,
     Predictions,
     check_split_names,
     explain_split_use,
@@ -75,37 +68,10 @@ def _parse_method_context_offsets(items: T.Sequence[str]) -> dict[str, tuple[int
     return dict(map(parse, items))
 
 
-def _check_file_models(headers: T.Sequence[PredictionHeader]) -> None:
-    """Checks the models of prediction files, e.g. of several splits: the files of one model (a
-    method and seed) have the same `ModelInfo`, and the models of each split and of each dataset
-    can be averaged (`evaluation.check_method_models`).
-
-    Raises:
-        ValueError: If they cannot.
-    """
-    key_to_models: dict[tuple[str, ...], list[ModelInfo]] = {}
-    for h in headers:
-        key_to_models.setdefault((h.dataset, h.split), []).append(h.model)
-    for (dataset, split), models in key_to_models.items():
-        try:
-            check_method_models(models)
-        except ValueError as e:
-            raise ValueError(f"The files of {dataset}/{split}: {e}") from e
-    dataset_to_models = {h.dataset: set() for h in headers}
-    for h in headers:
-        dataset_to_models[h.dataset].add(h.model)
-    for dataset, models in dataset_to_models.items():
-        if differing := sorted(label for label, n in collections.Counter(
-                m.label for m in models).items() if n > 1):
-            raise ValueError(f"The files of the models {differing} on {dataset} differ in their"
-                             f" training or early stopping splits.")
-        check_method_models(models)
-
-
 def _read_prediction_files(paths: T.Sequence[Path]) -> list[Predictions]:
-    """Reads prediction files of models that `_check_file_models` accepts."""
+    """Reads prediction files of models that `check_prediction_file_models` accepts."""
     predictions_seq = [read_predictions(p) for p in paths]
-    _check_file_models([p.header for p in predictions_seq])
+    check_prediction_file_models([p.header for p in predictions_seq])
     return predictions_seq
 
 

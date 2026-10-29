@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 
 from irap_data.metadata import IGNORE_LABEL_INDEX
+from irap_evaluation.metric_names import get_irap_metric_names
 from irap_evaluation.metrics import (
     compute_classification_statistics,
     compute_multi_attribute_metrics,
-    get_irap_metric_names,
 )
 
 torch = pytest.importorskip("torch")

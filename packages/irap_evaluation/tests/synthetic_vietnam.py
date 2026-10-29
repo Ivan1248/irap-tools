@@ -1,11 +1,15 @@
-"""Builders of a small synthetic iRAP-Vietnam metadata directory and of predictions for it."""
+"""Builders of a small synthetic iRAP-Vietnam metadata directory and of predictions and evaluation
+results for it."""
 
+import dataclasses as dc
 import json
 from pathlib import Path
 
 import numpy as np
 
-from irap_data.metadata import ClassVocabulary, MetaFiles
+from irap_data.metadata import ClassVocabulary, IRAPMetadata, MetaFiles
+from irap_evaluation.evaluation import EvaluationResult, evaluate_predictions
+from irap_evaluation.evaluation_sets import EvaluationSet
 from irap_evaluation.predictions import ModelInfo, PredictionHeader, Predictions
 
 # Three attributes of the canonical subset and one outside it. The codes of "Lane width" are
@@ -74,3 +78,25 @@ def make_predictions(vocabulary: ClassVocabulary, segment_ids, *, name: str, see
     logits = {a: 3 * rng.normal(size=(len(segment_ids), len(codes)))
               for a, codes in attribute_to_irap_codes.items()}
     return Predictions.from_logits(header, attribute_to_irap_codes, segment_ids, logits)
+
+
+def invalidate_attribute_predictions(predictions: Predictions, attr: str,
+                                     is_valid: np.ndarray) -> Predictions:
+    """`predictions` with the predictions of `attr` invalid (NaN) where `is_valid` is False."""
+    probs = np.where(is_valid[:, None], predictions.probs[attr], np.nan).astype(np.float32)
+    return dc.replace(predictions, probs={**predictions.probs, attr: probs})
+
+
+def evaluate_models(metadata: IRAPMetadata, evaluation_set: EvaluationSet, name: str,
+                    prediction_seeds) -> list[EvaluationResult]:
+    """Results of models with seeds 0, 1, ... of random predictions with `prediction_seeds`."""
+    segments = list(metadata.splits[SPLIT])
+    return [evaluate_predictions(make_predictions(metadata.vocabulary, segments, name=name,
+                                                  seed=s, model_seed=i), evaluation_set)
+            for i, s in enumerate(prediction_seeds)]
+
+
+def with_model(result: EvaluationResult, method_name: str, seed=None,
+               early_stopping_splits=()) -> EvaluationResult:
+    return dc.replace(result, model=ModelInfo(method_name, result.model.training_splits,
+                                              early_stopping_splits, seed))

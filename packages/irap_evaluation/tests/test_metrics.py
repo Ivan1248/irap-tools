@@ -4,17 +4,12 @@ import numpy as np
 import pytest
 
 from irap_data.metadata import IGNORE_LABEL_INDEX
+from irap_evaluation.metric_names import add_per_attribute_metric_names
 from irap_evaluation.metrics import (
     ClassificationStatistics,
-    add_per_attribute_metric_names,
     compute_classification_metrics,
     compute_classification_statistics,
     compute_multi_attribute_metrics,
-    describe_metric,
-    get_attribute_average_name,
-    get_irap_metric_names,
-    is_lower_better,
-    parse_metric_name,
     select_metric_attributes,
     sum_statistics,
 )
@@ -47,15 +42,6 @@ def test_support_restricted_metrics():
     assert metrics["nc_supp5"] == 2
     assert metrics["mF1_supp5"] == pytest.approx(metrics["F1"][:2].mean())
     assert np.isnan(metrics["mF1_supp9"])
-
-
-def test_describe_metric_depends_on_ignore_missing_classes_only_where_it_applies():
-    def is_affected(name: str) -> bool:
-        return (describe_metric(name, ignore_missing_classes=True)
-                != describe_metric(name, ignore_missing_classes=False))
-
-    assert is_affected("mF1") and is_affected("amIoU")
-    assert not any(map(is_affected, ["mF1_supp10", "nc_supp5", "mNLL", "F1", "MCC"]))
 
 
 def test_statistics_ignore_unlabeled_examples_and_sum_over_groups():
@@ -115,11 +101,6 @@ def test_attribute_average_leaves_out_undefined_values():
         compute_multi_attribute_metrics({"x": defined}, ["aF1"])
 
 
-def test_add_per_attribute_metric_names():
-    assert add_per_attribute_metric_names(["amF1", "aNLL", "mF1", "amF1_supp5"]) == (
-        "amF1", "aNLL", "mF1", "amF1_supp5", "NLL", "mF1_supp5")
-
-
 def _to_float_values(metrics):
     return type(metrics)(
         averages={n: float(v) for n, v in metrics.averages.items()},
@@ -164,30 +145,3 @@ def test_batched_metrics_equal_separate_computations():
         single = compute_classification_metrics(ClassificationStatistics(matrix), ["mF1", "MCC"])
         assert batched["mF1"][i] == pytest.approx(single["mF1"])
         assert batched["MCC"][i] == pytest.approx(single["MCC"], nan_ok=True)
-
-
-def test_parse_metric_name():
-    assert parse_metric_name("amF1_supp10") == (True, "mF1_supp10", "mF1", 10)
-    assert parse_metric_name("A") == (False, "A", "A", None)
-    assert parse_metric_name("aA").is_averaged
-    for name in ["nc", "A_supp5", "mF1_suppx", "xyz"]:
-        with pytest.raises(ValueError):
-            parse_metric_name(name)
-
-
-def test_get_attribute_average_name():
-    assert get_attribute_average_name("mF1_supp10") == "amF1_supp10"
-    for name in ["amF1", "xyz"]:
-        with pytest.raises(ValueError):
-            get_attribute_average_name(name)
-
-
-def test_is_lower_better():
-    assert [n for n in get_irap_metric_names() if is_lower_better(n)] == [
-        "aNLL", "aBrier", "amNLL", "amNLL_supp5", "amNLL_supp10", "NLL", "Brier", "mNLL"]
-
-
-def test_get_irap_metric_names_puts_averages_first():
-    names = get_irap_metric_names()
-    assert names[:5] == ("amF1", "amP", "amR", "aMCC", "aA")
-    assert "aNLL" not in get_irap_metric_names(output_kind="hard")

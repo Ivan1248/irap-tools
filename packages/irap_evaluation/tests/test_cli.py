@@ -11,8 +11,7 @@ import pytest
 
 from irap_data.metadata import MetaFiles, get_dataset_preset
 from irap_evaluation.prediction_io import read_predictions, write_predictions
-from irap_evaluation.predictions import ModelInfo, PredictionHeader
-from irap_evaluation.tools.cli import _check_file_models, main
+from irap_evaluation.tools.cli import main
 
 from synthetic_vietnam import SPLIT, make_predictions
 
@@ -215,24 +214,6 @@ def test_missing_attributes(metadata_dir, metadata, tmp_path, capsys):
     assert "Lane width" in set(invalid["attribute"])
     report = json.loads((out / "partial" / "metrics_vietnam_val_reference.json").read_text())
     assert report["missing_attributes"] == ["Lane width"]
-
-
-def _header(split, seed=None, training_splits=("train",), method_name="m"):
-    return PredictionHeader("vietnam", split, ModelInfo(method_name, training_splits, (), seed))
-
-
-def test_files_of_one_model_on_several_splits():
-    _check_file_models([_header("val"), _header("test"), _header("val", method_name="n")])
-    _check_file_models([_header("val", 0), _header("val", 1), _header("test", 0)])
-    for headers, message in [
-        ([_header("val"), _header("test", training_splits=("train", "val"))],
-         r"models \['m'\] on vietnam differ"),
-        ([_header("val", 0), _header("test", 1, training_splits=None)],
-         "different training or early stopping splits"),
-        ([_header("val"), _header("val")], "vietnam/val: Method 'm' has 2 models"),
-    ]:
-        with pytest.raises(ValueError, match=message):
-            _check_file_models(headers)
 
 
 @pytest.mark.parametrize("names, message", [

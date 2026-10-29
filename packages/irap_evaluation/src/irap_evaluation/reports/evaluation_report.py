@@ -9,15 +9,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..bootstrap import BootstrapInterval, MetricDifference, compute_method_metrics
-from ..evaluation import (
-    ClassMetrics,
-    EvaluationResult,
-    compute_class_metrics,
-    group_models_by_method,
-)
+from ..bootstrap import BootstrapInterval, MetricDifference
+from ..evaluation import ClassMetrics, EvaluationResult, compute_class_metrics
 from ..file_names import to_valid_file_name
-from ..metrics import MetricValues, map_metric_values, parse_metric_name
+from ..methods import compute_method_metrics, group_models_by_method
+from ..metric_names import parse_metric_name
+from ..metrics import MetricValues, map_metric_values
 
 V = T.TypeVar("V")
 
@@ -134,7 +131,7 @@ def to_method_average_table(
 ) -> pd.DataFrame:
     """Method rows × attribute-average columns: the number of models, their null policy, what
     they used the split for (`ModelInfo.get_split_use`, the same for all models of a method), and
-    the mean of each metric over the models (`bootstrap.compute_method_metrics`).
+    the mean of each metric over the models (`methods.compute_method_metrics`).
 
     Args:
         method_to_models: Method name -> the results of its models on one evaluation set.
@@ -308,7 +305,7 @@ def group_multi_model_methods(
         (dataset, split, evaluation set name) -> method name -> the results of its models.
 
     Raises:
-        ValueError: See `evaluation.check_method_models`.
+        ValueError: See `methods.check_method_models`.
     """
     key_to_results: dict[tuple[str, str, str], list[EvaluationResult]] = {}
     for r in results:
