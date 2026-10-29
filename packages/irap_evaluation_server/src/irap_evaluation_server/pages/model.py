@@ -346,7 +346,7 @@ class _ModelPage:
             return
 
         self.refreshes.append(create_split_scores_panel(
-            self.worker, "model", split_query, attribute_query,
+            self.worker, "model", split_query, attribute_query, context.metadata.splits,
             lambda: group_submissions_by_split([self.snapshot.summary], context.split_names),
             lambda split, attributes: get_model_path(self.model_id, split, attributes),
             lambda set_to_models, subset, _: _make_set_score_tables_html(

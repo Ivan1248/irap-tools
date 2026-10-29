@@ -1,4 +1,5 @@
-"""The comparison of two methods on the reference set of a dataset split, as
+"""The comparison of two methods on a shared evaluation set of a dataset split
+(`irap_evaluation.SHARED_EVALUATION_SET_NAMES`), as
 `irap_evaluation.compare_methods` compares them: the differences of their means over models, with
 bootstrap intervals over the same resampled road sequences, which include the variation between
 models (see `irap_evaluation/docs/evaluation.md`, "Comparing methods").

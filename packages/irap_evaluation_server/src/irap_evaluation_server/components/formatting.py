@@ -10,7 +10,7 @@ from ..archive import ActionLogEntry, Model, Submission
 from .routes import get_method_path, get_model_path
 
 #: The display name of each evaluation set (`datasets.EVALUATION_SET_NAMES`).
-EVALUATION_SET_LABELS = {ie.REFERENCE_SET_NAME: "Reference set",
+EVALUATION_SET_LABELS = {ie.REFERENCE_SET_NAME: "Reference set", ie.FULL_SET_NAME: "Full set",
                          ie.MODEL_COMPATIBLE_SET_NAME: "Model-compatible set"}
 
 _ACTION_DETAIL_LABELS = {"file_name": "File", "archive_member": "File in the archive",
@@ -49,10 +49,35 @@ def format_context_offsets(offsets: T.Sequence[int] | None) -> str:
     return "unknown" if offsets is None else ", ".join(map(str, offsets))
 
 
+def make_split_options(splits: T.Iterable[str],
+                       split_to_segment_ids: T.Mapping[str, T.Sequence[str]]) -> dict[str, str]:
+    """Makes the options of a split select: each split with its number of segments.
+
+    Args:
+        split_to_segment_ids: Has the splits, e.g. `irap_data.metadata.IRAPMetadata.splits`.
+    """
+    return {s: f"{s} ({len(split_to_segment_ids[s])})" for s in splits}
+
+
+def make_evaluation_set_options(
+        name_to_num_segments: T.Mapping[str, int],
+        labels: T.Mapping[str, str] = EVALUATION_SET_LABELS) -> dict[str, str]:
+    """Makes the options of an evaluation set select: the display names, with the numbers of
+    segments of the sets that have one, i.e. not of the model-compatible set, which depends on
+    the model.
+
+    Args:
+        name_to_num_segments: Evaluation set name -> its number of segments.
+        labels: Evaluation set name -> its display name.
+    """
+    return {n: f"{l} ({name_to_num_segments[n]})" if n in name_to_num_segments else l
+            for n, l in labels.items()}
+
+
 def format_evaluation_set_title(name: str, context_offsets_text: str) -> str:
     """Formats the title of the scores on an evaluation set, with the context offsets
     (`format_context_offsets`) on the model-compatible set."""
-    if name == ie.REFERENCE_SET_NAME:
+    if name in ie.SHARED_EVALUATION_SET_NAMES:
         return EVALUATION_SET_LABELS[name]
     return f"{EVALUATION_SET_LABELS[name]}, context offsets {context_offsets_text}"
 

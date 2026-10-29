@@ -230,7 +230,7 @@ class _MethodPage:
     def create_scores(self, split_query: str, attribute_query: T.Sequence[str],
                       shown_metrics: ShownMetrics) -> None:
         create_split_scores_panel(
-            self.worker, "method", split_query, attribute_query,
+            self.worker, "method", split_query, attribute_query, self.context.metadata.splits,
             lambda: group_submissions_by_split(self.snapshot.group.models,
                                                self.context.split_names),
             lambda split, attributes: get_method_path(self.dataset, self.method_name, split,

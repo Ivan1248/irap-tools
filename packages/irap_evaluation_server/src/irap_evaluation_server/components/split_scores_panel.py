@@ -11,6 +11,7 @@ from ..method_ranking import collect_scored_attributes
 from ..method_scores import ScoredModel
 from ..scoring_worker import ScoringWorker, SubmissionScorings
 from .attribute_filter import AttributeFilter, AttributeSubset
+from .formatting import make_split_options
 from .latest_updates import LatestUpdates
 from .native_controls import create_native_select
 from .refresh_timer import RefreshTimer
@@ -42,7 +43,7 @@ class ShownSplitScores:
 
 def create_split_scores_panel(
         worker: ScoringWorker, owner_noun: str, split_query: str,
-        attribute_query: T.Sequence[str],
+        attribute_query: T.Sequence[str], split_to_segment_ids: T.Mapping[str, T.Sequence[str]],
         group_submissions_by_split: T.Callable[[], T.Mapping[str, T.Sequence[Submission]]],
         make_path: T.Callable[[str, T.Sequence[str]], str],
         make_set_score_tables_html: T.Callable[
@@ -55,6 +56,8 @@ def create_split_scores_panel(
     Args:
         owner_noun: What has the files, e.g. 'model', for the messages.
         split_query: The split of the URL, '' for the first one.
+        split_to_segment_ids: The segments of each split of the dataset
+            (`irap_data.metadata.IRAPMetadata.splits`), whose numbers the select shows.
         group_submissions_by_split: Gets split -> its files, in the order of the select.
         make_path: Makes the path of the page with a split and an attribute subset
             (`AttributeSubset.to_query`), for the URL after a choice.
@@ -124,8 +127,8 @@ def create_split_scores_panel(
         if shown.split_error:
             ui.label(shown.split_error).classes("error")
         with ui.element("div").classes("form-row"):
-            create_native_select("Split", {s: s for s in shown.splits}, shown.split,
-                                 on_split_changed)
+            create_native_select("Split", make_split_options(shown.splits, split_to_segment_ids),
+                                 shown.split, on_split_changed)
         show_split_scores(shown)
 
     with ui.element("section").classes("panel"):

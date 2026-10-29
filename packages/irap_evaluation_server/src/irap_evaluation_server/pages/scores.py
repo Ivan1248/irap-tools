@@ -12,7 +12,12 @@ from nicegui import run, ui
 
 from ..components.account_sessions import AccountSessions
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
-from ..components.formatting import EVALUATION_SET_LABELS, make_unscored_files_html
+from ..components.formatting import (
+    EVALUATION_SET_LABELS,
+    make_evaluation_set_options,
+    make_split_options,
+    make_unscored_files_html,
+)
 from ..components.latest_updates import LatestUpdates
 from ..components.native_controls import (
     create_native_checkbox,
@@ -64,8 +69,8 @@ class _ScoresView:
             attribute averages.
         method_pattern: The regular expression of the shown methods (`select_matching_names`),
             '' for all.
-        reference_method: The method that the others are compared with, on the reference set
-            only, or '' for none.
+        reference_method: The method that the others are compared with, on a shared set
+            (`irap_evaluation.SHARED_EVALUATION_SET_NAMES`) only, or '' for none.
         shows_trained_methods: Whether the methods trained on the split are shown.
     """
 
@@ -108,8 +113,8 @@ def _parse_view(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, Dat
         raise ValueError(f"Unknown or hidden sort metric {sort_metric!r}. Metrics:"
                          f" {', '.join(shown_metrics.average_names)}.")
     reference_method = query.get("ref", "")
-    if reference_method and evaluation_set != ie.REFERENCE_SET_NAME:
-        raise ValueError("Methods are compared only on the reference set.")
+    if reference_method and evaluation_set not in ie.SHARED_EVALUATION_SET_NAMES:
+        raise ValueError("Methods are compared only on the reference set and the full set.")
     metric_name = parse_per_attribute_metric(query, shown_metrics.per_attribute_names)
     return _ScoresView(dataset=dataset, split=split, evaluation_set=evaluation_set,
                        sort_metric=sort_metric, metric_name=metric_name,
@@ -310,7 +315,7 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
 
     def show_methods(shown_view: _ScoresView, table: _MethodTable) -> None:
         with ui.element("div").classes("form-row"):
-            if shown_view.evaluation_set == ie.REFERENCE_SET_NAME:
+            if shown_view.evaluation_set in ie.SHARED_EVALUATION_SET_NAMES:
                 create_native_select("Compare with",
                                      {"": "–", **{n: r.shown_method_name
                                                   for n, r in table.name_to_comparable.items()}},
@@ -377,18 +382,28 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
     initial_scorings = await run.io_bound(_load_split_scorings, worker, view)
     if initial_scorings is None:  # The server is stopping.
         return
+    shows_set_select = (view.evaluation_set != ie.REFERENCE_SET_NAME
+                        or bool(initial_scorings.scorings.group_scored_models_by_set().keys()
+                                - {ie.REFERENCE_SET_NAME}))
+    if shows_set_select:
+        # The sets are computed on the first use of the split, so not in the event loop.
+        set_to_num_segments = await run.io_bound(context.count_shared_evaluation_set_segments,
+                                                 view.split)
+        if set_to_num_segments is None:  # The server is stopping.
+            return
     with ui.element("section").classes("panel"):
         with ui.element("div").classes("form-row"):
-            # Another dataset has other methods, and the other evaluation set no comparisons.
+            # Another dataset has other methods, and another evaluation set other models.
             create_native_select("Dataset", {n: n for n in dataset_contexts}, view.dataset,
                                  lambda v: navigate_to(dataset=v, split="", reference_method=""))
-            create_native_select("Split", {n: n for n in context.split_names}, view.split,
-                                 lambda v: navigate_to(split=v))
-            if (view.evaluation_set != ie.REFERENCE_SET_NAME
-                    or initial_scorings.scorings.select_scored_models(
-                        ie.MODEL_COMPATIBLE_SET_NAME)):
+            create_native_select("Split",
+                                 make_split_options(context.split_names, context.metadata.splits),
+                                 view.split, lambda v: navigate_to(split=v))
+            if shows_set_select:
                 create_native_select(
-                    "Evaluation set", _EVALUATION_SET_LABELS, view.evaluation_set,
+                    "Evaluation set",
+                    make_evaluation_set_options(set_to_num_segments, _EVALUATION_SET_LABELS),
+                    view.evaluation_set,
                     lambda v: navigate_to(evaluation_set=v, reference_method=""))
             create_native_select("View", make_view_options(shown_metrics.per_attribute_names),
                                  view.metric_name, lambda v: on_view_changed(metric_name=v))

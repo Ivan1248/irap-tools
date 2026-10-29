@@ -33,7 +33,12 @@ from ..components.analysis_view import (
 )
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
 from ..components.deck_map import DeckMap, make_map_legend_html
-from ..components.formatting import EVALUATION_SET_LABELS, make_model_link_html
+from ..components.formatting import (
+    EVALUATION_SET_LABELS,
+    make_evaluation_set_options,
+    make_model_link_html,
+    make_split_options,
+)
 from ..components.native_controls import create_native_grouped_select, create_native_select
 from ..components.page_frame import create_page_frame, show_view_error
 from ..components.routes import (
@@ -160,31 +165,34 @@ def _open_changed_view(context: DatasetContext, view: AnalysisView,
         ui.navigate.to(AnalysisView(dataset=changed.dataset, split="",
                                     evaluation_set=changed.evaluation_set).to_path())
         return
-    # The attribute is kept if the reference set of the split has labels of it. A model-compatible
+    # The attribute is kept if the shared set of the split has labels of it. A model-compatible
     # set depends on the model, which is not known before the page is loaded.
-    if (changed.evaluation_set != ie.REFERENCE_SET_NAME
-            or context.get_reference_set(changed.split).attr_to_num_labeled.get(
-                view.attribute_name, 0) == 0):
+    if (changed.evaluation_set not in ie.SHARED_EVALUATION_SET_NAMES
+            or context.get_shared_evaluation_sets(changed.split)[
+                changed.evaluation_set].attr_to_num_labeled.get(view.attribute_name, 0) == 0):
         changed = dc.replace(changed, attribute_name="")
     ui.navigate.to(changed.to_path(attribute_query))
 
 
 def _create_view_controls(context: DatasetContext, analysis_datasets: T.Sequence[str],
-                          view: AnalysisView, open_view: T.Callable[..., None]) -> None:
+                          view: AnalysisView, set_to_num_segments: T.Mapping[str, int],
+                          open_view: T.Callable[..., None]) -> None:
     """Creates the selects of the dataset, the split and the evaluation set.
 
     Args:
         analysis_datasets: The options of the Dataset select.
+        set_to_num_segments: `DatasetContext.count_shared_evaluation_set_segments` of the split.
         open_view: Opens the page of the changed view, given the changes as keyword arguments
             (see `_open_changed_view`).
     """
     with ui.element("div").classes("analysis-controls"):
         create_native_select("Dataset", {n: n for n in analysis_datasets}, view.dataset,
                              lambda v: open_view(dataset=v))
-        create_native_select("Split", {s: s for s in context.config.analysis_splits}, view.split,
-                             lambda v: open_view(split=v))
-        create_native_select("Evaluation set", EVALUATION_SET_LABELS, view.evaluation_set,
-                             lambda v: open_view(evaluation_set=v))
+        create_native_select("Split", make_split_options(context.config.analysis_splits,
+                                                         context.metadata.splits),
+                             view.split, lambda v: open_view(split=v))
+        create_native_select("Evaluation set", make_evaluation_set_options(set_to_num_segments),
+                             view.evaluation_set, lambda v: open_view(evaluation_set=v))
 
 
 def _get_ranking_average(scored_model: ScoredModel,
@@ -257,7 +265,7 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
                                     evaluation_set=view.evaluation_set).to_path()
         with _create_side_panel_without_map():
             _create_view_controls(
-                context, list_analysis_datasets(dataset_contexts), view,
+                context, list_analysis_datasets(dataset_contexts), view, set_to_num_segments,
                 functools.partial(_open_changed_view, context, view, attribute_query))
             ui.label(message).classes("error")
             if offers_default_view and view.to_path(attribute_query) != default_path:
@@ -266,6 +274,11 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
     # The page is sent first, since reading the files takes tenths of a second (see the README).
     await client.connected()
     scorings = worker.load_split_scorings(view.dataset, view.split)
+    # Computes the shared sets of a split without current scorings, so not in the event loop.
+    set_to_num_segments = await run.io_bound(context.count_shared_evaluation_set_segments,
+                                             view.split)
+    if set_to_num_segments is None:  # The server is stopping.
+        return
     models = scorings.select_scored_models(view.evaluation_set)
     if not models:
         show_error(f"No models of {view.dataset}/{view.split} are scored on the"
@@ -297,8 +310,8 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
         return
     loading_label.delete()
     _AnalysisPage(context, worker, predictions_cache, resolved.view, models, points, model_a,
-                  model_b).create(list_analysis_datasets(dataset_contexts), map_error,
-                                  attribute_query)
+                  model_b).create(list_analysis_datasets(dataset_contexts), set_to_num_segments,
+                                  map_error, attribute_query)
 
 
 class _AnalysisPage:
@@ -339,19 +352,20 @@ class _AnalysisPage:
         return [(role, m) for role, m in (("A", self.model_a), ("B", self.model_b))
                 if m is not None]
 
-    def create(self, analysis_datasets: T.Sequence[str], map_error: str | None,
-               attribute_query: T.Sequence[str]) -> None:
+    def create(self, analysis_datasets: T.Sequence[str], set_to_num_segments: T.Mapping[str, int],
+               map_error: str | None, attribute_query: T.Sequence[str]) -> None:
         """Creates the page content and shows the view.
 
         Args:
             analysis_datasets: The options of the Dataset select.
+            set_to_num_segments: See `_create_view_controls`.
             map_error: See `register_analysis_page`.
             attribute_query: The attribute subset of the URL.
         """
         with ui.splitter(value=_SIDE_PANEL_WIDTH_PX, limits=(320, 900)).props("unit=px").classes(
                 "w-full h-full") as outer:
             with outer.before, ui.element("div").classes("analysis-side"):
-                self._create_side_panel(analysis_datasets, attribute_query)
+                self._create_side_panel(analysis_datasets, set_to_num_segments, attribute_query)
             with outer.after, ui.splitter(value=_IMAGE_COLUMN_WIDTH_PX, limits=(200, 1200)).props(
                     "unit=px").classes("w-full h-full") as inner:
                 with inner.before:
@@ -362,10 +376,11 @@ class _AnalysisPage:
         self._update_map_selected()
 
     def _create_side_panel(self, analysis_datasets: T.Sequence[str],
+                           set_to_num_segments: T.Mapping[str, int],
                            attribute_query: T.Sequence[str]) -> None:
         """Creates the controls, the confusion matrix and the segments of a cell."""
         _create_view_controls(
-            self.context, analysis_datasets, self.view,
+            self.context, analysis_datasets, self.view, set_to_num_segments,
             lambda **changes: _open_changed_view(self.context, self.view,
                                                  self.attribute_filter.subset.to_query(),
                                                  **changes))

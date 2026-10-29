@@ -95,18 +95,22 @@ A model predicts the attributes of a segment from the images of the segment and 
 of the same road. Its **context offsets** are the positions of these segments in the road relative
 to the predicted segment, e.g. 0 for the segment itself and −1 for the previous segment. An
 **evaluation set** is a subset of the labeled segments of a split. The predictions of a file are
-scored on one or two evaluation sets:
+scored on up to three evaluation sets:
 
 - **Reference set**: the segments for which every offset of a fixed window ({windows}) points to
   a segment of the same road with an image. It is the same for all models, so their metric values
   are comparable.
+- **Full set**: all segments of the split with an image (context offsets 0). It is also the same
+  for all models, but only the files that predict all its segments are scored on it, e.g. of
+  models without context or with padding for missing context segments.
 - **Model-compatible set**: the segments for which every offset of the model points to a segment of
   the same road with an image, as in the evaluation during training. It is shown only if it
-  differs from the reference set. Models with different context offsets are not tested against
-  each other on their model-compatible sets, since these can differ.
+  differs from the reference set and the full set. Models with different context offsets are not
+  tested against each other on their model-compatible sets, since these can differ.
 
 A model with an offset outside the reference window cannot predict all segments of the reference
-set, so it is scored only on its model-compatible set. Files of unlabeled splits are not scored.
+set, so it is scored only on its model-compatible set, and on the full set if it predicts all its
+segments. Files of unlabeled splits are not scored.
 """
 
 
@@ -241,11 +245,10 @@ $\sigma = 1$ if a higher value of the metric is better, $\sigma = -1$ if a lower
   $d^{{(1)}}, \dots, d^{{(B)}}$. This is a one-sided bootstrap test, at the {level} level, of
   whether the method is worse than the best one. It is **paired**: both methods are scored on the
   same resampled roads, so most of the variation between roads cancels in $d^{{(b)}}$, while the
-  variation between the seeds of both methods remains. Values are bold only if all compared methods
-  are scored on the same evaluation set: the reference set, or model-compatible sets with the same
-  context offsets. The Method and Model pages shade their metric values without testing them.
-- **Δ** ("Compare with", on the reference set): for a method and a reference method with the
-  metric value $\overline{{m}}_{{\mathrm{{ref}}}}$, the difference
+  variation between the seeds of both methods remains. Since pairing needs the same roads, a table
+  has bold values only if all its methods are scored on the same evaluation set.
+- **Δ** ("Compare with", on the reference set and the full set): for a method and a reference
+  method with the metric value $\overline{{m}}_{{\mathrm{{ref}}}}$, the difference
   $\Delta = \overline{{m}} - \overline{{m}}_{{\mathrm{{ref}}}}$. Its
   {_format_percent(settings.confidence)} interval runs from the ${lower}$ to the ${upper}$ quantile
   of the paired differences

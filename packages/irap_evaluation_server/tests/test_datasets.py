@@ -36,7 +36,16 @@ def test_unlabeled_split_is_not_scored(metadata_dir):
     evaluation_sets, notes = context.select_evaluation_sets(
         with_split(predictions, "unlabeled_val"))
     assert evaluation_sets == []
-    assert len(notes) == 2 and all("has no labels" in note for note in notes)
+    assert len(notes) == 3 and all("has no labels" in note for note in notes)
+
+
+def test_shared_evaluation_sets(dataset_contexts):
+    context = dataset_contexts["vietnam"]
+    assert context.count_shared_evaluation_set_segments(SPLIT) == {
+        ie.REFERENCE_SET_NAME: context.get_reference_set(SPLIT).num_segments,
+        ie.FULL_SET_NAME: len(context.metadata.splits[SPLIT])}
+    assert list(context.get_submission_evaluation_sets(SPLIT, (0, -1))) == [
+        ie.REFERENCE_SET_NAME, ie.FULL_SET_NAME, ie.MODEL_COMPATIBLE_SET_NAME]
 
 
 def test_segment_images_must_be_in_the_dataset_directory(dataset_contexts, tmp_path):
@@ -56,15 +65,15 @@ def test_segment_images_must_be_in_the_dataset_directory(dataset_contexts, tmp_p
 def test_evaluation_sets_are_computed_once(dataset_contexts, monkeypatch):
     context = dataset_contexts["vietnam"]
     num_calls = 0
-    get_reference_set = ie.get_reference_set
+    get_shared_evaluation_sets = ie.get_shared_evaluation_sets
 
-    def get_reference_set_slowly(*args):
+    def get_shared_evaluation_sets_slowly(*args):
         nonlocal num_calls
         num_calls += 1
         time.sleep(0.1)
-        return get_reference_set(*args)
+        return get_shared_evaluation_sets(*args)
 
-    monkeypatch.setattr(ie, "get_reference_set", get_reference_set_slowly)
+    monkeypatch.setattr(ie, "get_shared_evaluation_sets", get_shared_evaluation_sets_slowly)
     with concurrent.futures.ThreadPoolExecutor(4) as executor:
         reference_sets = list(executor.map(context.get_reference_set, [SPLIT] * 4))
     assert num_calls == 1

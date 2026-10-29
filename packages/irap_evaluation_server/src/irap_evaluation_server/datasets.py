@@ -11,7 +11,9 @@ from irap_data.metadata import IRAPMetadata, load_irap_metadata
 from .config import DatasetConfig
 
 #: The names of the evaluation sets that a submission can be scored on.
-EVALUATION_SET_NAMES = (ie.REFERENCE_SET_NAME, ie.MODEL_COMPATIBLE_SET_NAME)
+EVALUATION_SET_NAMES = (*ie.SHARED_EVALUATION_SET_NAMES, ie.MODEL_COMPATIBLE_SET_NAME)
+
+_CachedValue = T.TypeVar("_CachedValue")
 
 
 @dc.dataclass(eq=False)
@@ -27,8 +29,11 @@ class DatasetContext:
     name: str
     config: DatasetConfig
     metadata: IRAPMetadata
-    #: (split, context offsets or None for the reference set) -> the set.
-    _evaluation_set_cache: dict[tuple[str, tuple[int, ...] | None], ie.EvaluationSet] = dc.field(
+    #: split -> its shared sets by name (`irap_evaluation.get_shared_evaluation_sets`).
+    _shared_set_cache: dict[str, dict[str, ie.EvaluationSet]] = dc.field(
+        default_factory=dict, init=False, repr=False)
+    #: (split, context offsets) -> the model-compatible set.
+    _model_compatible_set_cache: dict[tuple[str, tuple[int, ...]], ie.EvaluationSet] = dc.field(
         default_factory=dict, init=False, repr=False)
     #: Held while a set is computed, so that concurrent first uses compute it once. Cached sets
     #: are read without it, so that a page does not wait for the computation of another set.
@@ -39,50 +44,63 @@ class DatasetContext:
     def split_names(self) -> tuple[str, ...]:
         return tuple(self.metadata.splits)
 
-    def _get_cached_evaluation_set(self, split: str,
-                                   context_offsets: T.Sequence[int] | None) -> ie.EvaluationSet:
-        """Returns the reference set if `context_offsets` is None, otherwise the
-        model-compatible set, computed on first use.
+    def _get_cached(self, cache: dict[T.Any, _CachedValue], key: T.Any, split: str,
+                    compute: T.Callable[[], _CachedValue]) -> _CachedValue:
+        """Returns `cache[key]`, computed with `compute` on first use.
 
         Raises:
             ValueError: If the dataset has no such split.
         """
-        key = (split, None if context_offsets is None else tuple(context_offsets))
-        if (evaluation_set := self._evaluation_set_cache.get(key)) is not None:
-            return evaluation_set
+        if (value := cache.get(key)) is not None:
+            return value
         with self._cache_lock:
-            if key not in self._evaluation_set_cache:
+            if key not in cache:
                 if split not in self.metadata.splits:
                     raise ValueError(f"The dataset {self.name!r} has no split {split!r}. Its"
                                      f" splits: {', '.join(self.split_names)}.")
-                self._evaluation_set_cache[key] = (
-                    ie.get_reference_set(self.metadata, self.name, split)
-                    if context_offsets is None
-                    else ie.get_model_compatible_set(self.metadata, self.name, split,
-                                                     context_offsets))
-            return self._evaluation_set_cache[key]
+                cache[key] = compute()
+            return cache[key]
+
+    def get_shared_evaluation_sets(self, split: str) -> dict[str, ie.EvaluationSet]:
+        """Returns `irap_evaluation.get_shared_evaluation_sets` of a split, computed on first use.
+
+        Raises:
+            ValueError: If the dataset has no such split.
+        """
+        return self._get_cached(
+            self._shared_set_cache, split, split,
+            lambda: ie.get_shared_evaluation_sets(self.metadata, self.name, split))
 
     def get_reference_set(self, split: str) -> ie.EvaluationSet:
-        """Returns `irap_evaluation.get_reference_set` of a split (see
-        `_get_cached_evaluation_set`)."""
-        return self._get_cached_evaluation_set(split, None)
+        return self.get_shared_evaluation_sets(split)[ie.REFERENCE_SET_NAME]
+
+    def count_shared_evaluation_set_segments(self, split: str) -> dict[str, int]:
+        """Returns the number of segments of each shared evaluation set of a split, by name."""
+        return {n: s.num_segments for n, s in self.get_shared_evaluation_sets(split).items()}
 
     def get_model_compatible_set(self, split: str,
                                  context_offsets: T.Sequence[int]) -> ie.EvaluationSet:
-        """Returns `irap_evaluation.get_model_compatible_set` of a split (see
-        `_get_cached_evaluation_set`)."""
-        return self._get_cached_evaluation_set(split, context_offsets)
+        """Returns `irap_evaluation.get_model_compatible_set` of a split, computed on first use.
+
+        Raises:
+            ValueError: If the dataset has no such split.
+        """
+        context_offsets = tuple(context_offsets)
+        return self._get_cached(
+            self._model_compatible_set_cache, (split, context_offsets), split,
+            lambda: ie.get_model_compatible_set(self.metadata, self.name, split,
+                                                context_offsets))
 
     def get_submission_evaluation_sets(
             self, split: str, context_offsets: T.Sequence[int] | None
     ) -> dict[str, ie.EvaluationSet]:
         """Returns the evaluation sets that a submission of a split can be scored on, by name:
-        the reference set, and the model-compatible set if the context offsets are known.
+        the shared sets, and the model-compatible set if the context offsets are known.
 
         Raises:
             ValueError: If the dataset has no such split.
         """
-        name_to_set = {ie.REFERENCE_SET_NAME: self.get_reference_set(split)}
+        name_to_set = dict(self.get_shared_evaluation_sets(split))
         if context_offsets is not None:
             name_to_set[ie.MODEL_COMPATIBLE_SET_NAME] = self.get_model_compatible_set(
                 split, context_offsets)
@@ -90,8 +108,8 @@ class DatasetContext:
 
     def select_evaluation_sets(
             self, predictions: ie.Predictions) -> tuple[list[ie.EvaluationSet], list[str]]:
-        """Applies `irap_evaluation.select_evaluation_sets` to predictions, with the
-        model-compatible set of the context offsets in their header.
+        """Applies `irap_evaluation.select_evaluation_sets` to predictions, with the shared sets
+        of their split and the model-compatible set of the context offsets in their header.
 
         Raises:
             ValueError: If the predictions are of another dataset or of an unknown split, or
@@ -103,7 +121,7 @@ class DatasetContext:
                              f" not {self.name!r}.")
         offsets = header.context_offsets
         return ie.select_evaluation_sets(
-            predictions.segment_ids, self.get_reference_set(header.split),
+            predictions.segment_ids, self.get_shared_evaluation_sets(header.split).values(),
             None if offsets is None else self.get_model_compatible_set(header.split, offsets))
 
     def check_new_predictions(self, predictions: ie.Predictions) -> list[str]:
