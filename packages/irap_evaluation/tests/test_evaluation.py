@@ -26,8 +26,8 @@ from synthetic_vietnam import SPLIT, invalidate_attribute_predictions, make_pred
 
 
 def test_evaluated_attributes_are_the_labeled_canonical_ones(reference_set, predictions):
-    assert select_evaluated_attributes(reference_set) == ("Number of lanes", "Lane width",
-                                                          "Curvature")
+    assert select_evaluated_attributes(reference_set) == ("Carriageway label", "Number of lanes",
+                                                          "Lane width", "Curvature")
     with pytest.raises(ValueError, match=r"not in the dataset: \['Lane widht'\]"):
         select_evaluated_attributes(reference_set, ["Lane width", "Lane widht"])
     with pytest.raises(ValueError, match="not in the dataset"):
@@ -175,7 +175,8 @@ def test_missing_attributes_score_as_invalid_attribute_predictions(metadata, ref
 def test_select_result_attributes_equals_scoring_the_subset(reference_set, predictions):
     result = evaluate_predictions(predictions, reference_set)
     subset = ["Curvature", "Number of lanes"]  # Not in the order of the result.
-    assert result.attributes == ("Number of lanes", "Lane width", "Curvature")
+    assert result.attributes == ("Carriageway label", "Number of lanes", "Lane width",
+                                 "Curvature")
     selected = select_result_attributes(result, subset)
     expected = evaluate_predictions(predictions, reference_set,
                                     attributes=[a for a in result.attributes if a in subset])

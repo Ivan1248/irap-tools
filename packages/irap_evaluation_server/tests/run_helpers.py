@@ -48,13 +48,15 @@ def assert_close(a, b, label=""):
 
 def assert_intervals_close(actual, expected):
     """Asserts that intervals from the stored float32 resamples equal those of irap_evaluation,
-    up to the float32 rounding, for the metrics of `actual`."""
+    up to the float32 rounding, for the metrics of `actual`. The rounding of the model values is
+    amplified in a method's values by the Student-t draws (`combine_model_resamples`), e.g.
+    about 9 times at the 97.5 % quantile of t(1) for 2 models."""
     expected = to_labeled_metric_values(expected)
     for label, interval in to_labeled_metric_values(actual).items():
         assert interval.num_undefined == expected[label].num_undefined, label
         np.testing.assert_allclose([interval.low, interval.high],
                                    [expected[label].low, expected[label].high],
-                                   rtol=1e-6, atol=1e-6, err_msg=label)
+                                   rtol=1e-5, atol=1e-6, err_msg=label)
 
 
 def score_and_get_models(worker, submission_ids, evaluation_set="reference"):

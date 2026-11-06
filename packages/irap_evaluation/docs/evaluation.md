@@ -50,7 +50,7 @@ A file is scored on up to three sets:
 
 ## Attributes
 
-The scored attributes are the canonical iRAP subset (`irap_data.attrs.get_attrs_to_include`, 41 attributes), in its order, minus those without a label in the evaluation set. On Vietnam validation, 34 remain. `--attributes all` starts from every attribute of the dataset.
+The scored attributes are the canonical iRAP subset (`irap_data.attrs.get_attrs_to_include`, 43 attributes), in its order, minus those without a label in the evaluation set. On Vietnam validation, 35 remain. `--attributes all` starts from every attribute of the dataset.
 
 ### Missing attributes
 

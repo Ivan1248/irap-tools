@@ -12,10 +12,10 @@ from irap_evaluation.evaluation import EvaluationResult, evaluate_predictions
 from irap_evaluation.evaluation_sets import EvaluationSet
 from irap_evaluation.predictions import ModelInfo, PredictionHeader, Predictions
 
-# Three attributes of the canonical subset and one outside it. The codes of "Lane width" are
+# Four attributes of the canonical subset and one outside it. The codes of "Lane width" are
 # not in ascending order, so class indices differ from code order.
 ATTRIBUTE_CODES = {"Carriageway label": [1, 2, 3], "Number of lanes": [1, 2, 3, 4],
-                   "Lane width": [3, 2, 1], "Curvature": [1, 2]}
+                   "Lane width": [3, 2, 1], "Curvature": [1, 2], "Shoulder rumble strips": [1, 2]}
 NUM_ROADS, ROAD_LENGTH = 4, 15
 SPLIT = "val"
 

@@ -6,8 +6,12 @@ from typing import Sequence
 
 
 # Canonical iRAP attribute subset (per Kačan et al.). Used as the cross-dataset
-# default. Per-dataset availability is narrowed via filter_labeled_attrs.
+# default. Per-dataset availability is narrowed via filter_labeled_attrs. The original
+# code (`attrs_to_include` in `train_local_rec.py`) lacks "Carriageway label" and
+# "Motorcycle observed flow", which the paper includes.
 IRAP_BH_ATTRS_TO_INCLUDE = (
+    "Carriageway label",
+    "Motorcycle observed flow",
     "Bicycle observed flow",
     "Pedestrian observed flow across the road",
     "Pedestrian observed flow along the road driver-side",
@@ -51,8 +55,9 @@ IRAP_BH_ATTRS_TO_INCLUDE = (
     "School zone crossing supervisor",
 )
 
-# iRAP-Vietnam attributes that are present in iRAP-BH.
+# iRAP-Vietnam attributes that are in IRAP_BH_ATTRS_TO_INCLUDE, in its order.
 IRAP_VIETNAM_ATTRS_SHARED = (
+    "Carriageway label",
     "Speed management / traffic calming",
     "Number of lanes",
     "Lane width",
@@ -89,9 +94,8 @@ IRAP_VIETNAM_ATTRS_SHARED = (
     "School zone crossing supervisor",
 )
 
-# All iRAP-Vietnam attributes: the shared subset plus attributes not present in iRAP-BH.
+# All iRAP-Vietnam attributes: the shared subset plus attributes outside IRAP_BH_ATTRS_TO_INCLUDE.
 IRAP_VIETNAM_ATTRS_ALL = IRAP_VIETNAM_ATTRS_SHARED + (
-    "Carriageway label",
     "Speed limit",
     "Shoulder rumble strips",
     "Intersecting road volume",
