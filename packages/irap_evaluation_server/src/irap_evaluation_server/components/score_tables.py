@@ -16,6 +16,7 @@ import typing as T
 import irap_evaluation as ie
 import numpy as np
 
+from ..label_counts import AttributeLabelCounts
 from ..method_comparison import get_better_method
 from ..method_ranking import (
     RANKING_METRIC_NAMES,
@@ -26,7 +27,12 @@ from ..method_ranking import (
     get_method_split_use,
 )
 from ..method_scores import MethodScores, are_scored_on_same_set
-from ..methodology import COMPARISONS_SECTION, EVALUATION_SETS_SECTION, INTERVALS_SECTION
+from ..methodology import (
+    COMPARISONS_SECTION,
+    EVALUATION_SETS_SECTION,
+    INTERVALS_SECTION,
+    METRICS_SECTION,
+)
 from .formatting import (
     format_context_offsets,
     make_link_html,
@@ -109,6 +115,12 @@ def _make_methodology_link_html(section_id: str, text: str) -> str:
 
 def _make_note_lines_html(*lines_html: str) -> str:
     return "".join(f'<div class="muted">{line}</div>' for line in lines_html)
+
+
+def _make_different_sets_reason_html() -> str:
+    """Explains why the methods of a table are not compared on the same segments."""
+    segments = _make_methodology_link_html(EVALUATION_SETS_SECTION, "different segments")
+    return f"since the methods are scored on {segments}"
 
 
 def _make_shading_note(axis: T.Literal["column", "row"]) -> str:
@@ -350,8 +362,7 @@ def _make_method_notes_html(rows: T.Sequence[MethodScores], confidence: float,
         bold = (f"{_make_methodology_link_html(COMPARISONS_SECTION, 'Bold')}: not significantly"
                 f" worse than the best.")
     else:
-        segments = _make_methodology_link_html(EVALUATION_SETS_SECTION, "different segments")
-        bold = f"No bold, since the methods are scored on {segments}."
+        bold = f"No bold, {_make_different_sets_reason_html()}."
     lines = [(f"Values: means over the seeds of each method. Below each: its"
               f" {_make_interval_link_html(confidence)}. {_make_shading_note(axis)} {bold}")]
     if any(_is_single_model(r) for r in rows):
@@ -427,18 +438,87 @@ def get_per_attribute_table_metric_names(metric_name: str) -> tuple[str, str]:
     return metric_name, ie.get_attribute_average_name(metric_name)
 
 
-def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
-                                  method_to_resamples: T.Mapping[str, RowResamples],
-                                  confidence: float, metric_name: str, scope: ScoresScope,
-                                  comparisons: ReferenceComparisons | None = None) -> str:
+@dc.dataclass(frozen=True)
+class _LabelCountColumn:
+    """A label count column of `make_per_attribute_table_html`.
+
+    Attributes:
+        title: The tooltip of the header.
+        reveals_classes: Whether the count reveals the class distribution, so that it is hidden
+            like the per-class scores (`accounts.can_see_class_scores`).
+    """
+
+    header: str
+    title: str
+    get_count: T.Callable[[AttributeLabelCounts], int | None]
+    reveals_classes: bool
+
+
+_LABEL_COUNT_COLUMNS = (
+    _LabelCountColumn(
+        "Classes", "The number of classes of the attribute that occur as a label in the"
+                   " evaluation set.",
+        lambda c: c.num_labeled_classes, reveals_classes=True),
+    _LabelCountColumn(
+        "Examples", "The number of labeled examples: the segments of the evaluation set with a"
+                    " label of the attribute.",
+        lambda c: c.num_labeled_segments, reveals_classes=False),
+    _LabelCountColumn(
+        "Smallest class", "The number of labeled examples of the attribute's rarest class among"
+                          " those that occur as a label.",
+        lambda c: c.num_smallest_class_segments, reveals_classes=True),
+)
+
+
+def _make_label_count_cells_html(counts: AttributeLabelCounts | None,
+                                 shows_class_counts: bool) -> str:
+    """Makes the label count cells of an attribute, with '–' for counts that are None, undefined
+    or hidden."""
+    def format_count(column: _LabelCountColumn) -> str:
+        is_hidden = column.reveals_classes and not shows_class_counts
+        count = None if counts is None or is_hidden else column.get_count(counts)
+        return "–" if count is None else str(count)
+
+    return "".join(f'<td class="number">{format_count(c)}</td>' for c in _LABEL_COUNT_COLUMNS)
+
+
+def _make_label_count_note(split: str,
+                           attribute_to_label_counts: T.Mapping[str, AttributeLabelCounts] | None,
+                           shows_class_counts: bool) -> str:
+    """Explains the label count columns, and why some are '–' (`_make_label_count_cells_html`)."""
+    columns = _make_methodology_link_html(
+        METRICS_SECTION, ", ".join(c.header for c in _LABEL_COUNT_COLUMNS))
+    if attribute_to_label_counts is None:
+        return f"{columns}: not shown, {_make_different_sets_reason_html()}."
+    note = (f"{columns}: counts of the labels of each attribute in the evaluation set, the same"
+            f" for all methods.")
+    if not shows_class_counts:
+        hidden_headers = " and ".join(c.header for c in _LABEL_COUNT_COLUMNS if c.reveals_classes)
+        note += (f" {hidden_headers} are hidden, since the labels of the {html.escape(split)}"
+                 f" split are protected.")
+    return note
+
+
+def make_per_attribute_table_html(
+        rows: T.Sequence[MethodScores], method_to_resamples: T.Mapping[str, RowResamples],
+        confidence: float, metric_name: str, scope: ScoresScope,
+        attribute_to_label_counts: T.Mapping[str, AttributeLabelCounts] | None,
+        shows_class_counts: bool, comparisons: ReferenceComparisons | None = None) -> str:
     """Makes a table of attribute rows × method columns of one per-attribute metric, for the rows
     without an error, in their order. The first row has the attribute average of the metric.
+    Before the method columns, label count columns describe the evaluation set of the methods
+    (`label_counts.AttributeLabelCounts`).
 
     Args:
         rows: Over the same attribute subset.
         method_to_resamples: Method name -> its resampled values of
             `get_per_attribute_table_metric_names(metric_name)`, or None.
         scope: For the links to the methods, and the marks of the methods that used the split.
+        attribute_to_label_counts: Attribute -> its label counts in the evaluation set of the
+            rows, for the attributes of the rows, or None if the rows are scored on different
+            sets.
+        shows_class_counts: Whether the label counts that reveal the class distribution are
+            shown (`accounts.can_see_class_scores`).
         comparisons: The comparisons with a reference method, or None.
 
     Raises:
@@ -455,20 +535,30 @@ def make_per_attribute_table_html(rows: T.Sequence[MethodScores],
         rows, row_resamples, select_average_value(average_name), average_name, confidence,
         is_tested=is_tested, comparisons=comparisons)
     html_rows = [f"<tr><td{make_title_attribute(ie.describe_metric(average_name))}>Average</td>"
+                 f'<td colspan="{len(_LABEL_COUNT_COLUMNS)}"></td>'
                  f"{''.join(average_cells)}</tr>"]
     for attribute in attributes:
+        label_count_cells = _make_label_count_cells_html(
+            None if attribute_to_label_counts is None else attribute_to_label_counts[attribute],
+            shows_class_counts)
         cells = _make_compared_cells_html(
             rows, row_resamples, select_attribute_value(metric_name, attribute), metric_name,
             confidence, is_tested=is_tested, comparisons=comparisons,
             notes=["not predicted" if attribute in r.missing_attributes else "" for r in rows])
-        html_rows.append(f"<tr><td>{html.escape(attribute)}</td>{''.join(cells)}</tr>")
-    # Vertical, so that the method columns are as narrow as their values.
+        html_rows.append(f"<tr><td>{html.escape(attribute)}</td>{label_count_cells}"
+                         f"{''.join(cells)}</tr>")
+    # Vertical, so that the columns are as narrow as their values.
+    label_count_headers = "".join(
+        f'<th class="number vertical-header"{make_title_attribute(c.title)}>'
+        f"<div>{html.escape(c.header)}</div></th>" for c in _LABEL_COUNT_COLUMNS)
     method_headers = "".join(
         f'<th class="number vertical-header"><div>{_make_method_label_html(r, comparisons, scope)}'
         f"</div></th>" for r in rows)
-    metric_note = f'<div class="muted">{html.escape(ie.describe_metric(metric_name))}</div>'
-    return (make_table_html_from_header(f"<th>Attribute</th>{method_headers}", html_rows)
-            + metric_note
+    return (make_table_html_from_header(
+                f"<th>Attribute</th>{label_count_headers}{method_headers}", html_rows)
+            + _make_note_lines_html(
+                html.escape(ie.describe_metric(metric_name)),
+                _make_label_count_note(scope.split, attribute_to_label_counts, shows_class_counts))
             + _make_method_notes_html(rows, confidence, "row", is_tested, comparisons))
 
 

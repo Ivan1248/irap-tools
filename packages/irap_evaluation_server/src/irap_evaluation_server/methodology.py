@@ -25,6 +25,7 @@ MARKDOWN_EXTRAS = ["tables", "code-friendly"]
 
 #: The ids of the sections that the notes of other pages link to (`routes.get_methodology_path`).
 EVALUATION_SETS_SECTION = "evaluation-sets"
+METRICS_SECTION = "metrics"
 INTERVALS_SECTION = "intervals"
 COMPARISONS_SECTION = "comparisons"
 
@@ -147,6 +148,18 @@ prediction in the evaluation set. (mNLL averages over the classes that occur as 
 macro metric depends on which classes the evaluation set contains, and rare classes make it noisy.
 The suffix `_suppN`, e.g. `_supp10`, restricts $K$ to the classes with at least $N$ labeled
 segments in the evaluation set.
+
+The per-attribute view of the Scores page shows counts of the labels of each attribute in the
+evaluation set, which are the same for all methods:
+
+- **Classes**: the number of classes that occur as a label.
+- **Examples**: the number of segments with a label.
+- **Smallest class**: the number of labeled segments of the rarest of these classes.
+
+For example, an mF1 of 1 can mean that only one class occurs, and the mF1 over 15 classes of which
+the smallest has 2 labeled segments is noisy. The counts are not shown if the methods are scored on
+model-compatible sets of different context offsets. On splits whose labels are protected, only
+admins see Classes and Smallest class, since they reveal the class distribution.
 
 An **attribute average**, with the prefix `a`, is the mean of a metric over the attributes, each
 with the same weight, e.g. $\mathrm{{amF1}} = \frac{{1}}{{|A|}} \sum_{{a \in A}} \mathrm{{mF1}}_a$,
@@ -303,7 +316,7 @@ def make_methodology_sections(settings: ScoringSettings, dataset_names: T.Sequen
                            _make_evaluation_sets_markdown(dataset_names)),
         MethodologySection("attributes", "Attributes and invalid predictions",
                            _make_attributes_markdown()),
-        MethodologySection("metrics", "Metrics",
+        MethodologySection(METRICS_SECTION, "Metrics",
                            _make_metrics_markdown(shown_metrics.per_attribute_names)),
         MethodologySection(INTERVALS_SECTION, "Confidence intervals",
                            _make_intervals_markdown(settings)),

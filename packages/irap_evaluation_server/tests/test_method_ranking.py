@@ -248,7 +248,9 @@ def test_method_tables_escape_names():
     assert "method=%3Cm%3E" in table  # The link to the Method page.
     assert "Models &lt;differ&gt;." in table
 
-    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", scope)
+    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", scope,
+                                                  attribute_to_label_counts=None,
+                                                  shows_class_counts=True)
     assert "<m>" not in per_attribute and "<n>" not in per_attribute
 
 

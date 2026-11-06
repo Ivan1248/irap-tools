@@ -6,7 +6,13 @@ import zipfile
 
 import irap_evaluation as ie
 import pytest
-from run_helpers import OTHER_SPLIT, make_model, with_split, write_upload
+from run_helpers import (
+    OTHER_SPLIT,
+    make_model,
+    with_context_offsets,
+    with_split,
+    write_upload,
+)
 from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server import uploads
@@ -171,8 +177,7 @@ def _make_files_of_two_models(dataset_contexts):
 def _make_files_of_two_offsets(dataset_contexts):
     files = make_model_files(dataset_contexts, splits=(SPLIT,))
     [(name, other)] = make_model_files(dataset_contexts, splits=(OTHER_SPLIT,)).items()
-    return files | {name: dc.replace(other, header=dc.replace(other.header,
-                                                             context_offsets=(0,)))}
+    return files | {name: with_context_offsets(other, (0,))}
 
 
 def _make_one_split_twice(dataset_contexts):

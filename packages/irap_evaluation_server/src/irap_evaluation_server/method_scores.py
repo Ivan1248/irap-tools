@@ -132,6 +132,20 @@ def are_scored_on_same_set(models: T.Iterable[ScoredModel]) -> bool:
     return len({m.scores.evaluation_set_fingerprint for m in models}) <= 1
 
 
+def find_common_evaluation_set(context: DatasetContext,
+                               models: T.Sequence[ScoredModel]) -> ie.EvaluationSet | None:
+    """Returns the evaluation set that all models are scored on (`are_scored_on_same_set`), or
+    None if they are scored on different sets, e.g. model-compatible sets of different context
+    offsets.
+
+    Raises:
+        ValueError: If `models` is empty, and see `get_model_evaluation_set`.
+    """
+    if not models:
+        raise ValueError("At least one model is required.")
+    return get_model_evaluation_set(context, models[0]) if are_scored_on_same_set(models) else None
+
+
 def get_combination_error(models: T.Sequence[ScoredModel]) -> str | None:
     """Returns why the models cannot be combined in means (`compute_method_scores`) or resampled
     values (`combine_method_resamples`), or None if they can."""

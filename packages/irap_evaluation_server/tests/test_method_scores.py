@@ -1,4 +1,5 @@
 import irap_evaluation as ie
+import pytest
 from run_helpers import (
     add_model,
     assert_close,
@@ -6,11 +7,13 @@ from run_helpers import (
     make_model,
     score_and_get_models,
     score_submission_again,
+    with_context_offsets,
 )
 from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server.method_scores import (
     compute_method_scores,
+    find_common_evaluation_set,
     group_scored_models_by_method,
 )
 from irap_evaluation_server.scoring import RESAMPLED_METRIC_NAMES
@@ -74,3 +77,20 @@ def test_models_that_cannot_be_combined(archive, dataset_contexts, worker):
     method_scores = compute_method_scores("m", models, models[0].scores.attributes)
     assert method_scores.metrics is None
     assert "differ in metrics" in method_scores.error
+
+
+def test_find_common_evaluation_set_of_model_compatible_sets(archive, dataset_contexts, worker):
+    submissions = [
+        add_model(archive, dataset_contexts,
+                  with_context_offsets(make_model(dataset_contexts, name), offsets))
+        for name, offsets in (("m", (0, -1)), ("n", (0, -2)))]
+    models = score_and_get_models(worker, [s.id for s in submissions],
+                                  ie.MODEL_COMPATIBLE_SET_NAME)
+    offsets_to_model = {m.scores.context_offsets: m for m in models}
+    context = dataset_contexts["vietnam"]
+    for offsets, model in offsets_to_model.items():
+        assert find_common_evaluation_set(context, [model]) is context.get_model_compatible_set(
+            SPLIT, offsets)
+    assert len(offsets_to_model) == 2 and find_common_evaluation_set(context, models) is None
+    with pytest.raises(ValueError, match="At least one model"):
+        find_common_evaluation_set(context, [])

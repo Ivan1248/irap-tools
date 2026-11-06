@@ -1,7 +1,7 @@
 """The Scores page: the methods of a dataset split, with the means over their models of the
-attribute averages, or of one per-attribute metric, and optionally their differences from a
-reference method (see `method_comparison`). The methods trained on the split are left out unless
-the user shows them."""
+attribute averages, or of one per-attribute metric next to the label counts of the attributes
+(`label_counts`), and optionally their differences from a reference method (see
+`method_comparison`). The methods trained on the split are left out unless the user shows them."""
 
 import dataclasses as dc
 import typing as T
@@ -10,6 +10,7 @@ import irap_evaluation as ie
 from fastapi import Request
 from nicegui import run, ui
 
+from ..accounts import can_see_class_scores
 from ..components.account_sessions import AccountSessions
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
 from ..components.formatting import (
@@ -43,6 +44,7 @@ from ..components.view_queries import (
 )
 from ..datasets import DatasetContext
 from ..display_settings import DisplaySettingsStore
+from ..label_counts import AttributeLabelCounts, count_attribute_labels
 from ..method_comparison import compare_with_reference, list_comparable_methods
 from ..method_ranking import (
     DEFAULT_SORT_METRIC,
@@ -52,7 +54,7 @@ from ..method_ranking import (
     rank_methods,
     select_shown_methods,
 )
-from ..method_scores import MethodScores, ScoredModel
+from ..method_scores import MethodScores, ScoredModel, find_common_evaluation_set
 from ..scoring_worker import ScoringWorker, SubmissionScorings
 
 #: Plural for the model-compatible sets, since each method is scored on its own.
@@ -129,14 +131,18 @@ def register_scores_page(dataset_contexts: T.Mapping[str, DatasetContext],
     @ui.page(SCORES_PATH, title="Scores · iRAP evaluation")
     async def scores_page(request: Request) -> None:
         shown_metrics = display_settings.get_shown_metrics()
-        with create_page_frame(SCORES_PATH, sessions.get_account()):
+        account = sessions.get_account()
+        with create_page_frame(SCORES_PATH, account):
             try:
                 view = _parse_view(request.query_params, dataset_contexts, shown_metrics)
             except ValueError as e:
                 show_view_error(str(e), SCORES_PATH)
                 return
+            shows_class_counts = can_see_class_scores(
+                account, dataset_contexts[view.dataset].config, view.split)
             await _create_scores(dataset_contexts, worker, shown_metrics, view,
-                                 request.query_params.getlist(ATTRIBUTE_PARAMETER))
+                                 request.query_params.getlist(ATTRIBUTE_PARAMETER),
+                                 shows_class_counts)
 
 
 @dc.dataclass(frozen=True)
@@ -185,16 +191,28 @@ class _MethodTable:
     comparison_errors: list[str]
 
 
-def _compute_method_table(worker: ScoringWorker, average_names: T.Sequence[str],
-                          view: _ScoresView, models: T.Sequence[ScoredModel],
-                          subset: AttributeSubset,
-                          matching_method_names: T.AbstractSet[str]) -> _MethodTable:
+def _count_shown_labels(context: DatasetContext, shown: T.Sequence[MethodScores],
+                        attributes: T.Sequence[str]) -> dict[str, AttributeLabelCounts] | None:
+    """Counts the labels of the attributes in the evaluation set of the shown methods, or returns
+    None if their models are scored on different sets."""
+    evaluation_set = find_common_evaluation_set(context,
+                                                [m for r in shown for m in r.scored_models])
+    return None if evaluation_set is None else count_attribute_labels(evaluation_set, attributes)
+
+
+def _compute_method_table(worker: ScoringWorker, context: DatasetContext,
+                          average_names: T.Sequence[str], view: _ScoresView,
+                          models: T.Sequence[ScoredModel], subset: AttributeSubset,
+                          matching_method_names: T.AbstractSet[str],
+                          shows_class_counts: bool) -> _MethodTable:
     """Ranks the methods of a view over the attributes of `subset` and makes their table, with
     the comparisons with the reference method, if any.
 
     Args:
+        context: The dataset of the view, whose evaluation sets the per-attribute table describes.
         average_names: The attribute averages of the table (`ShownMetrics.average_names`).
         matching_method_names: The methods that the method filter matches.
+        shows_class_counts: See `make_per_attribute_table_html`.
     """
     rows = rank_methods(models, subset.selected, view.sort_metric)
     name_to_comparable = {r.method_name: r for r in list_comparable_methods(rows)}
@@ -218,7 +236,9 @@ def _compute_method_table(worker: ScoringWorker, average_names: T.Sequence[str],
         scope = ScoresScope(view.dataset, view.split, subset.to_query())
         if view.metric_name:
             table_html = make_per_attribute_table_html(
-                shown, method_to_resamples, confidence, view.metric_name, scope, comparisons)
+                shown, method_to_resamples, confidence, view.metric_name, scope,
+                _count_shown_labels(context, shown, subset.selected), shows_class_counts,
+                comparisons)
         else:
             table_html = make_method_table_html(
                 shown, method_to_resamples, confidence, average_names, view.sort_metric, scope,
@@ -246,9 +266,14 @@ class _ScoresContent:
     table: _MethodTable | None
 
 
-def _compute_scores_content(worker: ScoringWorker, average_names: T.Sequence[str],
-                            view: _ScoresView, split_scorings: _SplitScorings,
-                            subset: AttributeSubset) -> _ScoresContent:
+def _compute_scores_content(worker: ScoringWorker, context: DatasetContext,
+                            average_names: T.Sequence[str], view: _ScoresView,
+                            split_scorings: _SplitScorings, subset: AttributeSubset,
+                            shows_class_counts: bool) -> _ScoresContent:
+    """Computes what the table panel of the page shows.
+
+    Args: See `_compute_method_table`.
+    """
     filter_error, table = None, None
     if split_scorings.models and subset.selected:
         # The filter matches the shown method names.
@@ -262,19 +287,22 @@ def _compute_scores_content(worker: ScoringWorker, average_names: T.Sequence[str
         else:
             matching_method_names = {n for n, s in name_to_shown.items()
                                      if s in matching_shown_names}
-            table = _compute_method_table(worker, average_names, view, split_scorings.models,
-                                          subset, matching_method_names)
+            table = _compute_method_table(worker, context, average_names, view,
+                                          split_scorings.models, subset, matching_method_names,
+                                          shows_class_counts)
     return _ScoresContent(view, split_scorings, subset, filter_error, table)
 
 
 async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worker: ScoringWorker,
                          shown_metrics: ShownMetrics, view: _ScoresView,
-                         attribute_query: T.Sequence[str]) -> None:
+                         attribute_query: T.Sequence[str], shows_class_counts: bool) -> None:
     """Creates the page. The scores are loaded and computed in threads (`update_table`), so that
     a large table does not hold up the event loop, e.g. for other users.
 
     Args:
         shown_metrics: The metrics of the page when it was opened.
+        shows_class_counts: See `make_per_attribute_table_html`. The split of the page does not
+            change, since another split is another page (`navigate_to`).
     """
     def navigate_to(**changes: str) -> None:
         # Another dataset has other attributes.
@@ -305,9 +333,9 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
             if split_scorings is None or not is_latest():
                 return
         subset = attribute_filter.set_options(collect_scored_attributes(split_scorings.models))
-        content = await run.io_bound(_compute_scores_content, worker,
+        content = await run.io_bound(_compute_scores_content, worker, context,
                                      shown_metrics.average_names, shown_view, split_scorings,
-                                     subset)
+                                     subset, shows_class_counts)
         if content is not None and is_latest():
             show_table.refresh(content)
 

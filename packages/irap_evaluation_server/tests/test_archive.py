@@ -1,4 +1,3 @@
-import dataclasses as dc
 import hashlib
 import io
 import json
@@ -10,6 +9,7 @@ from run_helpers import (
     OTHER_SPLIT,
     add_model,
     make_model,
+    with_context_offsets,
     with_model,
     with_split,
     write_upload,
@@ -256,7 +256,7 @@ def test_files_of_a_model_must_agree(archive, two_split_contexts):
     with pytest.raises(ValueError, match=r"would differ in output kind.*replace all its files"):
         plan(archive, two_split_contexts, hard)
     model = with_split(make_model(two_split_contexts), OTHER_SPLIT)
-    other_offsets = dc.replace(model, header=dc.replace(model.header, context_offsets=(0,)))
+    other_offsets = with_context_offsets(model, (0,))
     with pytest.raises(ValueError, match="would differ in context offsets"):
         plan(archive, two_split_contexts, other_offsets)
     trained = with_split(make_model(two_split_contexts, training_splits=(SPLIT,)), OTHER_SPLIT)

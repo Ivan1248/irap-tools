@@ -23,6 +23,12 @@ def with_split(predictions: ie.Predictions, split: str) -> ie.Predictions:
     return dc.replace(predictions, header=dc.replace(predictions.header, split=split))
 
 
+def with_context_offsets(predictions: ie.Predictions,
+                         context_offsets: tuple[int, ...]) -> ie.Predictions:
+    return dc.replace(predictions,
+                      header=dc.replace(predictions.header, context_offsets=context_offsets))
+
+
 def with_model(predictions: ie.Predictions, **changes) -> ie.Predictions:
     """Returns the predictions with changed fields of their `irap_evaluation.ModelInfo`."""
     header = predictions.header
