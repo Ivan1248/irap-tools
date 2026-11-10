@@ -132,11 +132,11 @@ Module: `irap_vietnam_data_preparation/extract_images.py`
   `<data_dir>/FRAMES/<video_dir>/`, without the `splitN/` directory that wraps
   the images in the archives. `FRAMES/` is emptied first.
 - Tries `unrar` first, falls back to `7z`.
-- Stops if two archives contain the same path. With `--ignore-duplicates`, the
-  first archive wins, a copy with different content is reported, and all copies
-  go to `_work/FRAMES_duplicates/`.
-- Applies the `missing_segments*.rar` archives last; their images replace or
-  add files.
+- Stops if two archives contain the same path, and writes all copies to
+  `_work/FRAMES_duplicates/`. With `--ignore-duplicates`, it continues, keeps
+  one copy of each path, and warns about the paths whose copies differ.
+- Applies the patch archives last (name contains `missing_segments` or
+  `new files`). Their images replace or add files.
 
 Result: `FRAMES/<video_dir>/<video_dir>_seg<seg_id>.png`, e.g.
 `FRAMES/VID_20241211_135439_00_011/VID_20241211_135439_00_011_seg1814508.png`.

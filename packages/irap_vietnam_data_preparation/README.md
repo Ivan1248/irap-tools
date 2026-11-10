@@ -20,7 +20,7 @@ Scripts that turn the Vietnam panoramic images and Excel coding tables into a da
     rows.parquet, parse_report.json      # step 3
     cross_annotator_report.json          # step 3, optional
     build_report.json                    # step 4
-    FRAMES_duplicates/                   # step 2, with --ignore-duplicates
+    FRAMES_duplicates/                   # step 2, if archives share a path
   FRAMES/<video_dir>/<video_dir>_seg<N>.png   # step 2
   segment_id_to_data_paths_rel.json      # step 4
   segment_id_to_road_data.json
@@ -51,8 +51,8 @@ python extract_images.py $DATA_DIR --ignore-duplicates
 ```
 
 - Writes the images to `FRAMES/<video_dir>/`, without the `splitN/` directory that wraps them in the archives. If `FRAMES/` is not empty, it asks for confirmation before it deletes it (`--yes` skips the question).
-- Stops if two archives contain the same path. With `--ignore-duplicates`, the first archive wins and all copies go to `_work/FRAMES_duplicates/` for review.
-- Applies the `missing_segments*.rar` archives last. Their images replace or add files in `FRAMES/`.
+- Stops if two archives contain the same path, and writes all copies to `_work/FRAMES_duplicates/` for review. With `--ignore-duplicates`, it continues, keeps one copy of each path, and warns about the paths whose copies differ.
+- Applies the patch archives last: the archives whose name contains `missing_segments` or `new files`. Their images replace or add files in `FRAMES/`, and they are not part of the duplicate check. `--patches-only` applies only them to the existing `FRAMES/`, e.g. after an interrupted patch step.
 
 ### 3. Parse the coding tables
 
