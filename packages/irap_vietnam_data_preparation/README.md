@@ -39,10 +39,10 @@ Run the scripts from this directory, with `DATA_DIR` set to the dataset root.
 ### 1. Download the image archives
 
 ```bash
-python download_images.py $DATA_DIR
+python download_images.py $DATA_DIR $SHARE_URL
 ```
 
-Downloads about 110 GB of `split*.rar` archives from Seafile. An interrupted download resumes, and a file whose size already matches is skipped.
+`SHARE_URL` is the Seafile public share link of the dataset (`https://host/d/<token>/`). Downloads about 110 GB of `split*.rar` archives from it. An interrupted download resumes, and a file whose size already matches is skipped.
 
 ### 2. Extract the images
 

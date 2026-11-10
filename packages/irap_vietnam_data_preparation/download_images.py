@@ -1,11 +1,10 @@
 """Download all files from a Seafile public share link.
 
-Defaults to the iRAP-Vietnam dataset share. Supports resume via HTTP Range and
-skips files whose local size already matches the remote size. Recurses into
-subdirectories.
+Supports resume via HTTP Range and skips files whose local size already matches
+the remote size. Recurses into subdirectories.
 
 Usage:
-    python download_images.py <data_dir>
+    python download_images.py <data_dir> <share_url>
 
 Writes to ``<data_dir>/_raw/image_rars/``.
 """
@@ -22,7 +21,6 @@ from tqdm import tqdm
 
 import layout
 
-DEFAULT_SHARE_URL = "https://seafile.irap.org/d/074e5d6b7d1047b998a7/"
 CHUNK_SIZE = 1 << 20  # 1 MiB
 
 
@@ -104,9 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_dir", type=Path,
                         help="iRAP-Vietnam dataset root.")
+    parser.add_argument("share_url",
+                        help="Seafile public share link, https://host/d/<token>/.")
     args = parser.parse_args(argv)
 
-    server, token = parse_share_url(DEFAULT_SHARE_URL)
+    server, token = parse_share_url(args.share_url)
     out = layout.rars_dir(args.data_dir)
     out.mkdir(parents=True, exist_ok=True)
 

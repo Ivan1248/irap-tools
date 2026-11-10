@@ -117,7 +117,7 @@ Module: `irap_vietnam_data_preparation/download_images.py`
 - Resumes via HTTP `Range`; skips files where local size == remote size.
 - Writes to `<data_dir>/_raw/image_rars/`.
 
-Default share is the iRAP-Vietnam release, which contains 7 RAR archives
+The share link is a required argument. The iRAP-Vietnam release contains 7 RAR archives
 (`split1.rar` … `split7.rar`, ~110 GB total) plus an `.xlsx` index and
 instructions. `coding-tables.zip` is downloaded **manually from Google
 Drive** (Decision 2); we don't automate that.
