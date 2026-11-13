@@ -159,24 +159,16 @@ class IRAPDataset(Dataset):
         return frames[0]
 
     def get_example(self, idx: int) -> dict:
+        # `select_split_segments` selects only segments with a complete context window and an
+        # entry in `segment_id_to_labels` (all `IGNORE_LABEL_INDEX` in unlabeled splits). The
+        # context segments themselves need only an image.
         sid = self.segment_ids[idx]
-
-        # Prepare context ids from integer arithmetic (matches original).
-        # All segment_ids are expected to have corresponding context ids. A missing one is an
-        # error.
-        if sid not in self.segment_id_to_context_ids:
-            raise KeyError(
-                f"segment_id {sid} missing from segment_id_to_context_ids; dataset filtering should ensure consistency."
-            )
-        context_ids = list(self.segment_id_to_context_ids[sid])
-
-        item = dict()
-        item["rgb"] = self._load_sequence(context_ids, "rgb")
-        if sid in self.segment_id_to_labels:
-            item["target"] = torch.LongTensor(self.segment_id_to_labels[sid])
-        item["segment_id"] = sid
-        item["sequence_id"] = self.seq_index[sid][0]
-        return item
+        return dict(
+            rgb=self._load_sequence(self.segment_id_to_context_ids[sid], "rgb"),
+            target=torch.LongTensor(self.segment_id_to_labels[sid]),
+            segment_id=sid,
+            sequence_id=self.seq_index[sid][0],
+        )
 
 
 def make_irap_data(
