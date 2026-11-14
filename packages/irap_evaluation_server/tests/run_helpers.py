@@ -114,3 +114,11 @@ def add_model(archive, dataset_contexts, predictions, description=None):
                           file_name="model.parquet", description=description)
     [submission] = apply_upload(archive, planned, submitter="Al")
     return submission
+
+
+def add_models_of_different_context_offsets(archive, dataset_contexts):
+    """Adds a model of each of the methods "m" and "n", whose context offsets differ, so that
+    their model-compatible sets differ. Returns the submissions."""
+    return [add_model(archive, dataset_contexts,
+                      with_context_offsets(make_model(dataset_contexts, name), offsets))
+            for name, offsets in (("m", (0, -1)), ("n", (0, -2)))]

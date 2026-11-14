@@ -1,7 +1,12 @@
 import irap_evaluation as ie
 import numpy as np
 from irap_data.metadata import IGNORE_LABEL_INDEX, ClassVocabulary
-from run_helpers import add_model, make_model, score_and_get_models, with_context_offsets
+from run_helpers import (
+    add_model,
+    add_models_of_different_context_offsets,
+    make_model,
+    score_and_get_models,
+)
 from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
@@ -74,10 +79,7 @@ def _get_attribute_row_html(table_html, attribute):
 
 
 def test_scores_page_shows_the_label_counts(archive, dataset_contexts, worker):
-    submissions = [
-        add_model(archive, dataset_contexts,
-                  with_context_offsets(make_model(dataset_contexts, name), offsets))
-        for name, offsets in (("m", (0, -1)), ("n", (0, -2)))]
+    submissions = add_models_of_different_context_offsets(archive, dataset_contexts)
     score_and_get_models(worker, [s.id for s in submissions])
     reference_set = dataset_contexts["vietnam"].get_reference_set(SPLIT)
     attribute = "Curvature"

@@ -2,12 +2,12 @@ import irap_evaluation as ie
 import pytest
 from run_helpers import (
     add_model,
+    add_models_of_different_context_offsets,
     assert_close,
     assert_intervals_close,
     make_model,
     score_and_get_models,
     score_submission_again,
-    with_context_offsets,
 )
 from synthetic_vietnam import SPLIT
 
@@ -80,10 +80,7 @@ def test_models_that_cannot_be_combined(archive, dataset_contexts, worker):
 
 
 def test_find_common_evaluation_set_of_model_compatible_sets(archive, dataset_contexts, worker):
-    submissions = [
-        add_model(archive, dataset_contexts,
-                  with_context_offsets(make_model(dataset_contexts, name), offsets))
-        for name, offsets in (("m", (0, -1)), ("n", (0, -2)))]
+    submissions = add_models_of_different_context_offsets(archive, dataset_contexts)
     models = score_and_get_models(worker, [s.id for s in submissions],
                                   ie.MODEL_COMPATIBLE_SET_NAME)
     offsets_to_model = {m.scores.context_offsets: m for m in models}

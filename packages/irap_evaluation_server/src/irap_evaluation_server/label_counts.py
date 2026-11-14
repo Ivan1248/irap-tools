@@ -34,9 +34,8 @@ def count_attribute_labels(evaluation_set: ie.EvaluationSet,
     Raises:
         ValueError: See `irap_data.metadata.compute_num_segments_per_class`.
     """
-    value_to_code = evaluation_set.vocabulary.attribute_to_value_to_irap_code
     return {a: _summarize_class_supports(compute_num_segments_per_class(
-                evaluation_set.class_indices[a], len(value_to_code[a])))
+                evaluation_set.class_indices[a], len(evaluation_set.vocabulary.get_irap_codes(a))))
             for a in attributes}
 
 
