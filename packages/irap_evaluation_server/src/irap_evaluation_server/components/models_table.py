@@ -7,6 +7,7 @@ import typing as T
 
 import irap_evaluation as ie
 
+from ..archive import get_description_summary
 from ..model_listing import MethodGroup, ModelSummary
 from .formatting import (
     format_splits,
@@ -52,15 +53,17 @@ def _make_submission_cell_html(summary: ModelSummary, split: str) -> str:
     return f'<td class="mark" title="{html.escape(title)}">{link}{mark_html}</td>'
 
 
-def _make_summary_cells_html(summary: ModelSummary) -> str:
+def _make_summary_cells_html(summary: ModelSummary, has_description_column: bool) -> str:
     attribute_range = summary.attribute_range
     attributes = ("" if attribute_range is None else str(attribute_range[0])
                   if attribute_range[0] == attribute_range[1]
                   else f"{attribute_range[0]}–{attribute_range[1]}")
+    description = (f"<td>{html.escape(get_description_summary(summary.model.description))}</td>"
+                   if has_description_column else "")
     return (f"<td>{summary.output_kind or ''}</td>"
             f'<td class="number">{summary.num_segments or ""}</td>'
             f'<td class="number">{attributes}</td>'
-            f"<td>{html.escape(summary.model.description)}</td>"
+            f"{description}"
             f"<td>{html.escape(', '.join(summary.submitters))}</td>"
             f"<td>{format_utc_time(summary.updated_at)}</td>")
 
@@ -86,7 +89,7 @@ def _make_method_row_html(group: MethodGroup, num_columns: int) -> str:
 
 
 def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Sequence[str], *,
-                           has_method_rows: bool = True,
+                           has_method_rows: bool = True, has_description_column: bool = True,
                            selected_model_ids: T.Collection[int] | None = None) -> str:
     """Makes the table of the models of methods of a dataset
     (`model_listing.summarize_models_by_method`), with a column per split. A model is labeled by
@@ -97,6 +100,8 @@ def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Seque
         split_names: The splits of the dataset, the order of the split columns.
         has_method_rows: Whether the models of each method are under a row of the method, e.g.
             not on the page of the method.
+        has_description_column: Whether the first line of each model's description is shown,
+            e.g. not on the page of the method, which shows the description above the table.
         selected_model_ids: The models whose checkbox is checked, or None for no checkbox column.
             The cells of the column are `model-selection` (`styles.css`). See
             `MODEL_CHECKBOX_CHANGE_HANDLER` and `make_check_models_js`.
@@ -104,7 +109,8 @@ def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Seque
     header_cells = [
         *([] if selected_model_ids is None else ['<th class="model-selection"></th>']),
         "<th>Seed</th>", *(f'<th class="mark">{html.escape(s)}</th>' for s in split_names),
-        *(make_header_cell_html(c, c in _SUMMARY_NUMBER_COLUMNS) for c in _SUMMARY_COLUMNS)]
+        *(make_header_cell_html(c, c in _SUMMARY_NUMBER_COLUMNS) for c in _SUMMARY_COLUMNS
+          if has_description_column or c != "Description")]
     rows = []
     for group in groups:
         if has_method_rows:
@@ -120,7 +126,7 @@ def make_models_table_html(groups: T.Sequence[MethodGroup], split_names: T.Seque
             rows.append(
                 f"<tr>{checkbox_html}<td>{label_html}</td>"
                 f"{''.join(_make_submission_cell_html(summary, s) for s in split_names)}"
-                f"{_make_summary_cells_html(summary)}</tr>")
+                f"{_make_summary_cells_html(summary, has_description_column)}</tr>")
     return make_table_html_from_header("".join(header_cells), rows)
 
 

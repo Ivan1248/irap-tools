@@ -125,26 +125,46 @@ def create_native_input(label: str, value: str, on_change: T.Callable[[str], Non
         input_type: The `type` attribute, e.g. 'number'.
         size: The width in characters, or None for the browser default.
     """
-    with _create_field(label):
-        element = ui.element("input").classes("native-control")
-    element.props.update(type=input_type, defaultValue=value, placeholder=placeholder)
+    element = _create_text_control("input", label, value, on_change, placeholder)
+    element.props["type"] = input_type
     if size is not None:
         element.props["size"] = size
+    return element
+
+
+def create_native_textarea(label: str, value: str, on_change: T.Callable[[str], None], *,
+                           placeholder: str = "", num_rows: int = 8,
+                           num_columns: int = 80) -> ui.element:
+    """Creates a labeled `<textarea>`, which works like an input of `create_native_input`."""
+    element = _create_text_control("textarea", label, value, on_change, placeholder)
+    element.props.update(rows=num_rows, cols=num_columns)
+    return element
+
+
+def _create_text_control(tag: str, label: str, value: str, on_change: T.Callable[[str], None],
+                         placeholder: str) -> ui.element:
+    """Creates a labeled `<input>` or `<textarea>` (see `create_native_input`)."""
+    with _create_field(label):
+        element = ui.element(tag).classes("native-control")
+    element.props.update(defaultValue=value, placeholder=placeholder)
     # The result is returned, so that NiceGUI awaits that of an async `on_change`.
     element.on("change", lambda event: on_change(event.args),
                js_handler="(e) => emit(e.target.value)")
     return element
 
 
-def create_native_input_form(label: str, value: str, button_text: str,
-                             on_saved: T.Callable[[str], T.Any], *, placeholder: str = "",
-                             size: int | None = None) -> None:
-    """Creates a row of an input (`create_native_input`) and a button whose click passes the
-    input's text to `on_saved`, which can be async."""
+def create_native_text_form(control_f: T.Callable[..., ui.element], label: str, value: str,
+                            button_text: str, on_saved: T.Callable[[str], T.Any],
+                            **control_kwargs) -> None:
+    """Creates a row of a text control and a button whose click passes the control's text to
+    `on_saved`, which can be async.
+
+    Args:
+        control_f: `create_native_input` or `create_native_textarea`, which gets `control_kwargs`.
+    """
     text = {"value": value}
     with ui.element("div").classes("form-row items-end"):
-        create_native_input(label, value, lambda t: text.update(value=t), placeholder=placeholder,
-                            size=size)
+        control_f(label, value, lambda t: text.update(value=t), **control_kwargs)
         create_native_button(button_text, lambda: on_saved(text["value"]))
 
 

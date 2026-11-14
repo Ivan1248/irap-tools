@@ -7,7 +7,7 @@ A web app that keeps an archive of model predictions, scores them, and compares,
 | Scores | `/scores` (start page) | The methods of a dataset split ranked by an attribute average, or one per-attribute metric, with intervals and differences from a reference method. |
 | Models | `/models` | The models of each dataset by method, with the file of each split, a filter, the upload form, and the form that creates an ensemble of the models selected in the tables. |
 | Model | `/models/<id>` | A model's files, its scores, the coding-table export and its actions (collapsed, for accounts with write permission). |
-| Method | `/methods?dataset=<dataset>&method=<method>` | A method's models, the scores of their mean and of each model on a split, its display name, and the actions of its models. Method names in the tables link to it. |
+| Method | `/methods?dataset=<dataset>&method=<method>` | A method's models, the scores of their mean and of each model on a split, its display name and description, and the actions of its models. Method names in the tables link to it. |
 | Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
 | Methodology | `/methodology` | How the files are scored, and how to read the values, intervals, highlights and differences of the score tables. The short notes below the tables link to its sections. |
 | Action log | `/actions` | All changes, with the name of the user. Only for accounts with write permission. |
@@ -164,6 +164,8 @@ Back up `/srv/irap-eval/data`, and keep the backups private.
 ## Models and files
 
 A model is, e.g., one trained network, identified by the dataset, method name and seed in the header of its [prediction files](../irap_evaluation/docs/prediction_format.md). Unlike `irap_evaluation`, the app requires a seed also for the only model of a method, so that a second model can be added without changing the first. It has at most one file per split. The pages call a stored file "file #<id>", and the code calls it a submission (`archive.Submission`).
+
+A model has a description in Markdown, e.g. how it was trained, whose first line the tables show, so it should summarize the model. The Model page shows and edits it, and the Method page shows that of the model with the lowest seed and edits it for all models of the method. The Markdown is sanitized in the browser (DOMPurify), so scripts and event handlers in it are removed.
 
 A method on a dataset can have a display name, which the pages show instead of the method name. The Method filter of the Scores page and the Model filter of the Models page match the shown name. An upload sets the display name of its method, entered in the upload form or from a file header's `method_display_name`, and the Method page edits it for all models of the method. The action log records the edit on the method's first model. Files, URLs, download names and the action log keep the method name.
 

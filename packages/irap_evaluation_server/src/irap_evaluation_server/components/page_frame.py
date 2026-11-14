@@ -145,6 +145,31 @@ def create_key_values(rows: T.Mapping[str, str | tuple[str, str]]) -> None:
                 ui.label(value)
 
 
+#: The extras of the Markdown converter (markdown2): NiceGUI's default ones, and 'code-friendly',
+#: which keeps the underscores of names and formulas, e.g. `seed_1_probs` and `m_i`, from
+#: becoming emphasis.
+_MARKDOWN_EXTRAS = ["fenced-code-blocks", "tables", "code-friendly"]
+
+
+def create_markdown_text(markdown: str, *, sanitize: bool) -> ui.markdown:
+    """Shows Markdown with the styles of a text (`.markdown-text`).
+
+    Args:
+        sanitize: Whether the browser sanitizes the HTML (DOMPurify), which the Markdown that
+            users write needs.
+    """
+    return ui.markdown(markdown, extras=_MARKDOWN_EXTRAS, sanitize=sanitize).classes(
+        "markdown-text")
+
+
+def create_description(description: str) -> None:
+    """Shows the description of a model or method, which is Markdown, under a title, unless it is
+    empty."""
+    if description:
+        ui.label("Description").classes("subsection-title")
+        create_markdown_text(description, sanitize=True).classes("description")
+
+
 def show_view_error(message: str, page_path: str) -> None:
     """Shows why the URL of a page has no view, e.g. an unknown dataset, with a link to the page
     without parameters.

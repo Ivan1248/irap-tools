@@ -172,7 +172,8 @@ class Model:
 
     Attributes:
         method_display_name: The display name of the method on the dataset, or None.
-        description: Free text about the model, e.g. how it was trained.
+        description: Markdown about the model, e.g. how it was trained, whose first line
+            summarizes it (`get_description_summary`).
         created_at: The time of its first submission, in UTC.
     """
 
@@ -264,14 +265,26 @@ def get_method_description(models: T.Iterable[Model]) -> str:
     return "" if lowest_seed_model is None else lowest_seed_model.description
 
 
+def get_description_summary(description: str) -> str:
+    """Returns the first line of a description, which the tables show instead of the whole
+    Markdown text."""
+    return description.partition("\n")[0].rstrip()
+
+
 def describe_description_change(label: str, old_description: str,
                                 description: str) -> str | None:
     """Describes a change of the description of a model for the user to confirm, or returns None
-    if it replaces no other description."""
+    if it replaces no other description. A description of several lines is shown by its first
+    line and '…'."""
     if not old_description or description == old_description:
         return None
-    return (f"Changes the description of {label} from {old_description!r} to"
-            f" {description!r}.")
+
+    def shorten(text: str) -> str:
+        summary = get_description_summary(text)
+        return summary if summary == text else f"{summary} …"
+
+    return (f"Changes the description of {label} from {shorten(old_description)!r} to"
+            f" {shorten(description)!r}.")
 
 
 @dc.dataclass(frozen=True)

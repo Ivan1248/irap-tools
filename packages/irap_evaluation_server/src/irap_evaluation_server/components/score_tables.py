@@ -16,6 +16,7 @@ import typing as T
 import irap_evaluation as ie
 import numpy as np
 
+from ..archive import get_description_summary
 from ..label_counts import AttributeLabelCounts
 from ..method_comparison import get_better_method
 from ..method_ranking import (
@@ -422,8 +423,8 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
     html_rows = []
     for row, metric_cells in zip(rows, zip(*metric_columns)):
         cells = _make_row_cells_html(row, metric_cells, len(metric_names))
-        # Cut off, so that a long description does not widen the table.
-        description = make_truncated_name_html(row.description)
+        # Cut off, so that a long first line does not widen the table.
+        description = make_truncated_name_html(get_description_summary(row.description))
         html_rows.append(f"<tr><td>{_make_method_label_html(row, comparisons, scope)}</td>"
                          f"<td>{_make_model_links_html(row, scope)}</td>{cells}"
                          f"<td>{html.escape(', '.join(row.submitters))}</td>"

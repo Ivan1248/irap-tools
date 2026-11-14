@@ -1,6 +1,6 @@
 """The Method page: a method's details, models, and the scores of its seeds and their mean on a
-split. Its display name, which all its models share, is edited here, and a description that is
-given to all its models, which the Scores page shows."""
+split. Its display name, which all its models share, is edited here, and a Markdown description
+that is given to all its models, whose first line the tables show."""
 
 import dataclasses as dc
 import functools
@@ -25,8 +25,18 @@ from ..components.formatting import (
     make_unscored_files_html,
 )
 from ..components.models_table import make_models_table_html
-from ..components.native_controls import create_native_button, create_native_input_form
-from ..components.page_frame import create_collapsible_panel, create_key_values, create_page_frame
+from ..components.native_controls import (
+    create_native_button,
+    create_native_input,
+    create_native_text_form,
+    create_native_textarea,
+)
+from ..components.page_frame import (
+    create_collapsible_panel,
+    create_description,
+    create_key_values,
+    create_page_frame,
+)
 from ..components.split_scores_panel import ShownSplitScores, create_split_scores_panel
 from ..components.view_queries import parse_dataset
 from ..components.routes import (
@@ -165,6 +175,7 @@ class _MethodPage:
             ui.html(f"Method {make_truncated_name_html(group.shown_method_name)}",
                     sanitize=False).classes("section-title truncated-line")
             create_key_values(rows)
+            create_description(group.description)
             if self.can_write:
                 create_native_button("Delete method", on_delete_method_clicked)
 
@@ -201,13 +212,16 @@ class _MethodPage:
             show_details()
             # Not refreshed with the details, so that a refresh does not undo an edit.
             if self.can_write:
-                create_native_input_form("Display name (for all models of the method)",
-                                         self.snapshot.group.method_display_name or "",
-                                         "Save display name", on_display_name_saved,
-                                         placeholder="none", size=40)
-                create_native_input_form("Description (for all models of the method)",
-                                         self.snapshot.group.description, "Save description",
-                                         on_description_saved, placeholder="none", size=60)
+                create_native_text_form(create_native_input,
+                                        "Display name (for all models of the method)",
+                                        self.snapshot.group.method_display_name or "",
+                                        "Save display name", on_display_name_saved,
+                                        placeholder="none", size=40)
+                create_native_text_form(
+                    create_native_textarea,
+                    "Description (Markdown, for all models of the method; the tables show its"
+                    " first line)", self.snapshot.group.description, "Save description",
+                    on_description_saved, placeholder="none")
             status_label = ui.label().classes("muted")
         self.refreshes.append(show_details.refresh)
 
@@ -215,7 +229,7 @@ class _MethodPage:
         @ui.refreshable
         def show_models() -> None:
             ui.html(make_models_table_html([self.snapshot.group], self.context.split_names,
-                                           has_method_rows=False),
+                                           has_method_rows=False, has_description_column=False),
                     sanitize=False).classes("w-full overflow-x-auto")
 
         with ui.element("section").classes("panel"):

@@ -58,10 +58,16 @@ from ..components.native_controls import (
     create_native_button,
     create_native_checkbox,
     create_native_input,
-    create_native_input_form,
+    create_native_text_form,
+    create_native_textarea,
     set_status,
 )
-from ..components.page_frame import create_collapsible_panel, create_key_values, create_page_frame
+from ..components.page_frame import (
+    create_collapsible_panel,
+    create_description,
+    create_key_values,
+    create_page_frame,
+)
 from ..components.routes import (
     ATTRIBUTE_PARAMETER,
     CODING_TABLE_DOWNLOAD_PATH,
@@ -235,11 +241,10 @@ class _ModelPage:
                                     else format_context_offsets(summary.context_offsets)),
                 "Created": format_utc_time(model.created_at),
             }
-            if not self.can_write:  # Otherwise it is edited below.
-                rows["Description"] = model.description or "–"
             ui.html(f"Model {make_truncated_name_html(model.shown_label)}",
                     sanitize=False).classes("section-title truncated-line")
             create_key_values(rows)
+            create_description(model.description)
             if self.can_write:
                 create_native_button("Delete model", on_delete_model_clicked)
 
@@ -260,8 +265,9 @@ class _ModelPage:
             show_details()
             # Not refreshed with the details, so that a refresh does not undo an edit.
             if self.can_write:
-                create_native_input_form("Description", self.snapshot.model.description,
-                                         "Save description", on_description_saved, size=60)
+                create_native_text_form(
+                    create_native_textarea, "Description (Markdown; the tables show its first line)",
+                    self.snapshot.model.description, "Save description", on_description_saved)
             status_label = ui.label().classes("muted")
         self.refreshes.append(show_details.refresh)
 

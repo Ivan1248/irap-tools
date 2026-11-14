@@ -21,6 +21,8 @@ from irap_evaluation_server.archive import (
     SCHEMA_VERSION,
     ModelArchive,
     NewSubmission,
+    describe_description_change,
+    get_description_summary,
     make_label_file_name,
 )
 from irap_evaluation_server.database import connect
@@ -107,6 +109,13 @@ def test_description_change_needs_confirmation(archive, dataset_contexts):
     assert edited.description == "third"
     with pytest.raises(ValueError, match="unchanged"):
         archive.set_model_description(first.model.id, "third", actor="Bo")
+
+
+def test_multiline_descriptions_are_shown_by_their_first_line():
+    assert get_description_summary("Summary  \n\nDetails\nMore") == "Summary"
+    assert get_description_summary("Summary") == "Summary"
+    assert describe_description_change("m/seed0", "Old\n\nDetails", "New") == (
+        "Changes the description of m/seed0 from 'Old …' to 'New'.")
 
 
 def test_set_method_description(archive, dataset_contexts):

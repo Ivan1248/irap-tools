@@ -7,15 +7,10 @@ import typing as T
 from nicegui import ui
 
 from ..components.account_sessions import AccountSessions
-from ..components.page_frame import create_page_frame
+from ..components.page_frame import create_markdown_text, create_page_frame
 from ..components.routes import METHODOLOGY_PATH, get_library_path
 from ..display_settings import DisplaySettingsStore
-from ..methodology import (
-    MARKDOWN_EXTRAS,
-    MethodologySection,
-    check_described_settings,
-    make_methodology_sections,
-)
+from ..methodology import MethodologySection, check_described_settings, make_methodology_sections
 from ..scoring import ScoringSettings
 from ..vendor_libraries import MATHJAX_SCRIPT
 
@@ -66,7 +61,7 @@ def register_methodology_page(settings: ScoringSettings, dataset_names: T.Sequen
                     ui.label(f"{math_error} The formulas are shown as TeX.").classes("error")
                 # Not sanitized, since the text is the server's own, and DOMPurify would remove
                 # ids that are also DOM property names, e.g. 'attributes'.
-                ui.markdown(document_markdown, extras=MARKDOWN_EXTRAS, sanitize=False)
+                create_markdown_text(document_markdown, sanitize=False)
         if math_error is None:
             await ui.context.client.connected()
             # Scrolls to the section of the link again, since the formulas change the heights of

@@ -3,7 +3,8 @@ tables, with the values of the scoring settings. `irap_evaluation/docs/evaluatio
 precise definitions.
 
 The text is Markdown with TeX formulas between `$` (inline) or `$$` (display), which MathJax
-typesets after the Markdown is converted (`MARKDOWN_EXTRAS`). The Markdown converter removes the
+typesets after the Markdown is converted (`components.page_frame.create_markdown_text`, whose
+'code-friendly' extra the underscores of the formulas need). The Markdown converter removes the
 backslash before punctuation, so the formulas avoid `\\{`, `\\(` and `\\\\`, and `*`, which can
 start emphasis.
 """
@@ -18,10 +19,6 @@ from irap_data.attrs import get_attrs_to_include
 
 from .method_ranking import DEFAULT_SORT_METRIC, NOT_WORSE_SIGNIFICANCE_LEVEL, ShownMetrics
 from .scoring import ScoringSettings
-
-#: The extras of the Markdown converter (markdown2) that the text needs: tables, and
-#: 'code-friendly', which keeps the underscores of the formulas, e.g. `m_i`, from becoming emphasis.
-MARKDOWN_EXTRAS = ["tables", "code-friendly"]
 
 #: The ids of the sections that the notes of other pages link to (`routes.get_methodology_path`).
 EVALUATION_SETS_SECTION = "evaluation-sets"
