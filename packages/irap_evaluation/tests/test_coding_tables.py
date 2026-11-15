@@ -16,13 +16,11 @@ from irap_evaluation.reports.coding_tables import (
 )
 from irap_evaluation.predictions import (
     PredictionFormatError,
-    Predictions,
     select_segments,
-    to_class_indices,
     to_irap_codes,
 )
 
-from synthetic_vietnam import ROAD_LENGTH, SPLIT, make_predictions
+from synthetic_vietnam import ROAD_LENGTH, SPLIT, make_predictions, to_hard_predictions
 
 
 def _without_attribute(predictions, attribute):
@@ -92,8 +90,7 @@ def test_coding_table(metadata, template, tmp_path):
 
 
 def test_confidence_table_refuses_hard_predictions(metadata, template, predictions):
-    hard = Predictions.from_class_indices(predictions.header, predictions.attribute_to_irap_codes,
-                                          predictions.segment_ids, to_class_indices(predictions))
+    hard = to_hard_predictions(predictions)
     with pytest.raises(ValueError, match="no probabilities"):
         predictions_to_confidence_table([predictions, hard], metadata, template)
 

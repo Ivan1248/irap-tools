@@ -10,7 +10,12 @@ import numpy as np
 from irap_data.metadata import ClassVocabulary, IRAPMetadata, MetaFiles
 from irap_evaluation.evaluation import EvaluationResult, evaluate_predictions
 from irap_evaluation.evaluation_sets import EvaluationSet
-from irap_evaluation.predictions import ModelInfo, PredictionHeader, Predictions
+from irap_evaluation.predictions import (
+    ModelInfo,
+    PredictionHeader,
+    Predictions,
+    to_class_indices,
+)
 
 # Four attributes of the canonical subset and one outside it. The codes of "Lane width" are
 # not in ascending order, so class indices differ from code order.
@@ -85,6 +90,13 @@ def invalidate_attribute_predictions(predictions: Predictions, attr: str,
     """`predictions` with the predictions of `attr` invalid (NaN) where `is_valid` is False."""
     probs = np.where(is_valid[:, None], predictions.probs[attr], np.nan).astype(np.float32)
     return dc.replace(predictions, probs={**predictions.probs, attr: probs})
+
+
+def to_hard_predictions(predictions: Predictions) -> Predictions:
+    """Hard predictions of the predicted classes of `predictions`."""
+    return Predictions.from_class_indices(
+        predictions.header, predictions.attribute_to_irap_codes, predictions.segment_ids,
+        to_class_indices(predictions))
 
 
 def evaluate_models(metadata: IRAPMetadata, evaluation_set: EvaluationSet, name: str,

@@ -10,7 +10,12 @@ from pathlib import Path
 import pandas as pd
 
 from ..bootstrap import BootstrapInterval, MetricDifference
-from ..evaluation import ClassMetrics, EvaluationResult, compute_class_metrics
+from ..evaluation import (
+    ClassMetrics,
+    EvaluationResult,
+    compute_class_metrics,
+    compute_review_curves,
+)
 from ..file_names import to_valid_file_name
 from ..methods import compute_method_metrics, group_models_by_method
 from ..metric_names import parse_metric_name
@@ -222,22 +227,28 @@ def _to_json_value(value: T.Any) -> T.Any:
 
 
 def to_json_dict(result: EvaluationResult) -> dict[str, T.Any]:
-    """A JSON-compatible document of a result, including per-class scores and confusion
-    matrices (rows = ground truth) keyed by iRAP code.
+    """A JSON-compatible document of a result, including, for each attribute (`classes`), its
+    per-class scores, its confusion matrix (rows = ground truth) in the order of `irap_codes`,
+    and its review curve (`metrics.ReviewCurve`, None for hard predictions).
 
     Undefined values (NaN, e.g. the MCC of an attribute with one class) are None."""
     evaluation_set = result.evaluation_set
     attr_to_class_metrics = compute_class_metrics(result, ["P", "R", "F1"])
+    attr_to_review_curve = (compute_review_curves(result) if result.output_kind == "probs"
+                            else dict.fromkeys(result.attributes))
 
     def get_class_report(attr: str) -> dict[str, T.Any]:
         class_metrics = attr_to_class_metrics[attr]
+        review_curve = attr_to_review_curve[attr]
         return {"irap_codes": list(class_metrics.irap_codes),
                 "values": list(class_metrics.values),
                 "support": class_metrics.support.tolist(),
                 "precision": class_metrics.metrics["P"].tolist(),
                 "recall": class_metrics.metrics["R"].tolist(),
                 "f1": class_metrics.metrics["F1"].tolist(),
-                "confusion_matrix": class_metrics.confusion_matrix.tolist()}
+                "confusion_matrix": class_metrics.confusion_matrix.tolist(),
+                "review_curve": None if review_curve is None else {
+                    name: values.tolist() for name, values in dc.asdict(review_curve).items()}}
 
     return _to_json_value({
         "model": result.model.to_json_dict(),

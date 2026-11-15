@@ -41,6 +41,7 @@ from .evaluation import (
     NullPolicy,
     align_to_evaluation_set,
     compute_class_metrics,
+    compute_review_curves,
     evaluate_predictions,
     get_default_metric_names,
     select_evaluated_attributes,
@@ -74,6 +75,8 @@ from .methods import (
 from .metric_names import (
     IRAP_ATTRIBUTE_METRIC_NAMES,
     IRAP_MAIN_METRIC,
+    MANUAL_REVIEW_PROPORTION_METRIC,
+    MANUAL_REVIEW_TARGET_MF1,
     ParsedMetricName,
     add_per_attribute_metric_names,
     describe_attribute_average,
@@ -84,12 +87,16 @@ from .metric_names import (
     parse_metric_name,
 )
 from .metrics import (
+    NUM_CONFIDENCE_BINS,
     ClassificationStatistics,
     MetricValues,
+    ReviewCurve,
     compute_classification_metrics,
     compute_classification_statistics,
     compute_grouped_metrics,
     compute_multi_attribute_metrics,
+    compute_manual_review_proportion,
+    compute_review_curve,
     map_metric_values,
     select_metric_attributes,
     select_metric_names,

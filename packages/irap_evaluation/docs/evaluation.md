@@ -89,8 +89,9 @@ For each attribute and each road sequence $g$, the segments with a label for the
 - For `probs` files, the per-label sums
   $$s^{(g)}_{\mathrm{NLL},i} = \sum_{t:\,y_t=i} -\ln q_{t,y_t}, \qquad s^{(g)}_{\mathrm{Brier},i} = \sum_{t:\,y_t=i} \sum_k \left(q_{t,k} - [k = y_t]\right)^2,$$
   where $y_t$ is the label of segment $t$ and $q_t$ is its predicted distribution.
+- For `probs` files, the confidence histogram $H^{(g)}$: for each class $k$ and confidence bin $b$, the numbers of segments in the bin that are predicted correctly as $k$, that have the label $k$ and another predicted class, and that are predicted as $k$ with another label. The confidence of a segment is the predicted probability of its predicted class, $q_{t,\hat y_t}$. The 50 bins are in the order of the confidence, and their edges are quantiles of the confidences of the attribute's labeled segments, so each bin has about 2 % of them. Equal confidences are in one bin.
 
-The metrics of any set of sequences are computed from the summed statistics $C = \sum_g C^{(g)}$ and $s = \sum_g s^{(g)}$. `EvaluationResult.statistics` keeps the per-sequence statistics, from which `compute_grouped_metrics` recomputes any metric without the predictions.
+The metrics of any set of sequences are computed from the summed statistics $C = \sum_g C^{(g)}$, $s = \sum_g s^{(g)}$ and $H = \sum_g H^{(g)}$. `EvaluationResult.statistics` keeps the per-sequence statistics, from which `compute_grouped_metrics` recomputes any metric without the predictions.
 
 ## Metrics
 
@@ -113,8 +114,20 @@ The metrics of an attribute are computed from $C$, with, for each class $k$:
 | `NLL`, `Brier` | $\sum_k s_k / n$ |
 | `cNLL`, `cBrier` | $s_k / a_k$ per class (NaN if $a_k = 0$) |
 | `mNLL`, `mBrier` | the mean of `cNLL`, `cBrier` over the classes with $a_k > 0$ |
+| `MRP90` | the manual review proportion for `mF1` $\ge 0.9$, see [Manual review proportion](#manual-review-proportion) |
 
-A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but never labeled, has $F_k = 0$. Other undefined values (0/0) are NaN. `NLL` is infinite if a valid attribute prediction gives its label probability 0. The probabilistic metrics are not defined for `hard` files, and requesting them is an error.
+A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but never labeled, has $F_k = 0$. Other undefined values (0/0) are NaN. `NLL` is infinite if a valid attribute prediction gives its label probability 0. The metrics of predicted distributions (`NLL` to `mBrier`, and `MRP90`) are not defined for `hard` files, and requesting them is an error.
+
+### Manual review proportion
+
+`MRP90` estimates how much of an attribute a reviewer still has to code. It simulates a review that goes through the segments from the least to the most confident prediction and replaces each prediction by the label. `MRP90` is the smallest proportion of the labeled segments that has to be reviewed for `mF1` to reach 0.9 (`MANUAL_REVIEW_TARGET_MF1`). It is 0 if `mF1` reaches 0.9 without a review. Lower is better.
+
+- The target is `mF1`, not accuracy, because accuracy can reach a target while the rare classes are still wrong.
+- `mF1` after a review never decreases, and is 1 when all segments are reviewed. A class that is only predicted, never labeled, leaves $\mathcal{K}$ when its last wrong prediction is corrected.
+- An invalid attribute prediction counts as class 0 with the confidence $1/K$ of the uniform distribution, so it is reviewed early.
+- `compute_review_curve` computes `mF1` and the accuracy after the review of the first $b$ bins of the confidence histogram, for $b = 0, \ldots, 50$, and `compute_manual_review_proportion` finds where the curve reaches the target, linear in the reviewed proportion between two points. The result differs from that of a review in the exact order of the confidences by at most the proportion of the segments in one bin, about 0.02 unless many confidences are equal. If all confidences are equal, it is the manual review proportion of a review in random order, $(0.9 - \mathrm{mF1}) / (1 - \mathrm{mF1})$. The curve's reviewed proportions are `review_proportions` of `ReviewCurve` and of the JSON report's `review_curve`.
+- The simulation assumes that the reviewer codes as the labels do. It says how well the confidences find the segments that lower `mF1`, not how a reviewer would decide.
+- The idea is that of selective classification, where predictions with a low confidence are deferred to a person, and its risk–coverage curves: `MRP90` is about 1 − coverage at the target. Unlike the selective risk, which is computed on the kept predictions only, `mF1` here is computed over all segments, with the reviewed ones corrected.
 
 **Support threshold.** The suffix `_suppN` restricts a mean over classes to $\mathcal{K}_N = \{k : a_k \ge N\}$, e.g. `mF1_supp10`. `nc_suppN` is $|\mathcal{K}_N|$.
 
@@ -129,9 +142,9 @@ The iRAP protocol (`get_irap_metric_names`) reports the following. Its main metr
 - **Attribute averages**: `amF1`, `amP`, `amR`, `aMCC`, `aA`, `amF1_supp5` and `amF1_supp10`. `probs` files also get `aNLL`, `aBrier`, `amNLL`, `amNLL_supp5` and `amNLL_supp10`.
 - **Per attribute**: `mF1`, `A`, `n`, `MCC`, `mF1_suppN` and `nc_suppN`. `probs` files also get `NLL`, `Brier` and `mNLL`.
 
-By default, `evaluate_predictions` (and so `irap-eval evaluate`) also computes the per-attribute values of the averages that the protocol lacks: `mP`, `mR` and, for `probs` files, `mNLL_suppN`.
+By default (`get_default_metric_names`), `evaluate_predictions` (and so `irap-eval evaluate`) also computes, for `probs` files, the manual review proportion `aMRP90` and `MRP90`, which is not part of the protocol, and the per-attribute values of the averages that the protocol lacks: `mP`, `mR` and, for `probs` files, `mNLL_suppN`.
 
-Results keep only the attribute averages and per-attribute metrics. `compute_class_metrics(result)` computes the per-class metrics (`P`, `R`, `F1`, `IoU`, `cNLL`, `cBrier`), support and confusion matrix of each attribute from its statistics.
+Results keep only the attribute averages and per-attribute metrics. `compute_class_metrics(result)` computes the per-class metrics (`P`, `R`, `F1`, `IoU`, `cNLL`, `cBrier`), support and confusion matrix of each attribute from its statistics, and `compute_review_curves(result)` the review curve of each attribute.
 
 ## Methods
 
@@ -147,7 +160,7 @@ The intervals cover two sources of variation (`--bootstrap B`, `--seed`, default
 `compute_bootstrap_intervals(models)` computes them as follows:
 
 1. Each of the $B$ resamples draws the $G$ sequences of the set $G$ times with replacement. This gives multiplicities $w \sim \mathrm{Multinomial}(G; 1/G, \ldots, 1/G)$. The draws depend only on the seed, $B$ and $G$, so all models on an evaluation set share the resamples.
-2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$ and $\sum_g w_g s^{(g)}$, giving $m^*_i$ (`resample_model_metrics`). A sequence with weight 0 adds nothing, also if its NLL sum is infinite. Averages over a subset of the attributes can be computed from the resampled per-attribute values (`select_metric_attributes`), as from the values themselves.
+2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$, $\sum_g w_g s^{(g)}$ and $\sum_g w_g H^{(g)}$, giving $m^*_i$ (`resample_model_metrics`). The confidence bins are those of the whole set in every resample. A sequence with weight 0 adds nothing, also if its NLL sum is infinite. Averages over a subset of the attributes can be computed from the resampled per-attribute values (`select_metric_attributes`), as from the values themselves.
 3. The resampled value of the method is
    $$v^* = \bar m^* + \frac{\mathrm{sd}(m^*_1, \ldots, m^*_M)}{\sqrt M}\, t^*, \qquad t^* \sim t_{M-1},$$
    with the sample standard deviation and one Student-t draw per resample, shared by the metrics of the method (`combine_model_resamples`). This is the posterior of the mean of normally distributed model values under the prior $p(\mu, \sigma) \propto 1/\sigma$. The t draws depend on the seed and the method name, so they are independent of the resamples and of the draws of other methods. With one model, $v^* = m^*_1$, and the interval covers only the road sequences. If $\bar m^*$ is infinite, $v^*$ is $\bar m^*$.

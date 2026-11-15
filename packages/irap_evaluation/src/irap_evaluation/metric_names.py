@@ -2,8 +2,8 @@
 
 Metric names have the form `[a]<base>[_suppN]`:
 
-- `<base>` is a per-attribute metric (see `CONFUSION_MATRIX_METRICS` and
-  `PROBABILISTIC_METRICS`).
+- `<base>` is a per-attribute metric (see `CONFUSION_MATRIX_METRICS`, `PROBABILISTIC_METRICS`
+  and `MANUAL_REVIEW_METRICS`).
 - The `a` prefix averages it over attributes, leaving out attributes where it is undefined (NaN).
 - The `_suppN` suffix restricts a mean over classes to the classes with at least N ground-truth
   examples. `nc_suppN` is the number of such classes.
@@ -22,9 +22,20 @@ CONFUSION_MATRIX_METRICS = frozenset(
 #: Metrics computed from predicted distributions. `NLL` and `Brier` are means over examples,
 #: `cNLL` and `cBrier` per-class means, and `mNLL` and `mBrier` means over classes.
 PROBABILISTIC_METRICS = frozenset({"NLL", "Brier", "cNLL", "cBrier", "mNLL", "mBrier"})
+#: The metric of a simulated review (`metrics.compute_review_curve`): the share of the labeled
+#: examples that a reviewer corrects, least confident first, until mF1 reaches
+#: `MANUAL_REVIEW_TARGET_MF1`.
+MANUAL_REVIEW_TARGET_MF1 = 0.9
+MANUAL_REVIEW_PROPORTION_METRIC = f"MRP{round(MANUAL_REVIEW_TARGET_MF1 * 100)}"
+#: Metrics computed from the confidences of predicted distributions.
+MANUAL_REVIEW_METRICS = frozenset({MANUAL_REVIEW_PROPORTION_METRIC})
+#: Metrics that need predicted distributions, so hard predictions lack them.
+DISTRIBUTION_METRICS = PROBABILISTIC_METRICS | MANUAL_REVIEW_METRICS
+#: Metrics whose lower values are better, which are those of predicted distributions.
+LOWER_IS_BETTER_METRICS = DISTRIBUTION_METRICS
 #: Metrics that exist only with a support threshold.
 SUPPORT_ONLY_METRICS = frozenset({"nc"})
-KNOWN_BASE_METRICS = CONFUSION_MATRIX_METRICS | PROBABILISTIC_METRICS | SUPPORT_ONLY_METRICS
+KNOWN_BASE_METRICS = CONFUSION_MATRIX_METRICS | DISTRIBUTION_METRICS | SUPPORT_ONLY_METRICS
 #: Mean-over-classes metric -> the per-class array it is the mean of.
 MACRO_METRIC_TO_PER_CLASS = {"mP": "P", "mR": "R", "mF1": "F1", "mIoU": "IoU",
                              "mNLL": "cNLL", "mBrier": "cBrier"}
@@ -115,9 +126,9 @@ def is_per_class_metric(name: str) -> bool:
 
 
 def is_lower_better(name: str) -> bool:
-    """Whether lower values of the metric are better, e.g. for sorting methods: true for the
-    losses of predicted distributions (`PROBABILISTIC_METRICS`), false for the others."""
-    return parse_metric_name(name).base in PROBABILISTIC_METRICS
+    """Whether lower values of the metric are better (`LOWER_IS_BETTER_METRICS`), e.g. for
+    sorting methods."""
+    return parse_metric_name(name).base in LOWER_IS_BETTER_METRICS
 
 
 def add_per_attribute_metric_names(metric_names: T.Sequence[str]) -> tuple[str, ...]:
@@ -167,6 +178,10 @@ _BASE_METRIC_DESCRIPTIONS = {
             " {classes}.",
     "mBrier": "Class-balanced Brier score ({name}): the mean of class Brier score over"
               " {classes}.",
+    MANUAL_REVIEW_PROPORTION_METRIC: (
+        "Manual review proportion ({name}): the fraction of labeled examples that a reviewer has"
+        " to correct, starting with the least confident predictions, until mF1 reaches"
+        f" {MANUAL_REVIEW_TARGET_MF1}. 0 if mF1 already reaches it."),
 }
 #: Metrics that count something, so that neither higher nor lower values are better.
 _COUNT_METRICS = frozenset({"n", "nc"})

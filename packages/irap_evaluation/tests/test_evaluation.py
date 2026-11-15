@@ -9,6 +9,7 @@ from irap_evaluation.evaluation import (
     align_to_evaluation_set,
     compute_class_metrics,
     evaluate_predictions,
+    get_default_metric_names,
     select_evaluated_attributes,
     select_result_attributes,
 )
@@ -19,10 +20,18 @@ from irap_evaluation.metrics import (
     select_metric_attributes,
     sum_statistics,
 )
-from irap_evaluation.predictions import PredictionFormatError, select_segments
+from irap_evaluation.predictions import (
+    PredictionFormatError,
+    select_segments,
+)
 from irap_evaluation.reports.evaluation_report import to_class_table, to_json_dict
 
-from synthetic_vietnam import SPLIT, invalidate_attribute_predictions, make_predictions
+from synthetic_vietnam import (
+    SPLIT,
+    invalidate_attribute_predictions,
+    make_predictions,
+    to_hard_predictions,
+)
 
 
 def test_evaluated_attributes_are_the_labeled_canonical_ones(reference_set, predictions):
@@ -111,6 +120,27 @@ def test_first_class_scores_invalid_attribute_predictions_as_uniform_distributio
     labels = reference_set.class_indices["Lane width"]
     assert metrics["A"]["Lane width"] == pytest.approx(
         np.mean(labels[labels != IGNORE_LABEL_INDEX] == 0))
+
+
+def test_only_distributions_get_the_manual_review_proportion(reference_set, predictions):
+    assert {"aMRP90", "MRP90"} <= set(get_default_metric_names("probs"))
+    hard = to_hard_predictions(predictions)
+    assert hard.output_kind == "hard"
+    hard_names = evaluate_predictions(hard, reference_set).metrics.names
+    assert hard_names == get_default_metric_names("hard")
+    assert not {"aMRP90", "MRP90"} & set(hard_names)
+
+
+def test_manual_review_proportion_of_invalid_predictions_is_that_of_a_review_in_random_order(
+        reference_set, predictions):
+    # All invalid attribute predictions have the same confidence, that of the uniform
+    # distribution.
+    invalid = invalidate_attribute_predictions(predictions, "Lane width",
+                                               np.zeros(predictions.num_segments, bool))
+    metrics = evaluate_predictions(invalid, reference_set).metrics.per_attribute
+    macro_f1 = metrics["mF1"]["Lane width"]
+    assert macro_f1 < 0.9
+    assert metrics["MRP90"]["Lane width"] == pytest.approx((0.9 - macro_f1) / (1 - macro_f1))
 
 
 def test_class_metrics(metadata, reference_set, predictions):

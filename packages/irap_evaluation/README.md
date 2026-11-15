@@ -4,6 +4,7 @@ Evaluation of saved iRAP model predictions, as a library with a thin command-lin
 
 - a [prediction file format](docs/prediction_format.md) for class distributions or hard predictions, with classes identified by iRAP code,
 - the [iRAP metrics](docs/evaluation.md), equal to those of the training-time evaluation in `vidlu_irap_gaim`,
+- the [manual review proportion](docs/evaluation.md#manual-review-proportion): how much of an attribute a reviewer has to code, starting with the least confident predictions, for its macro F1 to reach 0.9,
 - bootstrap confidence intervals and method comparisons that resample road sequences and include the spread of a method's models (e.g. training seeds),
 - ensembling, CSV and markdown tables, and export as iRAP coding tables.
 
@@ -69,7 +70,7 @@ Models are labeled `<method>` or `<method>/seed<seed>`. Every output records `sp
 | `averages_<dataset>_<split>_<set>.csv` | Model rows × `split_use` and attribute-average columns. |
 | `method_averages_<dataset>_<split>_<set>.csv` | Only with `--null-policy first_class` and methods with several models: method rows × the number of models, the null policy, `split_use` and the means of the attribute averages over models. The confidence bounds include the spread of the models. |
 | `per_attribute_<metric>_<dataset>_<split>_<set>.csv` | Attribute rows × model columns, with the average last. |
-| `<model>/metrics_<dataset>_<split>_<set>.json` | All metrics and intervals, and for each attribute the iRAP codes of its classes, the per-class precision, recall, F1 and support, and the confusion matrix (rows = ground truth). Undefined values are `null`. In the directory name, `/` is replaced by `_`. |
+| `<model>/metrics_<dataset>_<split>_<set>.json` | All metrics and intervals, and for each attribute the iRAP codes of its classes, the per-class precision, recall, F1 and support, the confusion matrix (rows = ground truth), and for `probs` files the [review curve](docs/evaluation.md#manual-review-proportion). Undefined values are `null`. In the directory name, `/` is replaced by `_`. |
 
 ## Python use
 

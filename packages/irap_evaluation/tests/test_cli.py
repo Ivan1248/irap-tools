@@ -51,7 +51,9 @@ def test_evaluate_ensemble_compare_export(metadata_dir, metadata, tmp_path, caps
 
     out = tmp_path / "results"
     assert main(["evaluate", str(metadata_dir), *paths, ensemble_path, "--out", str(out),
-                 "--context-offsets", "b=0", "--bootstrap", "50"]) == 0
+                 "--context-offsets", "b=0", "--bootstrap", "50",
+                 "--table-metrics", "mF1", "MRP90"]) == 0
+    assert (out / "per_attribute_MRP90_vietnam_val_reference.csv").exists()
     long_table = pd.read_csv(out / "summary_long.csv")
     assert set(long_table["model"]) == {"a", "b", "ens"}
     assert (long_table["ci_num_undefined"] >= 0).all()

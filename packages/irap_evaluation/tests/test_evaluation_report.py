@@ -14,6 +14,7 @@ from irap_evaluation.reports.evaluation_report import (
     to_per_attribute_table,
     write_evaluation_reports,
 )
+from synthetic_vietnam import to_hard_predictions
 
 
 def test_only_partially_undefined_intervals_are_reported():
@@ -31,6 +32,18 @@ def test_json_report_has_no_nan(reference_set, predictions):
     report = to_json_dict(evaluate_predictions(constant, reference_set))
     assert report["metrics"]["per_attribute"]["MCC"]["Lane width"] is None
     json.dumps(report, allow_nan=False)
+
+
+def test_json_report_has_the_review_curve_of_distributions(reference_set, predictions):
+    report = to_json_dict(evaluate_predictions(predictions, reference_set))
+    curve = report["classes"]["Lane width"]["review_curve"]
+    assert curve["review_proportions"][0] == 0 and curve["review_proportions"][-1] == 1
+    assert curve["macro_f1"][0] == pytest.approx(
+        report["metrics"]["per_attribute"]["mF1"]["Lane width"])
+    assert curve["macro_f1"][-1] == 1 and curve["accuracy"][-1] == 1
+    hard_report = to_json_dict(evaluate_predictions(to_hard_predictions(predictions),
+                                                    reference_set))
+    assert hard_report["classes"]["Lane width"]["review_curve"] is None
 
 
 def test_per_attribute_tables_need_per_attribute_metrics(reference_set, predictions):

@@ -43,6 +43,12 @@ def test_get_attribute_average_name():
 def test_is_lower_better():
     assert [n for n in get_irap_metric_names() if is_lower_better(n)] == [
         "aNLL", "aBrier", "amNLL", "amNLL_supp5", "amNLL_supp10", "NLL", "Brier", "mNLL"]
+    assert is_lower_better("aMRP90")
+
+
+def test_manual_review_proportion_metric_is_named_after_its_target():
+    assert parse_metric_name("aMRP90") == (True, "MRP90", "MRP90", None)
+    assert "mF1 reaches 0.9" in describe_metric("MRP90")
 
 
 def test_get_irap_metric_names_puts_averages_first():

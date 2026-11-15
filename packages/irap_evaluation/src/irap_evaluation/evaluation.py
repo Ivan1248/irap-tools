@@ -11,17 +11,22 @@ from irap_data.metadata import IGNORE_LABEL_INDEX, ClassVocabulary
 from .evaluation_sets import EvaluationSet
 from .metric_names import (
     MACRO_METRIC_TO_PER_CLASS,
+    MANUAL_REVIEW_PROPORTION_METRIC,
     PROBABILISTIC_METRICS,
     add_per_attribute_metric_names,
+    get_attribute_average_name,
     get_irap_metric_names,
     is_per_class_metric,
+    parse_metric_name,
 )
 from .metrics import (
     ClassificationStatistics,
     MetricValues,
+    ReviewCurve,
     compute_classification_metrics,
     compute_classification_statistics,
     compute_grouped_metrics,
+    compute_review_curve,
     map_metric_values,
     sum_statistics,
 )
@@ -93,10 +98,17 @@ def select_evaluated_attributes(
 
 def get_default_metric_names(output_kind: OutputKind) -> tuple[str, ...]:
     """The metrics that `evaluate_predictions` computes by default: the iRAP protocol
-    (`metric_names.get_irap_metric_names`) for the output kind, with the per-attribute value of
-    each average (`metric_names.add_per_attribute_metric_names`), so that
+    (`metric_names.get_irap_metric_names`) for the output kind, and for 'probs' also the
+    attribute average of the manual review proportion
+    (`metric_names.MANUAL_REVIEW_PROPORTION_METRIC`). Each average is followed by its per-attribute
+    value (`metric_names.add_per_attribute_metric_names`), so that
     `metrics.select_metric_attributes` can average the metrics over a subset of the attributes."""
-    return add_per_attribute_metric_names(get_irap_metric_names(output_kind=output_kind))
+    names = get_irap_metric_names(output_kind=output_kind)
+    averages = [n for n in names if parse_metric_name(n).is_averaged]
+    if output_kind == "probs":
+        averages.append(get_attribute_average_name(MANUAL_REVIEW_PROPORTION_METRIC))
+    return add_per_attribute_metric_names(
+        (*averages, *(n for n in names if not parse_metric_name(n).is_averaged)))
 
 
 @dc.dataclass(frozen=True)
@@ -335,3 +347,14 @@ def compute_class_metrics(result: EvaluationResult,
             metrics=compute_classification_metrics(statistics, metric_names))
 
     return {attr: compute(attr) for attr in result.attributes}
+
+
+def compute_review_curves(result: EvaluationResult) -> dict[str, ReviewCurve]:
+    """Attribute -> the review curve of `result` (`metrics.compute_review_curve`), from its
+    statistics.
+
+    Raises:
+        ValueError: For hard predictions.
+    """
+    return {attr: compute_review_curve(sum_statistics(result.statistics[attr]))
+            for attr in result.attributes}

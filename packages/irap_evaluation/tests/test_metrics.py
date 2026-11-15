@@ -4,12 +4,19 @@ import numpy as np
 import pytest
 
 from irap_data.metadata import IGNORE_LABEL_INDEX
-from irap_evaluation.metric_names import add_per_attribute_metric_names
+from irap_evaluation.metric_names import (
+    MANUAL_REVIEW_PROPORTION_METRIC,
+    add_per_attribute_metric_names,
+)
 from irap_evaluation.metrics import (
+    NUM_CONFIDENCE_BINS,
     ClassificationStatistics,
+    ConfidenceKind,
     compute_classification_metrics,
     compute_classification_statistics,
+    compute_manual_review_proportion,
     compute_multi_attribute_metrics,
+    compute_review_curve,
     select_metric_attributes,
     sum_statistics,
 )
@@ -55,10 +62,17 @@ def test_statistics_ignore_unlabeled_examples_and_sum_over_groups():
     summed = sum_statistics(grouped)
     np.testing.assert_array_equal(summed.confusion_matrix, whole.confusion_matrix)
     np.testing.assert_allclose(summed.nll_sums, whole.nll_sums)
+    np.testing.assert_array_equal(summed.confidence_histogram, whole.confidence_histogram)
     assert whole.confusion_matrix.sum() == (targets != IGNORE_LABEL_INDEX).sum()
+    # Every labeled example is a correct or a missed example of its class.
+    np.testing.assert_array_equal(
+        whole.confidence_histogram[[ConfidenceKind.CORRECT, ConfidenceKind.MISSED]].sum((0, 2)),
+        whole.support)
     # Weights of 2 for every group double every count.
     doubled = sum_statistics(grouped, np.full((1, 7), 2))
     np.testing.assert_array_equal(doubled.confusion_matrix[0], 2 * whole.confusion_matrix)
+    np.testing.assert_array_equal(doubled.confidence_histogram[0],
+                                  2 * whole.confidence_histogram)
 
 
 def test_weighted_sums_leave_out_infinite_sums_of_undrawn_groups():
@@ -84,10 +98,103 @@ def test_probabilistic_metrics():
     assert metrics["Brier"] == pytest.approx(np.mean([0.5, 0, 2 * 0.25 ** 2]))
 
 
-def test_hard_statistics_refuse_probabilistic_metrics():
+def test_hard_statistics_refuse_metrics_of_distributions():
     stats = compute_classification_statistics(np.array([0, 1]), np.array([0, 0]), 2)
+    for name in ["NLL", MANUAL_REVIEW_PROPORTION_METRIC]:
+        with pytest.raises(ValueError, match="hard"):
+            compute_classification_metrics(stats, [name])
     with pytest.raises(ValueError, match="hard"):
-        compute_classification_metrics(stats, ["NLL"])
+        compute_review_curve(stats)
+
+
+def _compute_statistics_of_confidences(targets, predicted_indices, confidences, num_classes=2):
+    """Computes the statistics of predictions with the given confidences."""
+    targets, predicted_indices = np.array(targets), np.array(predicted_indices)
+    probs = np.zeros((len(targets), num_classes))
+    probs[np.arange(len(targets)), predicted_indices] = confidences
+    return compute_classification_statistics(targets, predicted_indices, num_classes,
+                                             probs=probs)
+
+
+def _compute_manual_review_proportion_metric(statistics):
+    name = MANUAL_REVIEW_PROPORTION_METRIC
+    return compute_classification_metrics(statistics, [name])[name]
+
+
+def test_review_curve_by_hand():
+    # Both examples of class 1 are predicted as class 0, with the second and the fourth lowest
+    # confidence of the 10 examples.
+    statistics = _compute_statistics_of_confidences(
+        targets=[0, 1, 0, 1, 0, 0, 0, 0, 0, 0], predicted_indices=[0] * 10,
+        confidences=[0.55, 0.6, 0.65, 0.7, 0.8, 0.85, 0.9, 0.92, 0.95, 0.99])
+    curve = compute_review_curve(statistics)
+    assert curve.review_proportions.shape == (NUM_CONFIDENCE_BINS + 1,)
+    # The points of the curve, without those of empty bins.
+    proportions, indices = np.unique(curve.review_proportions, return_index=True)
+    np.testing.assert_allclose(proportions, np.arange(11) / 10)
+    # With one example of class 1 corrected, its F1 is 2 / 3, and that of class 0 is 16 / 17.
+    f1_after_one_correction = (2 / 3 + 16 / 17) / 2
+    np.testing.assert_allclose(
+        curve.macro_f1[indices],
+        [(16 / 18) / 2] * 2 + [f1_after_one_correction] * 2 + [1] * 7)
+    np.testing.assert_allclose(curve.accuracy[indices], [0.8] * 2 + [0.9] * 2 + [1] * 7)
+    # mF1 reaches 0.9 between the reviewed proportions 0.3 and 0.4.
+    expected = 0.3 + 0.1 * (0.9 - f1_after_one_correction) / (1 - f1_after_one_correction)
+    assert compute_manual_review_proportion(curve, 0.9) == pytest.approx(expected)
+    assert _compute_manual_review_proportion_metric(statistics) == pytest.approx(expected)
+    assert compute_manual_review_proportion(curve, 0.4) == 0
+    assert compute_manual_review_proportion(curve, 1) == pytest.approx(0.4)
+
+
+def test_manual_review_proportion_of_equal_confidences_is_that_of_a_review_in_random_order():
+    # 2 of 10 examples are wrong: mF1 is ((12 / 14) + (4 / 6)) / 2 before the review.
+    statistics = _compute_statistics_of_confidences(
+        targets=[0] * 6 + [1] * 4, predicted_indices=[0] * 6 + [1, 1, 0, 0],
+        confidences=[1.0] * 10)
+    macro_f1 = (12 / 14 + 4 / 6) / 2
+    metrics = compute_classification_metrics(statistics,
+                                             ["mF1", MANUAL_REVIEW_PROPORTION_METRIC])
+    assert metrics["mF1"] == pytest.approx(macro_f1)
+    assert metrics[MANUAL_REVIEW_PROPORTION_METRIC] == pytest.approx(
+        (0.9 - macro_f1) / (1 - macro_f1))
+
+
+def test_review_curve_ends_at_1_with_a_class_that_is_only_predicted():
+    statistics = _compute_statistics_of_confidences(
+        targets=[0, 0, 0, 0], predicted_indices=[0, 1, 0, 2], confidences=[0.9, 0.5, 0.8, 0.6],
+        num_classes=3)
+    curve = compute_review_curve(statistics)
+    # Class 0 has F1 2 * 2 / (2 * 2 + 2), and the predicted classes 1 and 2 have F1 0.
+    assert curve.macro_f1[0] == pytest.approx((4 / 6) / 3)
+    assert curve.macro_f1[-1] == 1
+    assert (np.diff(curve.macro_f1) >= 0).all()
+    # All classes count without `ignore_missing_classes`, so mF1 does not reach 0.9.
+    all_classes = compute_review_curve(statistics, ignore_missing_classes=False)
+    assert all_classes.macro_f1[-1] == pytest.approx(1 / 3)
+    assert np.isnan(compute_manual_review_proportion(all_classes, 0.9))
+
+
+def test_manual_review_proportion_without_review_and_without_examples():
+    correct = _compute_statistics_of_confidences([0, 1, 1], [0, 1, 1], [0.7, 0.8, 0.9])
+    assert _compute_manual_review_proportion_metric(correct) == 0
+    unlabeled = _compute_statistics_of_confidences([IGNORE_LABEL_INDEX] * 2, [0, 1], [0.7, 0.8])
+    assert np.isnan(_compute_manual_review_proportion_metric(unlabeled))
+
+
+def test_batched_review_proportions_equal_separate_computations():
+    rng = np.random.default_rng(2)
+    targets = rng.integers(0, 3, size=300)
+    probs = rng.dirichlet(np.ones(3), size=300).astype(np.float32)
+    groups = rng.integers(0, 9, size=300)
+    grouped = compute_classification_statistics(targets, probs.argmax(1), 3, probs=probs,
+                                                group_indices=groups, num_groups=9)
+    weights = rng.multinomial(9, np.full(9, 1 / 9), size=5)
+    batched = _compute_manual_review_proportion_metric(sum_statistics(grouped, weights))
+    assert batched.shape == (5,)
+    for i, group_weights in enumerate(weights):
+        single = _compute_manual_review_proportion_metric(sum_statistics(grouped, group_weights))
+        assert batched[i] == pytest.approx(single)
+    assert 0 < batched.min() and batched.max() < 1
 
 
 def test_attribute_average_leaves_out_undefined_values():

@@ -26,6 +26,7 @@ from ..evaluation import (
     MissingAttributePolicy,
     NullPolicy,
     evaluate_predictions,
+    get_default_metric_names,
     select_evaluated_attributes,
 )
 from ..evaluation_sets import (
@@ -36,7 +37,7 @@ from ..evaluation_sets import (
     select_evaluation_sets,
 )
 from ..methods import check_prediction_file_models
-from ..metric_names import IRAP_MAIN_METRIC, get_irap_metric_names, parse_metric_name
+from ..metric_names import IRAP_MAIN_METRIC, parse_metric_name
 from ..metrics import MetricValues, map_metric_values
 from ..prediction_io import read_predictions, write_predictions
 from ..predictions import (
@@ -48,8 +49,10 @@ from ..predictions import (
 )
 from ..reports import coding_tables, evaluation_report
 
-#: The metrics that `--table-metrics` accepts: the per-attribute metrics of the iRAP protocol.
-TABLE_METRICS = tuple(n for n in get_irap_metric_names() if not parse_metric_name(n).is_averaged)
+#: The metrics that `--table-metrics` accepts: the per-attribute metrics that are computed by
+#: default for probs files.
+TABLE_METRICS = tuple(n for n in get_default_metric_names("probs")
+                      if not parse_metric_name(n).is_averaged)
 
 
 # Helpers ##########################################################################################
