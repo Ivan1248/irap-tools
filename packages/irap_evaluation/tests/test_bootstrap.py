@@ -16,7 +16,11 @@ from irap_evaluation.bootstrap import (
 from irap_evaluation.evaluation import evaluate_predictions, select_result_attributes
 from irap_evaluation.evaluation_sets import get_evaluation_set
 from irap_evaluation.methods import compute_method_metrics
-from irap_evaluation.metrics import compute_grouped_metrics, select_metric_attributes
+from irap_evaluation.metrics import (
+    MetricValues,
+    compute_grouped_metrics,
+    select_metric_attributes,
+)
 
 from synthetic_vietnam import (
     SPLIT,
@@ -145,6 +149,9 @@ def test_resampled_method_values_add_the_model_term(metadata, reference_set):
                            resampled.averages["amF1"])
     with pytest.raises(ValueError, match="At least one model"):
         combine_model_resamples([], "m")
+    # Models without values, e.g. of metrics that hard predictions lack.
+    without_values = MetricValues(averages={}, per_attribute={})
+    assert combine_model_resamples([without_values] * 2, "m") == without_values
     with pytest.raises(ValueError, match="number of resamples"):
         combine_model_resamples(
             [model_resamples[0], resample_model_metrics(models[1], ["amF1", "mF1"],

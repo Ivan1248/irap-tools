@@ -164,13 +164,17 @@ def combine_model_resamples(model_resamples: T.Sequence[MetricValues[np.ndarray]
     Each value is the mean over the models plus their standard deviation over sqrt(M) times a
     Student-t(M - 1) draw per resample, or the value of the model for a single model. A value
     whose mean is infinite is that mean. The t draws depend on `seed` and `method_name`, so they
-    are independent between methods, and the same for a method in every comparison.
+    are independent between methods, and the same for a method in every comparison. Models
+    without metric values, e.g. after a selection of metrics that they lack, give a method
+    without metric values.
 
     Raises:
         ValueError: If there are no models, or they differ in metrics, attributes or the number
             of resamples.
     """
     check_models_have_same_metrics(model_resamples)
+    if next(model_resamples[0].iterate_values(), None) is None:
+        return model_resamples[0]
     if len(num_resamples := {_get_num_resamples(v) for v in model_resamples}) > 1:
         raise ValueError(f"The models differ in the number of resamples: {sorted(num_resamples)}.")
     model_t_values = _draw_model_t_values(len(model_resamples), num_resamples.pop(), method_name,
