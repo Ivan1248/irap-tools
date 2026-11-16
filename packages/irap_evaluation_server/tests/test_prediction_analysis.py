@@ -118,6 +118,28 @@ def test_cell_segments_list_confident_predictions_first(archive, dataset_context
                 assert (np.diff(confidences) <= 0).all()
 
 
+def test_missed_segments_list_confident_errors_first_and_invalid_ones_last(
+        archive, dataset_contexts, reference_set):
+    aligned = _align(archive, dataset_contexts,
+                     _invalidate_every_third(make_model(dataset_contexts), "Lane width"),
+                     reference_set)
+    matrix = compute_attribute_outcomes(aligned, "Lane width").confusion_matrix
+    labels = reference_set.class_indices["Lane width"]
+    predicted = aligned.predicted_indices["Lane width"]
+    is_valid = aligned.predictions.is_valid["Lane width"]
+    for label_index in range(matrix.shape[0]):
+        segments = select_cell_segments(aligned, "Lane width", label_index, None)
+        assert len(segments) == matrix[label_index].sum() - matrix[label_index, label_index]
+        assert (labels[segments] == label_index).all()
+        assert (predicted[segments] != label_index).all()
+        num_valid = int(is_valid[segments].sum())
+        assert is_valid[segments[:num_valid]].all()
+        valid = segments[:num_valid]
+        confidences = aligned.predictions.probs["Lane width"][valid, predicted[valid]]
+        assert (np.diff(confidences) <= 0).all()
+        assert (np.diff(segments[num_valid:]) > 0).all()
+
+
 def test_aligned_predictions_cache_reads_each_file_once(archive, dataset_contexts,
                                                         reference_set, monkeypatch):
     submissions = [add_model(archive, dataset_contexts,

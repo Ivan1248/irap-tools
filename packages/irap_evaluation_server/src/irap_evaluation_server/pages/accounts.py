@@ -9,7 +9,11 @@ from ..accounts import PERMISSION_DESCRIPTIONS, PERMISSIONS, Account, is_admin
 from ..components.account_sessions import AccountSessions
 from ..components.changes import run_admin_change
 from ..components.confirmation_dialog import confirm_changes
-from ..components.formatting import format_utc_time, make_table_html
+from ..components.formatting import (
+    format_utc_time,
+    make_data_click_js_handler,
+    make_table_html,
+)
 from ..components.native_controls import NATIVE_CHOICE_ATTRIBUTES
 from ..components.page_frame import create_key_values, create_page_frame
 from ..components.routes import ACCOUNTS_PATH
@@ -43,8 +47,7 @@ def _create_accounts_table(sessions: AccountSessions) -> None:
                        " if (select) emit({name: select.dataset.permissionOf,"
                        " permission: select.value}); }").on(
             "click", lambda e: on_remove_clicked(e.args),
-            js_handler="(e) => { const button = e.target.closest('[data-remove]');"
-                       " if (button) emit(button.dataset.remove); }")
+            js_handler=make_data_click_js_handler("data-remove"))
 
     async def on_permission_changed(name: str, permission: str) -> None:
         await run_admin_change(lambda actor: accounts.set_permission(name, permission, actor),

@@ -25,6 +25,7 @@ EVALUATION_SETS_SECTION = "evaluation-sets"
 METRICS_SECTION = "metrics"
 INTERVALS_SECTION = "intervals"
 COMPARISONS_SECTION = "comparisons"
+CLASS_DISCRIMINATION_SECTION = "class-discrimination"
 
 
 @dc.dataclass(frozen=True)
@@ -298,6 +299,43 @@ With many metrics, attributes or methods, some differences are significant by ch
 """
 
 
+_CLASS_DISCRIMINATION_MARKDOWN = r"""
+The class tables of the Analysis page show how well a model tells each class of an attribute from
+the other classes of the attribute, one vs. rest, with two measures whose value by chance does not
+depend on the size of the class:
+
+- **AUROC**: the area under the ROC curve of the predicted probability of the class, which is the
+  probability that a segment labeled with the class gets a higher probability of it than a segment
+  labeled with another class, with ties counting half. It does not depend on a decision threshold,
+  so it measures what the predicted probabilities know about the class.
+- **J**: the informedness (Youden's J) of the predicted classes,
+  $J = \mathrm{TPR} - \mathrm{FPR}$: the recall of the class minus the proportion of the segments
+  of the other classes that are predicted as it.
+
+A predictor that ignores the image, e.g. one that always predicts the class or one that draws
+classes at their proportions, has AUROC = 0.5 and J = 0 for every class, and a perfect one has 1
+and 1. Both measures depend only on how the predictions are distributed within the class and
+within the other classes, so the proportion $p$ of the class among the labeled segments does not
+enter them. F1 does not have this property: a predictor that ignores the image gets an F1 between
+$p$ (drawing classes at their proportions) and $2p/(1+p)$ (always predicting the class), so the F1
+of a large class is high and that of a rare class is low without any skill. The Class analysis
+panel lists the classes of the selected attributes, by default with the lowest AUROC first.
+
+The two measures differ where the decision misses what the probabilities know. A class with a high
+AUROC and a J near 0 is ranked well but rarely predicted, e.g. because another class is more
+probable for most of its segments. A class with a low AUROC is not told apart at all, and one with
+an AUROC below 0.5 gets lower probabilities on its own segments than on the others, which can point
+to labels that mean something else than what the model learned. For hard predictions without
+invalid ones, the AUROC is $(1 + J)/2$.
+
+The other classes are pooled, so a class that is confused with one neighbouring class can still
+have a high AUROC, and the **Mostly as** column shows that class. In an attribute with two classes,
+both have the same values. An invalid prediction counts as the first class and as the uniform
+distribution, as in the scores. Attributes that the model does not predict are not listed in the
+Class analysis panel. The values of classes with few labeled segments are noisy.
+"""
+
+
 _SPLIT_USE_MARKDOWN = """
 Metric values on a split that a model used are not of held-out data. The tables mark the methods
 whose models used the shown split:
@@ -347,5 +385,7 @@ def make_methodology_sections(settings: ScoringSettings, dataset_names: T.Sequen
                            _make_intervals_markdown(settings)),
         MethodologySection(COMPARISONS_SECTION, "Comparing methods",
                            _make_comparisons_markdown(settings)),
+        MethodologySection(CLASS_DISCRIMINATION_SECTION, "How well a class is told apart",
+                           _CLASS_DISCRIMINATION_MARKDOWN),
         MethodologySection("split-use", "Splits that a model used", _SPLIT_USE_MARKDOWN),
     ]

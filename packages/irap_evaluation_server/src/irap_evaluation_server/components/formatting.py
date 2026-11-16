@@ -155,6 +155,14 @@ def make_table_html(header_cells: T.Sequence[str], rows: T.Sequence[str],
                 for c in header_cells), rows)
 
 
+def make_data_click_js_handler(data_attribute: str) -> str:
+    """Makes the JavaScript handler of a click on an element of many clickable items, e.g. the
+    buttons of an HTML list, which emits the value of `data_attribute`, e.g. 'data-segment', of
+    the clicked item, so that one handler serves all items."""
+    return (f"(e) => {{ const item = e.target.closest('[{data_attribute}]');"
+            f" if (item) emit(item.getAttribute('{data_attribute}')); }}")
+
+
 def make_title_attribute(title: str) -> str:
     """Makes a ` title="…"` attribute of an escaped tooltip, or '' if `title` is ''."""
     return f' title="{html.escape(title)}"' if title else ""

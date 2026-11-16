@@ -85,11 +85,11 @@ class DeckMap(ui.element, component="deck_map.js"):
 
 def make_map_legend_html(outcome_names: T.Sequence[str], counts: T.Sequence[int],
                          note: str = "") -> str:
-    """Makes a legend of the colour and the number of points of each outcome, and a note below
-    them."""
+    """Makes a legend of the colour and the number of points of each outcome that has points, and
+    a note below them."""
     rows = "".join(
         f'<div><span class="swatch" style="background: rgb{OUTCOME_COLORS[name]}"></span>'
         f'{html.escape(name)} <span class="muted">{count}</span></div>'
-        for name, count in zip(outcome_names, counts, strict=True))
+        for name, count in zip(outcome_names, counts, strict=True) if count > 0)
     note_html = f'<div class="muted">{html.escape(note)}</div>' if note else ""
     return f'<div class="map-legend">{rows}{note_html}</div>'

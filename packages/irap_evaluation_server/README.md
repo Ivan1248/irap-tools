@@ -8,7 +8,7 @@ A web app that keeps an archive of model predictions, scores them, and compares,
 | Models | `/models` | The models of each dataset by method, with the file of each split, a filter, the upload form, and the form that creates an ensemble of the models selected in the tables. |
 | Model | `/models/<id>` | A model's files, its scores, the coding-table export and its actions (collapsed, for accounts with write permission). |
 | Method | `/methods?dataset=<dataset>&method=<method>` | A method's models, the scores of their mean and of each model on a split, its display name and description, and the actions of its models. Method names in the tables link to it. |
-| Analysis | `/analysis` | A model's confusion matrix for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
+| Analysis | `/analysis` | A model's confusion matrix and review curve for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
 | Methodology | `/methodology` | How the files are scored, and how to read the values, intervals, highlights and differences of the score tables. The short notes below the tables link to its sections. |
 | Action log | `/actions` | All changes, with the name of the user. Only for accounts with write permission. |
 | Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins, in the Admin menu. |
@@ -230,11 +230,14 @@ On the Shown metrics page, admins hide attribute averages from the pages, all bu
 
 ## Analysis
 
-The Analysis page shows the predictions of a model (A) for one attribute on an evaluation set of an analysis split:
+The Analysis page shows the predictions of a model (A) for one attribute on an evaluation set of an analysis split. Tabs switch between the confusion matrix with its class table, the class analysis and the review curve, and the URL keeps the choice:
 
 - **Confusion matrix:** labels (rows) × predictions of A (columns), with a column of invalid predictions. Scores count an invalid prediction as the first class (`null_policy="first_class"`), i.e. they add the invalid column to the first.
-- **Segments of a cell:** a click on a cell lists its segments, most confident first, so that confident errors come first.
-- **Map:** segments coloured by outcome, or, with a second model (B), by which of A and B is correct. The segments of the selected cell are highlighted.
+- **Class table:** the support, precision, recall and F1 of each class, and how well A tells the class from the other classes of the attribute, one vs. rest: the AUROC of its predicted probability and the informedness J = TPR − FPR of its predicted classes (`class_analysis.compute_class_discrimination`). By chance they are 0.5 and 0 at any class size, unlike F1, which a predictor that ignores the image already gets between p and 2p / (1 + p) for a class of proportion p. A high AUROC with a J near 0 is a class that A ranks well but rarely predicts.
+- **Class analysis:** the classes with labeled segments of all selected attributes that A predicts (`class_analysis`), for finding the classes that are hard for A: their support, F1, AUROC and J, the number of their segments that are predicted as another class (Missed), and the class that most of these are predicted as. By default, the classes with the lowest AUROC are first, and a click on a column header sorts by that column. A click on a class shows its attribute and selects its missed segments, as a click on its row label in the confusion matrix does.
+- **Review curve:** mF1 and accuracy of A, and of B, after a reviewer has corrected a proportion of the segments, starting with the least confident predictions, with the point where mF1 reaches 0.9 (the manual review proportion `MRP90`). A tooltip shows the scores at each 5 % of the segments. Models of hard predictions have no curve.
+- **Segments of a cell:** a click on a cell of the matrix lists its segments, most confident first, so that confident errors come first. A click on a row label of the matrix, or on a class of the class analysis, lists the missed segments of the class with their predicted classes, from the most confident errors to the invalid predictions.
+- **Map:** segments coloured by outcome, or, with a second model (B), by which of A and B is correct. The listed segments are highlighted.
 - **Segment details:** a click on a segment shows its context images (at A's context offsets, from `dataset_dir`), its label, and the distributions predicted by A and B.
 
 The page keeps the 8 most recently used files in memory. Reading and aligning a file takes about 0.06 s on Vietnam val and 0.3 s on train.

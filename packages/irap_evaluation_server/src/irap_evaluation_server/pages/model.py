@@ -50,6 +50,7 @@ from ..components.formatting import (
     format_utc_time,
     make_action_table_html,
     make_code_spans_html,
+    make_data_click_js_handler,
     make_ensemble_members_html,
     make_table_html,
     make_truncated_name_html,
@@ -316,8 +317,7 @@ class _ModelPage:
                 number_headers=["Segments", "Attributes"]),
                 sanitize=False).classes("w-full overflow-x-auto").on(
                 "click", lambda e: on_delete_clicked(int(e.args)),
-                js_handler="(e) => { const button = e.target.closest('[data-delete-id]');"
-                           " if (button) emit(button.dataset.deleteId); }")
+                js_handler=make_data_click_js_handler("data-delete-id"))
 
         async def on_delete_clicked(submission_id: int) -> None:
             # From the shown files, so that only files of this model are deleted.

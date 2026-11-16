@@ -124,28 +124,101 @@ td > .truncated-line { inline-size: 0; min-inline-size: 100%; }
 
 /* The analysis page (`create_page_frame(..., fills_window=True)`). */
 .page-content.fills-window { flex: 1; min-height: 0; max-width: none; padding: 0; gap: 0; }
-.analysis-side { height: 100%; overflow-y: auto; padding: 10px 12px; display: flex;
+/* As wide as its splitter panel, also with content that is wider by itself, e.g. a select with
+   long options, which is then narrowed (`.field select`). */
+.analysis-side { width: 100%; height: 100%; overflow-y: auto; padding: 10px 12px; display: flex;
                  flex-direction: column; gap: 10px; }
 .analysis-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
                      gap: 6px 8px; }
 .analysis-controls .wide { grid-column: span 2; }
-.confusion-matrix { display: grid; gap: 1px; font-size: 11px; }
+/* The selects of the dataset, the split and the evaluation set, in one row if their contents fit,
+   and widened to fill their rows. */
+.analysis-view-controls { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.analysis-view-controls > .field { flex: 1 1 auto; min-width: 0; }
+/* A model select with the link to its model's page to its right, at the height of the select. The
+   select takes the rest of the row. */
+.model-select-row { display: flex; align-items: flex-end; gap: 8px; }
+.model-select-row > .field { flex: 1; min-width: 0; }
+.model-select-row > .model-details-link { padding-bottom: 3px; white-space: nowrap; }
+/* The tabs of the panels of which one is shown (`analysis_html.make_panel_tabs_html`), which look
+   like section titles. */
+.panel-tabs { display: flex; flex-wrap: wrap; gap: 0 16px; border-bottom: 1px solid var(--border); }
+.panel-tabs button { font-size: 14px; letter-spacing: 0.04em; font-weight: bold;
+                     color: var(--muted); padding: 2px 0; border-bottom: 2px solid transparent;
+                     margin-bottom: -1px; cursor: pointer; }
+.panel-tabs button:hover { color: var(--accent); }
+.panel-tabs button.selected { color: var(--text); border-bottom-color: var(--text); }
+/* A panel lays out its parts like the side panel. */
+.analysis-panel { display: flex; flex-direction: column; gap: 10px; }
+/* The classes of all attributes (`analysis_html.make_class_analysis_html`) scroll in their own
+   box, so that the segments of a clicked class stay in view below it. The header stays at the
+   top of the box. */
+.class-analysis { max-height: 45vh; overflow-y: auto; font-size: 11px; }
+.class-analysis .data-table { width: 100%; }
+.class-analysis thead th { position: sticky; top: 0; background: var(--background); }
+.class-analysis tbody tr { cursor: pointer; }
+.class-analysis tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.class-analysis tbody tr.selected { outline: 2px solid var(--text); outline-offset: -2px; }
+/* The class table is to the right of the confusion matrix if both fit there at their full widths,
+   and below it otherwise. Both have the font size of the matrix's counts at their full size. */
+.matrix-and-class-table { display: flex; flex-wrap: wrap; align-items: flex-start;
+                          gap: 10px 16px; font-size: 11px; }
+/* A column of counts (`--num-count-columns` of them) is at most as wide as the largest count of
+   the matrix needs at the full font size: its `--num-digits`, at about 0.6 em per tabular digit,
+   and a 2px margin. It fits the "inv." header too, which is about as wide as 3 digits. In a
+   panel that is narrower than the matrix with such columns, the columns are narrower. */
+.confusion-matrix {
+  --count-max-width: calc(max(var(--num-digits), 3) * 0.6em + 2px);
+  display: grid; gap: 1px;
+  grid-template-columns: minmax(70px, 9em)
+                         repeat(var(--num-count-columns), minmax(14px, var(--count-max-width))); }
 .confusion-matrix .header { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .confusion-matrix .center { text-align: center; }
 .confusion-matrix .cell { min-height: 22px; line-height: 22px; text-align: center;
                           cursor: pointer; container-type: inline-size; }
-/* A count is scaled down to fit its cell: the `--num-digits` of the largest count of the matrix,
-   at about 0.6 em per tabular digit, fit the cell's width minus a 2px margin. */
+/* A count is scaled down to fit a cell that is narrower than `--count-max-width`. */
 .confusion-matrix .cell span { font-variant-numeric: tabular-nums;
-  font-size: min(11px, calc((100cqi - 2px) / (var(--num-digits) * 0.6))); }
+  font-size: min(1em, calc((100cqi - 2px) / (var(--num-digits) * 0.6))); }
 .confusion-matrix .cell[disabled] { cursor: default; }
 .confusion-matrix .cell.selected { outline: 2px solid var(--text); outline-offset: -2px; }
+.confusion-matrix .row-label { cursor: pointer; }
+.confusion-matrix .row-label:hover { text-decoration: underline; }
+.confusion-matrix .row-label.selected { font-weight: 600; }
+/* The review curve (`analysis_html.make_review_curve_html`). The chart scales with the panel up to
+   its maximum width. Its text can reach past its edges, e.g. the tick label "100" in a narrow
+   chart. */
+.review-curve { container-type: inline-size; --chart-max-width: 460px; }
+.review-curve .chart { display: block; width: 100%; max-width: var(--chart-max-width);
+                       height: auto; overflow: visible; }
+/* The text is 11px at any width of the chart: its size in SVG units is 11px times the view box
+   width over the chart width. `tan(atan2(length, 1px))` is the length as a number of pixels. */
+.review-curve .chart text {
+  font-size: calc(11px * var(--view-box-width)
+                  / tan(atan2(min(100cqi, var(--chart-max-width)), 1px)));
+  fill: var(--muted); font-variant-numeric: tabular-nums; }
+.review-curve .grid { stroke: var(--border); stroke-width: 1; }
+.review-curve .target { stroke: var(--muted); stroke-width: 1; }
+.review-curve polyline { fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.review-curve .macro-f1 { stroke-width: 2; }
+.review-curve .accuracy { stroke-width: 1.5; stroke-dasharray: 4 3; }
+/* A ring in the colour of the page around the point, which keeps it apart from the lines. */
+.review-curve .manual-review-proportion { stroke: var(--background); stroke-width: 2; }
+.review-curve .tooltip-strip rect { fill: transparent; }
+.review-curve .tooltip-strip line { stroke: var(--muted); stroke-width: 1; opacity: 0; }
+.review-curve .tooltip-strip:hover line { opacity: 1; }
+.review-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; }
+.review-legend .line-key { display: inline-block; width: 18px; height: 8px; margin-right: 3px;
+                           vertical-align: middle; }
 .segment-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
                 gap: 2px; }
 .segment-list button { border: 1px solid var(--border); background: var(--panel);
                        border-radius: 3px; padding: 2px 0; cursor: pointer;
                        font-variant-numeric: tabular-nums; }
 .segment-list button.selected { background: var(--text); color: white; }
+/* Wider buttons for the predicted classes after the segment ids, e.g. "1927865 → 6". */
+.segment-list:has(.predicted) { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+.segment-list .predicted { color: var(--muted); }
+.segment-list button.selected .predicted { color: inherit; }
 .map-container { position: relative; width: 100%; height: 100%; }
 /* A stacking context, so that the canvases and controls of the map stay below the legend, which
    is after it in `.map-container`, whatever their z-index. */

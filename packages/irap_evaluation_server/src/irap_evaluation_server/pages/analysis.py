@@ -1,12 +1,13 @@
 """The Analysis page: the outcomes of a model, or of two compared models, for one attribute on an
 evaluation set of an analysis split (`config.DatasetConfig.analysis_splits`), with the confusion
-matrix, the map and the details of a segment (see `prediction_analysis`), and the endpoint of the
-segment images."""
+matrix, the classes of all attributes (`class_analysis`) or the review curve, the map and the
+details of a segment (see `prediction_analysis`), and the endpoint of the segment images."""
 
 import asyncio
 import dataclasses as dc
 import functools
 import html
+import math
 import typing as T
 
 import irap_evaluation as ie
@@ -15,15 +16,29 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
+from ..class_analysis import (
+    ClassDiscrimination,
+    ClassScores,
+    compute_class_discrimination,
+    list_class_scores,
+)
 from ..components.account_sessions import AccountSessions
 from ..components.analysis_html import (
+    AUROC_HEADER,
+    INFORMEDNESS_HEADER,
+    ModelReviewCurve,
+    format_predicted_class,
+    make_class_analysis_html,
     make_class_table_html,
     make_confusion_matrix_html,
     make_context_images_html,
+    make_panel_tabs_html,
+    make_review_curve_html,
     make_segment_facts_html,
     make_segment_list_html,
 )
 from ..components.analysis_view import (
+    ANALYSIS_PANELS,
     AnalysisView,
     list_analysis_datasets,
     list_compared_models,
@@ -35,7 +50,9 @@ from ..components.attribute_filter import AttributeFilter, AttributeSubset
 from ..components.deck_map import DeckMap, make_map_legend_html
 from ..components.formatting import (
     EVALUATION_SET_LABELS,
+    make_data_click_js_handler,
     make_evaluation_set_options,
+    make_link_html,
     make_model_link_html,
     make_split_options,
 )
@@ -45,8 +62,10 @@ from ..components.routes import (
     ANALYSIS_PATH,
     ATTRIBUTE_PARAMETER,
     SEGMENT_IMAGE_PATH,
+    get_methodology_path,
     get_segment_image_path,
 )
+from ..components.row_sorting import SORT_CLICK_JS_HANDLER
 from ..components.score_tables import format_optional_metric_value
 from ..datasets import DatasetContext
 from ..method_ranking import (
@@ -57,6 +76,7 @@ from ..method_ranking import (
     sort_scored_models,
 )
 from ..method_scores import ScoredModel, get_model_evaluation_set
+from ..methodology import CLASS_DISCRIMINATION_SECTION
 from ..prediction_analysis import (
     AlignedPredictions,
     AlignedPredictionsCache,
@@ -64,6 +84,7 @@ from ..prediction_analysis import (
     MapPoints,
     compute_attribute_outcomes,
     compute_map_points,
+    get_predicted_columns,
     get_segment_detail,
     select_cell_segments,
 )
@@ -77,6 +98,7 @@ _MAX_LISTED_SEGMENTS = 500
 _CLASS_TABLE_NOTES = {
     "first_class": "An invalid prediction counts as the first class.",
     "exclude": "Invalid predictions are left out in scoring."}
+_CLASS_SCORES_MISSING_HTML = '<div class="error">The class scores are not stored.</div>'
 #: The initial width of the side panel next to the map.
 _SIDE_PANEL_WIDTH_PX = 440
 #: The initial width of the column of context images between the side panel and the map.
@@ -87,6 +109,15 @@ def _create_side_panel_without_map() -> ui.element:
     """Creates the side panel of a page without the map, e.g. of an error, as wide as next to
     the map."""
     return ui.element("div").classes("analysis-side").style(f"width: {_SIDE_PANEL_WIDTH_PX}px")
+
+
+def _create_discrimination_note() -> None:
+    """Creates a note that explains the AUROC and informedness columns of a table of classes."""
+    link_html = make_link_html(get_methodology_path(CLASS_DISCRIMINATION_SECTION),
+                               "tell the class from the other classes")
+    ui.html(f"{AUROC_HEADER} and {INFORMEDNESS_HEADER}: how well the predicted probabilities and"
+            f" the predicted classes {link_html}. By chance 0.5 and 0, at any class size.",
+            sanitize=False).classes("muted")
 
 
 @dc.dataclass(frozen=True)
@@ -105,6 +136,27 @@ class _LoadedModel:
     @property
     def model_id(self) -> int:
         return self.scored.submission.model.id
+
+    @functools.cached_property
+    def predicted_class_reports(self) -> dict[str, T.Mapping[str, T.Any]]:
+        """The `class_reports` of the attributes that the model predicts. Those of the others
+        are of invalid predictions only, which say nothing about how hard their classes are."""
+        unpredicted = set(self.scored.scores.missing_attributes)
+        return {a: r for a, r in self.class_reports.items() if a not in unpredicted}
+
+    @functools.cached_property
+    def attribute_to_discrimination(self) -> dict[str, ClassDiscrimination]:
+        """`class_analysis.compute_class_discrimination` of each scored attribute."""
+        aligned = self.aligned
+        return {a: compute_class_discrimination(aligned.evaluation_set.class_indices[a],
+                                                predicted_indices, aligned.predictions.probs[a])
+                for a, predicted_indices in aligned.predicted_indices.items()}
+
+    @functools.cached_property
+    def class_scores(self) -> list[ClassScores]:
+        """The classes of the attributes that the model predicts
+        (`class_analysis.list_class_scores`)."""
+        return list_class_scores(self.predicted_class_reports, self.attribute_to_discrimination)
 
 
 def _load_model(predictions_cache: AlignedPredictionsCache, store: ScoreStore,
@@ -185,7 +237,7 @@ def _create_view_controls(context: DatasetContext, analysis_datasets: T.Sequence
         open_view: Opens the page of the changed view, given the changes as keyword arguments
             (see `_open_changed_view`).
     """
-    with ui.element("div").classes("analysis-controls"):
+    with ui.element("div").classes("analysis-view-controls"):
         create_native_select("Dataset", {n: n for n in analysis_datasets}, view.dataset,
                              lambda v: open_view(dataset=v))
         create_native_select("Split", make_split_options(context.config.analysis_splits,
@@ -226,10 +278,37 @@ def _group_model_options(models: T.Sequence[ScoredModel],
     return groups
 
 
+def _create_model_details_link(model: _LoadedModel) -> None:
+    """Creates a link to the Model page of a model, e.g. next to its select."""
+    ui.html(make_model_link_html(model.model_id, "details", model.scored.submission.split),
+            sanitize=False).classes("model-details-link")
+
+
+def _get_manual_review_proportion(scored_model: ScoredModel, attribute: str) -> float | None:
+    """Returns the manual review proportion (`irap_evaluation.MANUAL_REVIEW_PROPORTION_METRIC`) of
+    a model for an attribute, None if the model lacks it, e.g. for hard predictions, or it is
+    undefined."""
+    per_attribute = scored_model.scores.metrics.per_attribute
+    value = per_attribute.get(ie.MANUAL_REVIEW_PROPORTION_METRIC, {}).get(attribute)
+    return None if value is None or math.isnan(value) else value
+
+
+def _parse_review_curve(document: T.Mapping[str, T.Sequence[float]] | None
+                        ) -> ie.ReviewCurve | None:
+    """Parses `review_curve` of an attribute's entry of `classes` in an
+    `evaluation_report.to_json_dict` document, None for hard predictions."""
+    if document is None:
+        return None
+    return ie.ReviewCurve(**{name: np.array(values, dtype=np.float64)
+                             for name, values in document.items()})
+
+
 def _describe_attribute_scores(role_models: T.Sequence[tuple[str, ScoredModel]],
                                attribute: str) -> str:
-    """Describes the scores of models for one attribute, e.g. 'mF1=.512 vs .498 · 3 vs 0
-    invalid', with '(not predicted by B)' if a model lacks the attribute.
+    """Describes the scores of models for one attribute, e.g. 'mF1=.512 vs .498 · MRP90=.640 vs
+    .702 · 3 vs 0 invalid', with '(not predicted by B)' if a model lacks the attribute. The manual
+    review proportion is left out if no model has it, e.g. for hard predictions, and the invalid
+    predictions if no model has any.
 
     Args:
         role_models: (role, model), e.g. ("A", model A), in the order of their scores.
@@ -238,10 +317,17 @@ def _describe_attribute_scores(role_models: T.Sequence[tuple[str, ScoredModel]],
     f1s = " vs ".join(
         format_optional_metric_value(s.metrics.per_attribute["mF1"].get(attribute), 3)
         for s in all_scores)
-    nums_invalid = " vs ".join(str(s.num_invalid[attribute]) for s in all_scores)
+    parts = [f"mF1={f1s}"]
+    review_proportions = [_get_manual_review_proportion(m, attribute) for _, m in role_models]
+    if any(p is not None for p in review_proportions):
+        parts.append(f"{ie.MANUAL_REVIEW_PROPORTION_METRIC}="
+                     + " vs ".join(format_optional_metric_value(p, 3) for p in review_proportions))
+    nums_invalid = [s.num_invalid[attribute] for s in all_scores]
+    if any(nums_invalid):
+        parts.append(f"{' vs '.join(map(str, nums_invalid))} invalid")
     missing_roles = [r for r, m in role_models if attribute in m.scores.missing_attributes]
     missing = f" (not predicted by {', '.join(missing_roles)})" if missing_roles else ""
-    return f"mF1={f1s} · {nums_invalid} invalid{missing}"
+    return " · ".join(parts) + missing
 
 
 async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
@@ -391,20 +477,41 @@ class _AnalysisPage:
             self.show_model_selects()
         self.show_attribute_picker = ui.refreshable(self._show_attribute_picker)
         self.show_attribute_picker()
-        ui.label("Confusion matrix").classes("section-title")
-        ui.label("Rows: labels. Columns: predictions of A, then invalid ones.").classes("muted")
-        self.matrix_html = ui.html("", sanitize=False).on(
-            "click", lambda e: self._on_cell_clicked(e.args),
-            js_handler="(e) => { const cell = e.target.closest('[data-cell]');"
-                       " if (cell) emit(cell.dataset.cell); }")
-        self.class_table_html = ui.html("", sanitize=False)
-        ui.label(_CLASS_TABLE_NOTES[self.worker.settings.null_policy]).classes("muted")
+        self.panel_tabs_html = ui.html("", sanitize=False).on(
+            "click", lambda e: self._on_panel_changed(e.args),
+            js_handler=make_data_click_js_handler("data-panel"))
+        self.panels = {panel: ui.element("div").classes("analysis-panel")
+                       for panel in ANALYSIS_PANELS}
+        with self.panels["matrix"]:
+            with ui.element("div").classes("matrix-and-class-table"):
+                self.matrix_html = ui.html("", sanitize=False).on(
+                    "click", lambda e: self._on_cell_clicked(e.args),
+                    js_handler=make_data_click_js_handler("data-cell"))
+                self.class_table_html = ui.html("", sanitize=False)
+            ui.label(_CLASS_TABLE_NOTES[self.worker.settings.null_policy]).classes("muted")
+            _create_discrimination_note()
+        with self.panels["classes"]:
+            ui.label("Model A's scores on each class that has labels, of the attributes that it"
+                     " predicts. Click a class to list its missed segments.").classes("muted")
+            # A click on a header sorts the classes, and a click on a row selects its class.
+            with ui.element("div").on("click", lambda e: self._on_class_sort_changed(e.args),
+                                      js_handler=SORT_CLICK_JS_HANDLER):
+                self.class_analysis_html = ui.html("", sanitize=False).classes(
+                    "class-analysis").on(
+                    "click", lambda e: self._on_class_clicked(int(e.args)),
+                    js_handler=make_data_click_js_handler("data-class-row"))
+            _create_discrimination_note()
+        with self.panels["curve"]:
+            ui.label("The scores after a reviewer has corrected the given proportion of the"
+                     " segments, starting with the least confident predictions, and the manual"
+                     " review proportion.").classes("muted")
+            self.review_curve_html = ui.html("", sanitize=False)
+        self._update_panel()
         ui.label("Segments").classes("section-title")
         self.segment_status = ui.label().classes("muted")
         self.segment_list_html = ui.html("", sanitize=False).classes("segment-list").on(
             "click", lambda e: self._select_segment(int(e.args)),
-            js_handler="(e) => { const button = e.target.closest('[data-segment]');"
-                       " if (button) emit(button.dataset.segment); }")
+            js_handler=make_data_click_js_handler("data-segment"))
 
     def _create_map_panel(self, map_error: str | None) -> None:
         """Creates the map and its legend, and the facts of the selected segment below them."""
@@ -427,24 +534,27 @@ class _AnalysisPage:
     def _show_model_selects(self) -> None:
         attributes = self.attribute_filter.subset.selected
         models = sort_scored_models(self.models, _RANKING_METRIC, attributes)
-        with ui.element("div").classes("wide"):
+        with ui.element("div").classes("wide model-select-row"):
             create_native_grouped_select(
                 "Model A", _group_model_options(models, attributes), str(self.model_a.model_id),
                 self._on_model_changed)
-        with ui.element("div").classes("wide"):
+            _create_model_details_link(self.model_a)
+        with ui.element("div").classes("wide model-select-row"):
             create_native_grouped_select(
-                "Compare with (B)",
+                "Model B (to compare)",
                 _group_model_options(list_compared_models(models, self.model_a.scored),
                                      attributes),
                 "" if self.model_b is None else str(self.model_b.model_id),
                 self._on_compared_model_changed, ungrouped={"": "–"})
-        links = ", ".join(
-            f"{role}: {make_model_link_html(m.model_id, 'details', m.scored.submission.split)}"
-            for role, m in self._list_role_models())
-        ui.html(f'<span class="muted">{links}</span>', sanitize=False).classes("wide")
+            if self.model_b is not None:
+                _create_model_details_link(self.model_b)
+
+    def _list_attribute_options(self) -> list[str]:
+        """Lists the options of the Attribute select (`select_attribute_options`)."""
+        return select_attribute_options(self.attribute_filter.subset, self.model_a.scored)
 
     def _show_attribute_picker(self) -> None:
-        attributes = select_attribute_options(self.attribute_filter.subset, self.model_a.scored)
+        attributes = self._list_attribute_options()
         if not attributes:
             ui.label("Select at least one attribute that model A is scored on.").classes("error")
             return
@@ -489,13 +599,49 @@ class _AnalysisPage:
         if self.deck_map is not None:
             self.deck_map.set_outcomes(point_outcomes, self.outcomes.outcome_names)
         if is_model_a_changed:
-            class_report = self.model_a.class_reports.get(attribute)
+            class_reports = self.model_a.class_reports
             self.class_table_html.set_content(
-                '<div class="error">The class scores are not stored.</div>'
-                if class_report is None
-                else make_class_table_html(class_report, self.outcomes.confusion_matrix))
+                _CLASS_SCORES_MISSING_HTML if attribute not in class_reports
+                else make_class_table_html(
+                    class_reports[attribute], self.outcomes.confusion_matrix,
+                    self.model_a.attribute_to_discrimination[attribute]))
             self._update_cell()
+        self._update_review_curve()
         self._update_detail()
+
+    def _update_panel(self) -> None:
+        """Shows the panel of the view and marks its tab."""
+        self.panel_tabs_html.set_content(make_panel_tabs_html(ANALYSIS_PANELS, self.view.panel))
+        for panel, element in self.panels.items():
+            element.set_visibility(panel == self.view.panel)
+
+    def _update_class_analysis(self) -> None:
+        """Shows the classes of the selected attributes of model A, with the class of the
+        selected cell marked, if their panel is shown."""
+        if self.view.panel != "classes":
+            return
+        if not self.model_a.class_reports:
+            self.class_analysis_html.set_content(_CLASS_SCORES_MISSING_HTML)
+            return
+        class_scores = self.model_a.class_scores
+        attributes = set(self._list_attribute_options())
+        cell = self.view.cell
+        selected_index = next(
+            (i for i, c in enumerate(class_scores) if cell is not None
+             and (c.attribute, c.class_index) == (self.view.attribute_name, cell[0])), None)
+        self.class_analysis_html.set_content(make_class_analysis_html(
+            class_scores, [i for i, c in enumerate(class_scores) if c.attribute in attributes],
+            self.view.class_sort, selected_index))
+
+    def _update_review_curve(self) -> None:
+        """Shows the review curves of the models for the attribute. A model without stored class
+        scores, which the class table reports for A, has none."""
+        attribute = self.view.attribute_name
+        self.review_curve_html.set_content(make_review_curve_html([
+            ModelReviewCurve(role, _parse_review_curve(class_report["review_curve"]),
+                             _get_manual_review_proportion(model.scored, attribute))
+            for role, model in self._list_role_models()
+            if (class_report := model.class_reports.get(attribute)) is not None]))
 
     def _get_selected_segment(self) -> int | None:
         return self.segment_id_to_index.get(self.view.segment_id)
@@ -511,7 +657,7 @@ class _AnalysisPage:
         if self.view.cell is None:
             self.cell_segments = None
             self.segment_status.set_text("Click a cell of the confusion matrix to list its"
-                                         " segments.")
+                                         " segments, or a class to list its missed segments.")
         else:
             self.cell_segments = select_cell_segments(self.model_a.aligned, attribute,
                                                       *self.view.cell)
@@ -532,6 +678,7 @@ class _AnalysisPage:
             points = (None if self.cell_segments is None
                       else segment_to_point[self.cell_segments])
             self.deck_map.set_highlighted(None if points is None else points[points >= 0])
+        self._update_class_analysis()
         self._update_url()
 
     def _update_segment(self) -> None:
@@ -548,10 +695,24 @@ class _AnalysisPage:
             self.deck_map.set_selected(None if point < 0 else point)
 
     def _update_segment_list(self) -> None:
-        self.segment_list_html.set_content(
-            "" if self.cell_segments is None else make_segment_list_html(
-                self.cell_segments[:_MAX_LISTED_SEGMENTS].tolist(),
-                self.evaluation_set.segment_ids, self._get_selected_segment()))
+        """Lists the segments of the selected cell, with their predicted classes if they are the
+        missed segments of a class."""
+        if self.cell_segments is None:
+            self.segment_list_html.set_content("")
+            return
+        listed = self.cell_segments[:_MAX_LISTED_SEGMENTS]
+        predicted_classes = None
+        if self.view.cell[1] is None:
+            attribute = self.view.attribute_name
+            vocabulary = self.evaluation_set.vocabulary
+            irap_codes, class_names = (vocabulary.get_irap_codes(attribute),
+                                       vocabulary.get_values(attribute))
+            predicted_classes = [
+                format_predicted_class(int(c), irap_codes, class_names)
+                for c in get_predicted_columns(self.model_a.aligned, attribute)[listed]]
+        self.segment_list_html.set_content(make_segment_list_html(
+            listed.tolist(), self.evaluation_set.segment_ids, self._get_selected_segment(),
+            predicted_classes))
 
     def _update_detail(self) -> None:
         selected = self._get_selected_segment()
@@ -560,15 +721,47 @@ class _AnalysisPage:
             self.facts_html.set_content(
                 '<div class="muted p-2">Select a segment on the map or in the list.</div>')
             return
-        aligned_seq = [m.aligned for _, m in self._list_role_models()]
-        detail = get_segment_detail(self.context.metadata, aligned_seq, selected,
-                                    self.view.attribute_name)
+        detail = get_segment_detail(
+            self.context.metadata, [(f"Model {role}", m.aligned)
+                                    for role, m in self._list_role_models()],
+            selected, self.view.attribute_name)
         dataset = self.context.name
         self.images_html.set_content(make_context_images_html(
             detail, lambda s: get_segment_image_path(dataset, s)))
         self.facts_html.set_content(make_segment_facts_html(detail))
 
     # Event handlers ###############################################################################
+
+    def _on_panel_changed(self, panel: str) -> None:
+        if panel not in ANALYSIS_PANELS:  # E.g. from a crafted event.
+            return
+        self.view = dc.replace(self.view, panel=panel)
+        self._update_panel()
+        self._update_class_analysis()
+        self._update_url()
+
+    def _on_class_sort_changed(self, class_sort: str) -> None:
+        self.view = dc.replace(self.view, class_sort=class_sort)
+        self._update_class_analysis()
+        self._update_url()
+
+    def _on_class_clicked(self, index: int) -> None:
+        """Shows the attribute of a class of the Class analysis panel, and selects its missed
+        segments.
+
+        Args:
+            index: The index of the class in the classes of model A (`_LoadedModel.class_scores`).
+        """
+        class_scores = self.model_a.class_scores
+        if not 0 <= index < len(class_scores):  # E.g. from a crafted event.
+            return
+        scores = class_scores[index]
+        if scores.attribute not in self._list_attribute_options():
+            return
+        self.view = dc.replace(self.view, attribute_name=scores.attribute,
+                               cell=(scores.class_index, None))
+        self.show_attribute_picker.refresh()
+        self._update_outcomes()
 
     def _on_cell_clicked(self, text: str) -> None:
         cell = parse_cell(text)
@@ -594,7 +787,8 @@ class _AnalysisPage:
         if attributes and self.view.attribute_name not in attributes:
             self.view = dc.replace(self.view, attribute_name=attributes[0], cell=None)
             self._update_outcomes()
-        else:  # Only the averages over the subset change, which the selects show.
+        else:  # Only the averages over the subset, which the selects show, and the classes change.
+            self._update_class_analysis()
             self._update_url()
 
     def _find_model(self, model_id_text: str) -> ScoredModel:

@@ -1,6 +1,6 @@
 """The analysis of the predictions of models on an evaluation set, as on the Analysis page: the
-outcome of each segment for an attribute, the confusion matrix, the segments of a matrix cell,
-and the details of a segment.
+outcome of each segment for an attribute, the confusion matrix, the segments of a matrix cell or
+the missed segments of a class, and the details of a segment.
 
 The predictions of a submission are analysed as `irap_evaluation.evaluate_predictions` scores them,
 with the scoring settings (`align_predictions`), so that the counts agree with its scores.
@@ -128,7 +128,7 @@ def _get_num_classes(evaluation_set: ie.EvaluationSet, attribute: str) -> int:
     return len(evaluation_set.vocabulary.get_irap_codes(attribute))
 
 
-def _get_predicted_columns(aligned: AlignedPredictions, attribute: str) -> np.ndarray:
+def get_predicted_columns(aligned: AlignedPredictions, attribute: str) -> np.ndarray:
     """Returns (N,) the confusion-matrix column of each segment: the predicted class index, or K
     for an invalid prediction."""
     num_classes = _get_num_classes(aligned.evaluation_set, attribute)
@@ -164,7 +164,7 @@ def compute_attribute_outcomes(aligned_a: AlignedPredictions, attribute: str,
              COMPARISON_ONLY_B_CORRECT], COMPARISON_NEITHER_CORRECT)
     num_columns = _get_num_classes(evaluation_set, attribute) + 1
     cells = (labels[is_labeled] * num_columns
-             + _get_predicted_columns(aligned_a, attribute)[is_labeled])
+             + get_predicted_columns(aligned_a, attribute)[is_labeled])
     confusion_matrix = np.bincount(cells, minlength=(num_columns - 1) * num_columns).reshape(
         num_columns - 1, num_columns)
     return AttributeOutcomes(outcome_names=outcome_names,
@@ -173,23 +173,31 @@ def compute_attribute_outcomes(aligned_a: AlignedPredictions, attribute: str,
 
 
 def select_cell_segments(aligned: AlignedPredictions, attribute: str, label_index: int,
-                         predicted_index: int) -> np.ndarray:
+                         predicted_index: int | None) -> np.ndarray:
     """Selects the segments of the set in a cell of the confusion matrix
-    (`AttributeOutcomes.confusion_matrix`), whose `predicted_index` K is the invalid column.
+    (`AttributeOutcomes.confusion_matrix`), whose `predicted_index` K is the invalid column, or,
+    for `predicted_index` None, the missed segments of a class: those in its row but not in its
+    correct predictions.
 
-    For probabilistic predictions, the most confident ones come first, so that a cell of
-    errors lists the confident errors first. Otherwise, and for invalid ones, the segments are in
-    the order of the set.
+    For probabilistic predictions, the ones with the most confident valid predictions come
+    first, so that errors are listed from the confident ones. Otherwise, and for invalid ones,
+    which come last, the segments are in the order of the set.
 
     Returns:
         (M,) int64 indices into the segments of the set.
     """
     labels = aligned.evaluation_set.class_indices[attribute]
-    indices = np.flatnonzero((labels == label_index)
-                             & (_get_predicted_columns(aligned, attribute) == predicted_index))
-    if (aligned.predictions.output_kind == "probs"
-            and predicted_index < _get_num_classes(aligned.evaluation_set, attribute)):
-        confidences = aligned.predictions.probs[attribute][indices, predicted_index]
+    columns = get_predicted_columns(aligned, attribute)
+    is_in_cell = (columns != label_index if predicted_index is None
+                  else columns == predicted_index)
+    indices = np.flatnonzero((labels == label_index) & is_in_cell)
+    if aligned.predictions.output_kind == "probs":
+        num_classes = _get_num_classes(aligned.evaluation_set, attribute)
+        cell_columns = columns[indices]
+        is_valid = cell_columns < num_classes
+        confidences = np.full(len(indices), -np.inf)
+        confidences[is_valid] = aligned.predictions.probs[attribute][indices[is_valid],
+                                                                     cell_columns[is_valid]]
         indices = indices[np.argsort(-confidences, kind="stable")]
     return indices
 
@@ -248,7 +256,7 @@ def get_context_segment_ids(metadata: IRAPMetadata, segment_id: str,
 class ModelPrediction:
     """
     Attributes:
-        label: The shown label of the model (`archive.Model.shown_label`).
+        label: The name of the model on the page, e.g. 'Model A'.
         probs: (K,) float32 distribution in the class order of the evaluation set, None if the
             prediction is invalid.
     """
@@ -286,18 +294,21 @@ class SegmentDetail:
     context_segment_ids: tuple[tuple[int, str | None], ...]
 
 
-def get_segment_detail(metadata: IRAPMetadata, aligned_seq: T.Sequence[AlignedPredictions],
+def get_segment_detail(metadata: IRAPMetadata,
+                       labeled_aligned_seq: T.Sequence[tuple[str, AlignedPredictions]],
                        segment_index: int, attribute: str) -> SegmentDetail:
     """
     Args:
-        aligned_seq: The predictions of models on the same evaluation set, at least one.
+        labeled_aligned_seq: (`ModelPrediction.label`, predictions) of models on the same
+            evaluation set, at least one.
         segment_index: Into the segments of the set.
     """
-    evaluation_set = aligned_seq[0].evaluation_set
+    _, first_aligned = labeled_aligned_seq[0]
+    evaluation_set = first_aligned.evaluation_set
     segment_id = evaluation_set.segment_ids[segment_index]
     road_id, position = metadata.sequence_index.get(segment_id, (None, None))
     label_index = int(evaluation_set.class_indices[attribute][segment_index])
-    offsets = sorted(aligned_seq[0].submission.context_offsets or (0,))
+    offsets = sorted(first_aligned.submission.context_offsets or (0,))
     return SegmentDetail(
         segment_id=segment_id, road_id=road_id, position=position,
         coordinates=metadata.segment_coordinates.get(segment_id),
@@ -305,9 +316,9 @@ def get_segment_detail(metadata: IRAPMetadata, aligned_seq: T.Sequence[AlignedPr
         irap_codes=evaluation_set.vocabulary.get_irap_codes(attribute),
         label_index=None if label_index == IGNORE_LABEL_INDEX else label_index,
         model_predictions=tuple(
-            ModelPrediction(aligned.submission.shown_label,
+            ModelPrediction(label,
                             aligned.predictions.probs[attribute][segment_index]
                             if aligned.predictions.is_valid[attribute][segment_index] else None)
-            for aligned in aligned_seq),
+            for label, aligned in labeled_aligned_seq),
         context_segment_ids=tuple(zip(offsets, get_context_segment_ids(metadata, segment_id,
                                                                        offsets))))

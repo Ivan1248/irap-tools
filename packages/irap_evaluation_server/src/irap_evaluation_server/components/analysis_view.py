@@ -13,6 +13,16 @@ from .routes import ANALYSIS_PATH, ATTRIBUTE_PARAMETER, make_query_path
 from .view_queries import parse_dataset, parse_evaluation_set, select_default_split
 
 
+#: The panels of the Analysis page, of which one is shown: its key in the URL -> its title.
+ANALYSIS_PANELS = {"matrix": "Confusion matrix", "classes": "Class analysis",
+                   "curve": "Review curve"}
+DEFAULT_ANALYSIS_PANEL = "matrix"
+#: The row sort (`row_sorting`) of the classes of the Class analysis panel
+#: (`analysis_html.make_class_analysis_html`) by default: the classes that the model tells
+#: least well from the other classes of their attribute first, by their one-vs-rest AUROC.
+DEFAULT_CLASS_SORT = "auroc"
+
+
 @dc.dataclass(frozen=True)
 class AnalysisView:
     """What the Analysis page shows, as in its URL.
@@ -24,8 +34,11 @@ class AnalysisView:
         attribute_name: The analysed attribute, or '' for the default, which `resolve_view`
             chooses.
         cell: (label index, predicted index) of the selected cell of the confusion matrix, with
-            the predicted index K for invalid predictions, or None.
+            the predicted index K for invalid predictions, or None. The predicted index None
+            selects the missed segments of the class: its row without the correct predictions.
         segment_id: The selected segment, or ''.
+        panel: The shown panel, a key of `ANALYSIS_PANELS`.
+        class_sort: The row sort of the classes of the Class analysis panel.
     """
 
     dataset: str
@@ -34,8 +47,10 @@ class AnalysisView:
     model_id: int | None = None
     compare_id: int | None = None
     attribute_name: str = ""
-    cell: tuple[int, int] | None = None
+    cell: tuple[int, int | None] | None = None
     segment_id: str = ""
+    panel: str = DEFAULT_ANALYSIS_PANEL
+    class_sort: str = DEFAULT_CLASS_SORT
 
     def to_path(self, attributes: T.Sequence[str] = ()) -> str:
         """Makes the URL path of the view, without its default values.
@@ -49,8 +64,11 @@ class AnalysisView:
             "model": "" if self.model_id is None else str(self.model_id),
             "compare": "" if self.compare_id is None else str(self.compare_id),
             "attr": self.attribute_name,
-            "cell": "" if self.cell is None else f"{self.cell[0]},{self.cell[1]}",
-            "segment": self.segment_id, ATTRIBUTE_PARAMETER: attributes})
+            "cell": "" if self.cell is None else format_cell(self.cell),
+            "segment": self.segment_id,
+            "panel": "" if self.panel == DEFAULT_ANALYSIS_PANEL else self.panel,
+            "class_sort": "" if self.class_sort == DEFAULT_CLASS_SORT else self.class_sort,
+            ATTRIBUTE_PARAMETER: attributes})
 
     @classmethod
     def from_query(cls, query: T.Mapping[str, str],
@@ -59,9 +77,9 @@ class AnalysisView:
         (`view_queries.select_default_split` of the analysis splits).
 
         Raises:
-            ValueError: For an unknown dataset or evaluation set, a dataset without analysis
-                splits, a split that is not an analysis split, or a malformed model number or
-                cell.
+            ValueError: For an unknown dataset, evaluation set or panel, a dataset without
+                analysis splits, a split that is not an analysis split, or a malformed model
+                number or cell.
         """
         dataset = parse_dataset(query, dataset_contexts,
                                 default=next(iter(list_analysis_datasets(dataset_contexts)), None))
@@ -73,11 +91,15 @@ class AnalysisView:
         if split not in analysis_splits:
             raise ValueError(f"{split!r} is not an analysis split of {dataset!r}. Its analysis"
                              f" splits: {', '.join(analysis_splits)}.")
+        panel = query.get("panel") or DEFAULT_ANALYSIS_PANEL
+        if panel not in ANALYSIS_PANELS:
+            raise ValueError(f"Unknown panel {panel!r}. Panels: {', '.join(ANALYSIS_PANELS)}.")
         return cls(dataset=dataset, split=split, evaluation_set=parse_evaluation_set(query),
                    model_id=_parse_model_id(query.get("model", ""), "model"),
                    compare_id=_parse_model_id(query.get("compare", ""), "compared model"),
                    attribute_name=query.get("attr", ""), cell=parse_cell(query.get("cell", "")),
-                   segment_id=query.get("segment", ""))
+                   segment_id=query.get("segment", ""), panel=panel,
+                   class_sort=query.get("class_sort") or DEFAULT_CLASS_SORT)
 
 
 def _parse_model_id(text: str, name: str) -> int | None:
@@ -89,19 +111,33 @@ def _parse_model_id(text: str, name: str) -> int | None:
         raise ValueError(f"The {name} must be a model number, got {text!r}.") from None
 
 
-def parse_cell(text: str) -> tuple[int, int] | None:
-    """Parses the cell of `AnalysisView.to_path`, e.g. '2,3', and '' as None.
+#: The predicted index of `AnalysisView.cell` in the URL that selects the missed segments of a
+#: class.
+_MISSED_CELL_TEXT = "missed"
+
+
+def format_cell(cell: tuple[int, int | None]) -> str:
+    """Formats `AnalysisView.cell` as in the URL, e.g. '2,3', or '2,missed' for the missed
+    segments of a class."""
+    label_index, predicted_index = cell
+    return f"{label_index},{_MISSED_CELL_TEXT if predicted_index is None else predicted_index}"
+
+
+def parse_cell(text: str) -> tuple[int, int | None] | None:
+    """Parses the cell of `format_cell`, and '' as None.
 
     Raises:
-        ValueError: If it is not two integers.
+        ValueError: If it is not two integers, or an integer and 'missed'.
     """
     if not text:
         return None
     try:
-        label_index, predicted_index = map(int, text.split(","))
+        label_text, predicted_text = text.split(",")
+        return (int(label_text),
+                None if predicted_text == _MISSED_CELL_TEXT else int(predicted_text))
     except ValueError:
-        raise ValueError(f"A matrix cell is two indices, e.g. '2,3', got {text!r}.") from None
-    return label_index, predicted_index
+        raise ValueError(f"A matrix cell is two indices, e.g. '2,3', or an index and"
+                         f" '{_MISSED_CELL_TEXT}', got {text!r}.") from None
 
 
 def list_analysis_datasets(dataset_contexts: T.Mapping[str, DatasetContext]) -> list[str]:
@@ -184,7 +220,8 @@ def resolve_view(view: AnalysisView, models: T.Sequence[ScoredModel], subset: At
     elif view.cell is not None:
         num_classes = len(evaluation_set.vocabulary.get_irap_codes(attribute))
         label_index, predicted_index = view.cell
-        if not (0 <= label_index < num_classes and 0 <= predicted_index <= num_classes):
+        if not (0 <= label_index < num_classes
+                and (predicted_index is None or 0 <= predicted_index <= num_classes)):
             errors.append(f"The matrix cell {view.cell} is outside the matrix of {attribute!r}"
                           f" ({num_classes} classes).")
     if view.segment_id and view.segment_id not in evaluation_set.segment_ids:
