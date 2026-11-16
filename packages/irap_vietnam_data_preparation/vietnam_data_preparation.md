@@ -187,6 +187,25 @@ For each `.xls`/`.xlsx` in the unzipped `coding-tables/` directory:
 Rows are matched to images by `seg_id`, the integer in the `_seg<seg_id>.png`
 suffix of the images under `FRAMES/`.
 
+- First, leave out images that do not show their segment, as if their files were
+  missing, and drop the rows of their segments. The files in `FRAMES/` stay as
+  extracted. Leaving out images, rather than setting the labels of their
+  segments to −1, keeps the wrong images out of the context windows of other
+  segments. A gap that a left-out segment leaves inside a section does not split
+  its road sequence if the labeled segments around it are still continuous (as
+  for a missing image), so the road sequence then has a 20 m step there. The
+  images are those that `repeated_images.find_images_to_exclude` finds by equal
+  files, printed as warnings and listed in the build report. They are found
+  automatically, so that the rule, not a list, is the source of truth, and it
+  applies to new images too. An image folder with a frozen frame at its start or
+  end (at least `MIN_NUM_FROZEN_IMAGES` = 3 equal images) is left out whole: the
+  GNSS coordinates used to sample its frames are time-shifted, so all its images
+  are offset from the labels, whose coordinates are better aligned. Of the other
+  equal images, the one with the lowest seg_id is kept: in a short run at the
+  end of a folder the others repeat it, and elsewhere they were frames from the
+  wrong time in the checked cases (2026-11-11). Near-copies of frames (e.g.
+  1817093 of 1817061, and 1817124/1817131), which are not equal files, stay in:
+  they are few, and finding them needs every image decoded.
 - If no image matches, drop the row and log it (count + first N examples).
   Several images with the same `seg_id` are an error.
 - If the video directory of the image differs from the row's `Section`, keep

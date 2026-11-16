@@ -20,6 +20,7 @@ ROWS_PARQUET = "rows.parquet"
 PARSE_REPORT = "parse_report.json"
 CROSS_ANNOTATOR_REPORT = "cross_annotator_report.json"
 BUILD_REPORT = "build_report.json"
+REPEATED_IMAGES_REPORT = "repeated_images_report.json"
 UNLABELED_SEGMENT_IDS_FILENAME = "unlabeled_segment_ids.json"
 UNLABELED_SEQUENCE_ID_TO_DATA_FILENAME = "unlabeled_sequence_id_to_data.json"
 UNLABELED_UNLOCATED_SEGMENT_IDS_FILENAME = "unlabeled_unlocated_segment_ids.json"
@@ -83,6 +84,10 @@ def cross_annotator_report_path(data_dir: Path) -> Path:
 
 def build_report_path(data_dir: Path) -> Path:
     return work_dir(data_dir) / BUILD_REPORT
+
+
+def repeated_images_report_path(data_dir: Path) -> Path:
+    return work_dir(data_dir) / REPEATED_IMAGES_REPORT
 
 
 def unlabeled_segment_ids_path(data_dir: Path) -> Path:

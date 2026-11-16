@@ -27,6 +27,11 @@ Writes (into <data_dir>/ directly):
 Writes (into <data_dir>/_work/):
     build_report.json                     (counts, warnings)
 
+Images that do not show their segment are left out as if their files were missing,
+and the rows of their segments are dropped (``exclude_images``). They are the images
+that ``repeated_images.find_images_to_exclude`` finds by their equal files. Each is
+printed as a warning and listed in the build report.
+
 Rows are matched to images **by seg_id**: every ``*.png`` under ``FRAMES/`` is
 indexed by the integer in its ``_seg<N>.png`` suffix, and each parquet row is
 joined to its seg_id. Exactly one image must match each seg_id; if multiple
@@ -56,7 +61,7 @@ import bisect
 import json
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 import typing as T
 
@@ -65,6 +70,7 @@ import pandas as pd
 
 import layout
 from parse_coding_tables import ordered_attribute_names
+from repeated_images import find_equal_file_groups, find_images_to_exclude, get_folder_to_seg_ids
 
 
 # Each unit of seg_id step corresponds to 10 m along a section. A 20 m labeled
@@ -97,6 +103,62 @@ def index_images_by_seg_id(images_dir: Path) -> dict[str, list[Path]]:
         seg_id = str(int(m.group(1)))  # normalize away leading zeros
         index[seg_id].append(path.relative_to(data_root))
     return index
+
+
+def choose_image_of_seg_id(image_paths: T.Iterable[Path]) -> Path:
+    """Chooses the image of a seg_id that has several images (an unlabeled segment's)."""
+    return min(image_paths)
+
+
+def exclude_images(
+    seg_id_to_image_paths: T.Mapping[str, list[Path]],
+    excluded_folders: T.Collection[str],
+    excluded_seg_ids: T.Collection[str],
+) -> dict[str, list[Path]]:
+    """Leaves out the images of the excluded folders and seg_ids.
+
+    The build then treats them as if their files were missing.
+    """
+    kept = {seg_id: [path for path in paths if path.parent.name not in excluded_folders]
+            for seg_id, paths in seg_id_to_image_paths.items()
+            if seg_id not in excluded_seg_ids}
+    return {seg_id: paths for seg_id, paths in kept.items() if paths}
+
+
+def exclude_repeated_images(
+    seg_id_to_image_paths: T.Mapping[str, list[Path]],
+    root: Path,
+) -> tuple[dict[str, list[Path]], dict[str, T.Any]]:
+    """Leaves out images because of equal images (`repeated_images.find_images_to_exclude`),
+    as `exclude_images`, and warns of them.
+
+    Args:
+        seg_id_to_image_paths: The images of each seg_id, relative to ``root``.
+
+    Returns:
+        The kept images of each seg_id, and a report of the left-out ones.
+    """
+    seg_id_to_image_path = {sid: root / choose_image_of_seg_id(paths)
+                            for sid, paths in seg_id_to_image_paths.items()}
+    excluded_folders, excluded_seg_ids = find_images_to_exclude(
+        get_folder_to_seg_ids(seg_id_to_image_path), find_equal_file_groups(seg_id_to_image_path))
+    kept = exclude_images(seg_id_to_image_paths, excluded_folders, excluded_seg_ids)
+    folder_to_num_images = Counter(
+        path.parent.name for paths in seg_id_to_image_paths.values() for path in paths)
+    excluded_folder_to_num_images = {f: folder_to_num_images[f] for f in excluded_folders}
+    num_excluded_images = folder_to_num_images.total() - sum(map(len, kept.values()))
+    if num_excluded_images:
+        print(f"WARNING: left out {num_excluded_images} images because of equal images "
+              f"(see repeated_images.find_images_to_exclude):", file=sys.stderr)
+        for folder, reason in excluded_folders.items():
+            print(f"  folder {folder} ({excluded_folder_to_num_images[folder]} images): "
+                  f"{reason}", file=sys.stderr)
+        for sid, reason in excluded_seg_ids.items():
+            print(f"  {sid}: {reason}", file=sys.stderr)
+    return kept, {"num_images": num_excluded_images,
+                  "folder_to_reason": excluded_folders,
+                  "folder_to_num_images": excluded_folder_to_num_images,
+                  "seg_id_to_reason": excluded_seg_ids}
 
 
 def match_rows_to_images(
@@ -435,7 +497,14 @@ def main(argv: list[str] | None = None) -> int:
 
     num_rows_in = len(df)
     print(f"Matching rows to images under {images} by seg_id...")
-    seg_id_to_image_paths = index_images_by_seg_id(images)
+    seg_id_to_all_image_paths = index_images_by_seg_id(images)
+    seg_id_to_image_paths, excluded_images_report = exclude_repeated_images(
+        seg_id_to_all_image_paths, images.parent)
+    is_excluded_row = df["seg_id"].astype(str).isin(
+        seg_id_to_all_image_paths.keys() - seg_id_to_image_paths.keys())
+    num_excluded_rows = int(is_excluded_row.sum())
+    df = df[~is_excluded_row]
+    print(f"  Dropped the {num_excluded_rows} rows of the segments whose images were left out.")
     num_images_total = len(seg_id_to_image_paths)
     df, seg_to_path, match_stats = match_rows_to_images(df, seg_id_to_image_paths)
     print(f"{len(df)}/{num_rows_in} rows matched to an image "
@@ -446,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     # Images with no matching parquet row (no labels).
     unlabeled_seg_ids = sorted(set(seg_id_to_image_paths.keys()) - set(seg_to_path.keys()), key=int)
     unlabeled_seg_to_path = {
-        sid: min(seg_id_to_image_paths[sid]).as_posix()
+        sid: choose_image_of_seg_id(seg_id_to_image_paths[sid]).as_posix()
         for sid in unlabeled_seg_ids
     }
     all_seg_to_path = {**seg_to_path, **unlabeled_seg_to_path}
@@ -619,6 +688,7 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "num_rows_in": num_rows_in,
         "num_rows_kept": len(df),
+        "excluded_images": {**excluded_images_report, "num_rows": num_excluded_rows},
         **match_stats,
         "num_unlabeled_images": len(unlabeled_seg_ids),
         "unlabeled_examples": unlabeled_seg_ids[:20],

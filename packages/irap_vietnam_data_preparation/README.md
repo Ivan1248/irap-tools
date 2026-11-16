@@ -20,6 +20,7 @@ Scripts that turn the Vietnam panoramic images and Excel coding tables into a da
     rows.parquet, parse_report.json      # step 3
     cross_annotator_report.json          # step 3, optional
     build_report.json                    # step 4
+    repeated_images_report.json          # step 4, optional
     FRAMES_duplicates/                   # step 2, if archives share a path
   FRAMES/<video_dir>/<video_dir>_seg<N>.png   # step 2
   segment_id_to_data_paths_rel.json      # step 4
@@ -84,6 +85,7 @@ Optional: `python cross_annotator_eval.py $DATA_DIR` measures the agreement betw
 python build_metadata.py $DATA_DIR
 ```
 
+- **Excluded images:** leaves out images that do not show their segment, as if their files were missing, and drops the rows of their segments. It finds them by equal files (see `repeated_images.py`). An image folder with at least 3 equal images at its start or end (`MIN_NUM_FROZEN_IMAGES`) has a frozen frame there: the GNSS coordinates used to sample its frames are time-shifted, so all its images are offset from their labels, and the whole folder is left out. Of the other equal images, only the one with the lowest `seg_id` is kept. Each image left out is printed as a warning and listed in `_work/build_report.json` (`excluded_images`). Near-copies of frames, which are not equal files, stay in. After the excluded images change, open the split editor and save, so that `splits.json` drops their seg_ids.
 - **Matching:** matches each row to an image by `seg_id` and drops rows without an image. Images without a corresponding coding table row become unlabeled segments.
 - **Road sequences:** builds one road sequence per section. Adjacent labeled segments must be continuous: each `seg_id` step is 10 m of distance (± 2.5 m). A section with a gap is split into `<section>__part<N>` road sequences, so that context windows never span a gap.
 - **Unlabeled images:** an unlabeled image is placed into a road sequence if it lies between two adjacent labeled segments of the same recording. A recording is an image folder, or a run of consecutive `seg_id`s in a folder that holds several recordings (such as `FRAMES/nan/`). Each run of consecutive `seg_id`s of the other unlabeled images of a recording becomes an unlabeled road sequence `unlabeled:<recording>:<first seg_id>`, so every image has a road sequence for its context window. The unlabeled images of a recording without labeled segments have no map position and are marked as unlocated.
@@ -94,6 +96,8 @@ To check what a code change does to the metadata, copy the generated files to an
 ```bash
 python compare_metadata.py <old_dir> $DATA_DIR
 ```
+
+Optional: `python find_repeated_images.py $DATA_DIR` finds the images with equal file content anywhere in the dataset. It lists the road sequences in which consecutive segments have equal images, with the number of repeated images and the runs of equal images, each with its position (the start, middle, end or whole of the road sequence), and the groups of equal images that are not consecutive segments of a road sequence. For each group and image folder, it also lists the span from the first to the last image of the group in seg_id order, with the number of other images in it and its position in the folder. A road sequence can end inside a run of equal images of a folder, and one different image splits a run, so the spans show, e.g., that a frozen frame fills the end of a folder. It reads only the files that have the same size as another file. It writes `_work/repeated_images_report.json`. It checks only the images of the metadata, which `build_metadata.py` builds without the equal images it leaves out, so it reports the equal images that remain.
 
 ### 5. Assign the splits
 
