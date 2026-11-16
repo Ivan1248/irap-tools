@@ -45,14 +45,14 @@ _logger = logging.getLogger(__name__)
 #: 'error': an unexpected error, e.g. a missing file. It is scored again at the next start.
 ScoringStatus = T.Literal["scored", "failed", "error"]
 
-#: The attribute averages of the iRAP protocol, amF1 first. Hard predictions lack the
-#: probabilistic ones.
-IRAP_AVERAGE_METRIC_NAMES = tuple(n for n in ie.get_irap_metric_names(output_kind="probs")
-                                  if ie.parse_metric_name(n).is_averaged)
-#: The metrics whose resampled values are stored (`resample_result`): `IRAP_AVERAGE_METRIC_NAMES`
-#: and their per-attribute values, from which the averages over a subset of the attributes are
+#: The attribute averages that are scored (`irap_evaluation.get_default_metric_names`), amF1
+#: first. Hard predictions lack those of predicted distributions.
+AVERAGE_METRIC_NAMES = tuple(n for n in ie.get_default_metric_names("probs")
+                             if ie.parse_metric_name(n).is_averaged)
+#: The metrics whose resampled values are stored (`resample_result`): `AVERAGE_METRIC_NAMES` and
+#: their per-attribute values, from which the averages over a subset of the attributes are
 #: computed.
-RESAMPLED_METRIC_NAMES = ie.add_per_attribute_metric_names(IRAP_AVERAGE_METRIC_NAMES)
+RESAMPLED_METRIC_NAMES = ie.add_per_attribute_metric_names(AVERAGE_METRIC_NAMES)
 
 #: The file of the score cache in the data directory, apart from the archive, so that a migration
 #: of the archive does not copy it to its backup.

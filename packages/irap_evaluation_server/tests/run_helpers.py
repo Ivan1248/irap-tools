@@ -8,7 +8,7 @@ import irap_evaluation as ie
 import numpy as np
 import pytest
 from irap_evaluation.reports.evaluation_report import to_labeled_metric_values
-from synthetic_vietnam import SPLIT, make_predictions
+from synthetic_vietnam import SPLIT, make_predictions, to_hard_predictions
 
 from irap_evaluation_server.archive import ModelArchive
 from irap_evaluation_server.method_scores import select_scored_models
@@ -94,11 +94,7 @@ def make_model(dataset_contexts, name="m", model_seed=0, random_seed=0,
             attribute_to_irap_codes={a: c for a, c in predictions.attribute_to_irap_codes.items()
                                      if a != drop_attribute},
             probs={a: p for a, p in predictions.probs.items() if a != drop_attribute})
-    if is_hard:
-        predictions = ie.Predictions.from_class_indices(
-            predictions.header, predictions.attribute_to_irap_codes, predictions.segment_ids,
-            ie.to_class_indices(predictions))
-    return predictions
+    return to_hard_predictions(predictions) if is_hard else predictions
 
 
 def write_upload(archive: ModelArchive, predictions: ie.Predictions) -> Path:

@@ -132,8 +132,32 @@ def _make_attributes_markdown() -> str:
 """
 
 
-def _make_metrics_markdown(per_attribute_names: T.Iterable[str]) -> str:
+def _make_manual_review_proportion_markdown() -> str:
+    name, target = ie.MANUAL_REVIEW_PROPORTION_METRIC, ie.MANUAL_REVIEW_TARGET_MF1
+    return f"""
+The **manual review proportion** (`{name}`) estimates how much of an attribute a reviewer still
+has to code. It simulates a review that goes through the segments from the least to the most
+confident prediction and replaces each reviewed prediction by the label. `{name}` is the proportion
+of the labeled segments that have to be reviewed for mF1 to reach {target}, and 0 if mF1 reaches it
+without a review. The confidence of a prediction is the predicted probability of its predicted
+class, and that of an invalid prediction is the lowest possible, $1/C$. The target is mF1, not
+accuracy, since accuracy can be high while the rare classes are still wrong.
+
+The simulation reviews the segments in {ie.NUM_CONFIDENCE_BINS} groups of about equal
+size, so `{name}` differs by at most the proportion of the segments in one group from that of a
+review in the exact order. It assumes that the reviewer codes as the labels do. The Analysis page
+shows mF1 and the accuracy of an attribute against the reviewed proportion.
+
+The idea is that of selective classification, where predictions with a low confidence are deferred
+to a person, and of its risk–coverage curves. Unlike the risk there, which is computed on the kept
+predictions only, mF1 here is computed over all segments, with the reviewed ones corrected.
+"""
+
+
+def _make_metrics_markdown(per_attribute_names: T.Collection[str]) -> str:
     descriptions = "\n".join(f"- {ie.describe_metric(n)}" for n in per_attribute_names)
+    manual_review_proportion = (_make_manual_review_proportion_markdown()
+                    if ie.MANUAL_REVIEW_PROPORTION_METRIC in per_attribute_names else "")
     return rf"""
 A metric of an attribute is computed from all segments of the evaluation set that have a label of
 the attribute, pooled, e.g. from the attribute's confusion matrix over these segments.
@@ -149,23 +173,27 @@ segments in the evaluation set.
 The per-attribute view of the Scores page shows counts of the labels of each attribute in the
 evaluation set, which are the same for all methods:
 
-- **Classes**: the number of classes that occur as a label.
-- **Examples**: the number of segments with a label.
-- **Smallest class**: the number of labeled segments of the rarest of these classes.
+- **Class count**: the number of classes that occur as a label.
+- **Example count**: the number of segments with a label.
+- **Minority-class example count**: the number of labeled segments outside the majority class, the
+  class with the most labeled segments.
+- **Smallest-class example count**: the number of labeled segments of the rarest of these classes.
 
 For example, an mF1 of 1 can mean that only one class occurs, and the mF1 over 15 classes of which
-the smallest has 2 labeled segments is noisy. The counts are not shown if the methods are scored on
-model-compatible sets of different context offsets. On splits whose labels are protected, only
-admins see Classes and Smallest class, since they reveal the class distribution.
+the smallest has 2 labeled segments is noisy. If the minority-class example count is small compared
+with the example count, a method that predicts only the majority class has a high accuracy. The
+counts are not shown if the methods are scored on model-compatible sets of different context
+offsets. On splits whose labels are protected, only admins see the class count, the minority-class
+example count and the smallest-class example count, since they reveal the class distribution.
 
 An **attribute average**, with the prefix `a`, is the mean of a metric over the attributes, each
 with the same weight, e.g. $\mathrm{{amF1}} = \frac{{1}}{{|A|}} \sum_{{a \in A}} \mathrm{{mF1}}_a$,
 where $\mathrm{{mF1}}_a$ is the mF1 of attribute $a$ and $A$ is the set of the selected attributes
-for which the metric is defined. The main metric is `{DEFAULT_SORT_METRIC}`. NLL, Brier and mNLL
-need probabilistic predictions.
+for which the metric is defined. The main metric is `{DEFAULT_SORT_METRIC}`. NLL, Brier, mNLL and
+the manual review proportion need probabilistic predictions.
 
 {descriptions}
-"""
+{manual_review_proportion}"""
 
 
 def _make_intervals_markdown(settings: ScoringSettings) -> str:

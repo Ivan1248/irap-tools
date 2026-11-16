@@ -33,10 +33,11 @@ def test_count_attribute_labels():
         class_indices=class_indices, segment_sequence_ids=("s",) * 7)
     assert count_attribute_labels(evaluation_set, ["b", "a", "c"]) == {
         "b": AttributeLabelCounts(num_labeled_segments=6, num_labeled_classes=1,
-                                  num_smallest_class_segments=6),
+                                  num_minority_class_segments=0, num_smallest_class_segments=6),
         "a": AttributeLabelCounts(num_labeled_segments=6, num_labeled_classes=2,
-                                  num_smallest_class_segments=2),
+                                  num_minority_class_segments=2, num_smallest_class_segments=2),
         "c": AttributeLabelCounts(num_labeled_segments=0, num_labeled_classes=0,
+                                  num_minority_class_segments=0,
                                   num_smallest_class_segments=None)}
 
 
@@ -58,7 +59,9 @@ def test_label_counts_equal_those_of_the_score_reports(archive, dataset_contexts
             supports = [s for s in report["classes"][attribute]["support"] if s > 0]
             assert counts == AttributeLabelCounts(
                 num_labeled_segments=model.scores.metrics.per_attribute["n"][attribute],
-                num_labeled_classes=len(supports), num_smallest_class_segments=min(supports))
+                num_labeled_classes=len(supports),
+                num_minority_class_segments=sum(supports) - max(supports),
+                num_smallest_class_segments=min(supports))
 
 
 def _make_per_attribute_table_html(worker, dataset_contexts, evaluation_set, shows_class_counts):
@@ -86,6 +89,7 @@ def test_scores_page_shows_the_label_counts(archive, dataset_contexts, worker):
     counts = count_attribute_labels(reference_set, [attribute])[attribute]
     count_cells = (f'<td class="number">{counts.num_labeled_classes}</td>'
                    f'<td class="number">{counts.num_labeled_segments}</td>'
+                   f'<td class="number">{counts.num_minority_class_segments}</td>'
                    f'<td class="number">{counts.num_smallest_class_segments}</td>')
 
     table_html = _make_per_attribute_table_html(worker, dataset_contexts, ie.REFERENCE_SET_NAME,
@@ -96,10 +100,10 @@ def test_scores_page_shows_the_label_counts(archive, dataset_contexts, worker):
     table_html = _make_per_attribute_table_html(worker, dataset_contexts, ie.REFERENCE_SET_NAME,
                                                 shows_class_counts=False)
     hidden_cells = (f'<td class="number">–</td><td class="number">{counts.num_labeled_segments}'
-                    f'</td><td class="number">–</td>')
+                    f'</td><td class="number">–</td><td class="number">–</td>')
     assert hidden_cells in _get_attribute_row_html(table_html, attribute)
 
     # The model-compatible sets of the methods differ.
     table_html = _make_per_attribute_table_html(
         worker, dataset_contexts, ie.MODEL_COMPATIBLE_SET_NAME, shows_class_counts=True)
-    assert '<td class="number">–</td>' * 3 in _get_attribute_row_html(table_html, attribute)
+    assert '<td class="number">–</td>' * 4 in _get_attribute_row_html(table_html, attribute)

@@ -41,6 +41,7 @@ from ..components.split_scores_panel import ShownSplitScores, create_split_score
 from ..components.view_queries import parse_dataset
 from ..components.routes import (
     ATTRIBUTE_PARAMETER,
+    ATTRIBUTE_SORT_PARAMETER,
     METHOD_PATH,
     MODELS_PATH,
     get_method_path,
@@ -87,13 +88,14 @@ class _MethodSnapshot:
 def _make_set_score_tables_html(worker: ScoringWorker, method_name: str,
                                 set_to_models: T.Mapping[str, T.Sequence[ScoredModel]],
                                 subset: AttributeSubset, shown_metrics: ShownMetrics,
-                                scope: ScoresScope) -> dict[str, str]:
+                                scope: ScoresScope, attribute_sort: str) -> dict[str, str]:
     """Makes the score tables of a method (`make_method_scores_html`) over the attributes of
     `subset` on each evaluation set, with a row per model, by seed.
 
     Args:
         set_to_models: Evaluation set name -> the models of the method scored on it.
         shown_metrics: The metrics of the tables.
+        attribute_sort: See `make_method_scores_html`.
     """
     def get_resamples(scores: MethodScores) -> ie.MetricValues | None:
         # The metrics of the Model page also for the models, whose resampled values are then
@@ -108,7 +110,7 @@ def _make_set_score_tables_html(worker: ScoringWorker, method_name: str,
         set_to_tables_html[name] = make_method_scores_html(
             method_scores, get_resamples(method_scores), seed_scores,
             [get_resamples(s) for s in seed_scores], worker.settings.confidence, shown_metrics,
-            scope)
+            scope, attribute_sort)
     return set_to_tables_html
 
 
@@ -242,16 +244,17 @@ class _MethodPage:
     # Scores #######################################################################################
 
     def create_scores(self, split_query: str, attribute_query: T.Sequence[str],
-                      shown_metrics: ShownMetrics) -> None:
+                      attribute_sort_query: str, shown_metrics: ShownMetrics) -> None:
         create_split_scores_panel(
-            self.worker, "method", split_query, attribute_query, self.context.metadata.splits,
+            self.worker, "method", split_query, attribute_query, attribute_sort_query,
+            self.context.metadata.splits,
             lambda: group_submissions_by_split(self.snapshot.group.models,
                                                self.context.split_names),
-            lambda split, attributes: get_method_path(self.dataset, self.method_name, split,
-                                                      attributes),
-            lambda set_to_models, subset, split: _make_set_score_tables_html(
+            lambda split, attributes, attribute_sort: get_method_path(
+                self.dataset, self.method_name, split, attributes, attribute_sort),
+            lambda set_to_models, subset, split, attribute_sort: _make_set_score_tables_html(
                 self.worker, self.method_name, set_to_models, subset, shown_metrics,
-                ScoresScope(self.dataset, split, subset.to_query())),
+                ScoresScope(self.dataset, split, subset.to_query()), attribute_sort),
             self._show_split_scores)
 
     def _show_split_scores(self, shown: ShownSplitScores) -> None:
@@ -323,5 +326,5 @@ def register_method_page(archive: ModelArchive,
             page.create_details()
             page.create_models()
             page.create_scores(query.get("split", ""), query.getlist(ATTRIBUTE_PARAMETER),
-                               shown_metrics)
+                               query.get(ATTRIBUTE_SORT_PARAMETER, ""), shown_metrics)
             page.create_actions()

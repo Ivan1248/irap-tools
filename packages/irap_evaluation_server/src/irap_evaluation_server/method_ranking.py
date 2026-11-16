@@ -1,5 +1,6 @@
 """What the Scores page shows: the methods of a dataset split, ranked by a metric averaged over a
-subset of the attributes (see `scoring` for the scores), and the highlights of compared values."""
+subset of the attributes (see `scoring` for the scores), the order of table rows by their values,
+and the highlights of compared values."""
 
 import dataclasses as dc
 import math
@@ -14,13 +15,19 @@ from .method_scores import (
     compute_method_scores,
     group_scored_models_by_method,
 )
-from .scoring import IRAP_AVERAGE_METRIC_NAMES
+from .scoring import AVERAGE_METRIC_NAMES
+
+K = T.TypeVar("K", bound=T.Hashable)
 
 #: The columns of the method table, of which admins can hide some (`ShownMetrics`).
-RANKING_METRIC_NAMES = IRAP_AVERAGE_METRIC_NAMES
+RANKING_METRIC_NAMES = AVERAGE_METRIC_NAMES
 DEFAULT_SORT_METRIC = ie.get_attribute_average_name(ie.IRAP_MAIN_METRIC)
 #: The metrics that admins can hide: all but the main one, which is the default sort.
 HIDEABLE_METRIC_NAMES = tuple(n for n in RANKING_METRIC_NAMES if n != DEFAULT_SORT_METRIC)
+#: The metrics of the tables of each attribute's scores (`ShownMetrics.attribute_table_names`).
+#: The accuracy is next to the manual review proportion, which is read against the error rate.
+ATTRIBUTE_TABLE_METRIC_NAMES = (*ie.IRAP_ATTRIBUTE_METRIC_NAMES, "A",
+                                ie.MANUAL_REVIEW_PROPORTION_METRIC)
 
 
 @dc.dataclass(frozen=True)
@@ -52,9 +59,9 @@ class ShownMetrics:
 
     @property
     def attribute_table_names(self) -> tuple[str, ...]:
-        """The metrics of `irap_evaluation.IRAP_ATTRIBUTE_METRIC_NAMES` whose averages are shown,
-        e.g. for the tables of the metrics of each attribute."""
-        return tuple(n for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES if n in self.per_attribute_names)
+        """The metrics of `ATTRIBUTE_TABLE_METRIC_NAMES` whose averages are shown, e.g. for the
+        tables of the metrics of each attribute."""
+        return tuple(n for n in ATTRIBUTE_TABLE_METRIC_NAMES if n in self.per_attribute_names)
 
 
 #: The level of the one-sided test of whether a value is worse than the best
@@ -137,13 +144,18 @@ def collect_scored_attributes(models: T.Iterable[ScoredModel]) -> tuple[str, ...
     return tuple(dict.fromkeys(a for m in models for a in m.scores.attributes))
 
 
+def _get_value_sort_key(value: float | None, is_descending: bool) -> tuple[bool, float]:
+    """Returns a sort key that puts the missing values (None or NaN) last."""
+    if value is None or math.isnan(value):
+        return True, 0.0
+    return False, -value if is_descending else value
+
+
 def _get_sort_key(metrics: ie.MetricValues[float] | None, metric: str,
                   name: str) -> tuple[bool, float, str]:
     """Returns the sort key of `sort_method_scores` and `sort_scored_models`."""
-    value = math.nan if metrics is None else metrics.averages.get(metric, math.nan)
-    is_missing = math.isnan(value)
-    sign = 1 if ie.is_lower_better(metric) else -1
-    return is_missing, 0.0 if is_missing else sign * value, name
+    value = None if metrics is None else metrics.averages.get(metric)
+    return (*_get_value_sort_key(value, is_descending=not ie.is_lower_better(metric)), name)
 
 
 def sort_method_scores(rows: T.Iterable[MethodScores], metric: str) -> list[MethodScores]:
@@ -173,6 +185,15 @@ def sort_scored_models(models: T.Iterable[ScoredModel], metric: str,
     model label."""
     return sorted(models, key=lambda m: _get_sort_key(select_model_metrics(m, attributes),
                                                       metric, m.submission.shown_label))
+
+
+def sort_keys_by_value(keys: T.Iterable[K], key_to_value: T.Mapping[K, float | None],
+                       is_descending: bool) -> list[K]:
+    """Sorts keys, e.g. attributes, by their values, e.g. of a method in a per-attribute metric.
+
+    Keys without a value (None, NaN, or not in `key_to_value`) are last. Ties keep their order.
+    """
+    return sorted(keys, key=lambda k: _get_value_sort_key(key_to_value.get(k), is_descending))
 
 
 def rank_methods(models: T.Iterable[ScoredModel], attributes: T.Sequence[str],

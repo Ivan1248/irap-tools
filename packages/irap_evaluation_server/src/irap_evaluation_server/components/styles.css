@@ -100,6 +100,8 @@ td > .truncated-line { inline-size: 0; min-inline-size: 100%; }
 .data-table th.vertical-header { vertical-align: bottom; }
 .data-table th.vertical-header > div {
   display: inline-block; writing-mode: sideways-lr; text-align: start; }
+/* Below a vertical header: the order of the rows by its column (score_tables.py). */
+.data-table th.vertical-header > .sort-mark { display: block; }
 /* Long words, e.g. file names and hashes, are wrapped instead, where the whole text matters.
    Unlike with the `overflow-wrap` of `body`, the table column is narrowed for them. */
 .breaks-anywhere { overflow-wrap: anywhere; }

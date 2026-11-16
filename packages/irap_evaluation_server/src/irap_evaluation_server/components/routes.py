@@ -46,6 +46,10 @@ VENDOR_PATH = "/vendor"
 
 #: The query parameter of an attribute subset, repeated for each attribute.
 ATTRIBUTE_PARAMETER = "attribute"
+#: The query parameter of the order of the attribute rows of a table
+#: (`score_tables.make_per_attribute_table_html`, `make_model_scores_html`,
+#: `make_method_scores_html`).
+ATTRIBUTE_SORT_PARAMETER = "attribute_sort"
 
 
 def make_query_path(path: str, query: T.Mapping[str, str | T.Sequence[str]]) -> str:
@@ -81,19 +85,22 @@ def get_models_path(dataset: str = "", model_pattern: str = "") -> str:
     return make_query_path(MODELS_PATH, {"dataset": dataset, "models": model_pattern})
 
 
-def get_model_path(model_id: int, split: str = "", attributes: T.Sequence[str] = ()) -> str:
-    """Makes the path of the Model page, with the split of its scores and an attribute subset
-    (`AttributeSubset.to_query`)."""
+def get_model_path(model_id: int, split: str = "", attributes: T.Sequence[str] = (),
+                   attribute_sort: str = "") -> str:
+    """Makes the path of the Model page, with the split of its scores, an attribute subset
+    (`AttributeSubset.to_query`) and the order of the attribute rows."""
     return make_query_path(MODEL_PATH.format(model_id=model_id),
-                           {"split": split, ATTRIBUTE_PARAMETER: attributes})
+                           {"split": split, ATTRIBUTE_PARAMETER: attributes,
+                            ATTRIBUTE_SORT_PARAMETER: attribute_sort})
 
 
 def get_method_path(dataset: str, method_name: str, split: str = "",
-                    attributes: T.Sequence[str] = ()) -> str:
-    """Makes the path of the Method page, with the split of its scores and an attribute subset
-    (`AttributeSubset.to_query`)."""
+                    attributes: T.Sequence[str] = (), attribute_sort: str = "") -> str:
+    """Makes the path of the Method page, with the split of its scores, an attribute subset
+    (`AttributeSubset.to_query`) and the order of the attribute rows."""
     return make_query_path(METHOD_PATH, {"dataset": dataset, "method": method_name,
-                                         "split": split, ATTRIBUTE_PARAMETER: attributes})
+                                         "split": split, ATTRIBUTE_PARAMETER: attributes,
+                                         ATTRIBUTE_SORT_PARAMETER: attribute_sort})
 
 
 def get_methodology_path(section_id: str) -> str:

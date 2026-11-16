@@ -1,20 +1,25 @@
 import dataclasses as dc
 import math
+import re
 from datetime import datetime, timezone
 
 import irap_evaluation as ie
 import numpy as np
 import pytest
+from run_helpers import add_model, make_model, score_and_get_models
 
 from irap_evaluation_server.archive import Model, Submission
 from irap_evaluation_server.components.attribute_filter import AttributeSubset
 from irap_evaluation_server.components.score_tables import (
+    MODEL_SCORES_METRIC_NAMES,
     ScoresScope,
     make_method_scores_html,
     make_method_table_html,
+    make_model_scores_html,
     make_per_attribute_table_html,
 )
 from irap_evaluation_server.components.view_queries import select_matching_names
+from irap_evaluation_server.label_counts import AttributeLabelCounts
 from irap_evaluation_server.method_ranking import (
     DEFAULT_SORT_METRIC,
     RANKING_METRIC_NAMES,
@@ -25,6 +30,7 @@ from irap_evaluation_server.method_ranking import (
     rank_methods,
     select_model_metrics,
     select_shown_methods,
+    sort_keys_by_value,
     sort_method_scores,
     sort_scored_models,
 )
@@ -77,14 +83,16 @@ def make_method_scores(method_name, averages, error=None, training_splits=(), at
 
 
 def test_sort_method_scores():
-    rows = [make_method_scores("a", {"amF1": 0.5, "aNLL": 1.0}),
-            make_method_scores("b", {"amF1": 0.7, "aNLL": 2.0}),
-            make_method_scores("c", {"amF1": math.nan, "aNLL": math.inf}),
+    rows = [make_method_scores("a", {"amF1": 0.5, "aNLL": 1.0, "aMRP90": 0.4}),
+            make_method_scores("b", {"amF1": 0.7, "aNLL": 2.0, "aMRP90": 0.3}),
+            make_method_scores("c", {"amF1": math.nan, "aNLL": math.inf, "aMRP90": math.nan}),
             make_method_scores("d", {}, error="differ"),
-            make_method_scores("e", {"amF1": 0.6})]  # Hard predictions, without aNLL.
+            # Hard predictions, without the metrics of distributions.
+            make_method_scores("e", {"amF1": 0.6})]
     assert [r.method_name for r in sort_method_scores(rows, "amF1")] == ["b", "e", "a", "c", "d"]
     # Lower is better, infinite is worst.
     assert [r.method_name for r in sort_method_scores(rows, "aNLL")] == ["a", "b", "c", "d", "e"]
+    assert [r.method_name for r in sort_method_scores(rows, "aMRP90")] == ["b", "a", "c", "d", "e"]
 
 
 def test_ties_are_sorted_by_shown_method_name():
@@ -254,6 +262,71 @@ def test_method_tables_escape_names():
     assert "<m>" not in per_attribute and "<n>" not in per_attribute
 
 
+def test_sort_keys_by_value():
+    attributes = list("abcdefg")
+    values = {"a": 0.5, "b": math.nan, "c": 0.2, "d": None, "e": 0.5, "f": math.inf}
+    # Ties keep their order, and keys without a value are last.
+    assert sort_keys_by_value(attributes, values, is_descending=False) == list("caefbdg")
+    assert sort_keys_by_value(attributes, values, is_descending=True) == list("faecbdg")
+
+
+def test_per_attribute_table_sorts_the_attributes_by_a_column():
+    attributes = ["x", "y", "z"]
+    [row] = rank_methods([make_scored_model(1, {"x": 0.4, "y": 0.2, "z": 0.6})], attributes,
+                         "amF1")
+    row = dc.replace(row, metrics=dc.replace(row.metrics, per_attribute={
+        **row.metrics.per_attribute, "NLL": {"x": 0.4, "y": 0.2, "z": 0.6}}))
+    label_counts = {
+        a: AttributeLabelCounts(num_labeled_segments=num_segments, num_labeled_classes=num_classes,
+                                num_minority_class_segments=5, num_smallest_class_segments=1)
+        for a, num_segments, num_classes in (("x", 30, 2), ("y", 20, 4), ("z", 10, 3))}
+
+    def get_attribute_order(attribute_sort, metric_name="mF1", shows_class_counts=True,
+                            attribute_to_label_counts=label_counts):
+        table = make_per_attribute_table_html(
+            [row], {}, 0.95, metric_name, ScoresScope("vietnam", "val", ()),
+            attribute_to_label_counts, shows_class_counts, attribute_sort=attribute_sort)
+        return re.findall(r"<tr><td>(\w)</td>", table)  # Without the Average row.
+
+    assert get_attribute_order("") == attributes
+    # A method: worst first, then best first.
+    assert get_attribute_order("method:m") == ["y", "x", "z"]
+    assert get_attribute_order("-method:m") == ["z", "x", "y"]
+    assert get_attribute_order("method:m", metric_name="NLL") == ["z", "x", "y"]
+    assert get_attribute_order("-method:m", metric_name="NLL") == ["y", "x", "z"]
+    # A label count: smallest first, then largest first.
+    assert get_attribute_order("count:examples") == ["z", "y", "x"]
+    assert get_attribute_order("-count:examples") == ["x", "y", "z"]
+    assert get_attribute_order("count:classes") == ["x", "z", "y"]
+    # Not by a column that is hidden or not in the table.
+    assert get_attribute_order("count:classes", shows_class_counts=False) == attributes
+    assert get_attribute_order("count:examples", shows_class_counts=False) == ["z", "y", "x"]
+    assert get_attribute_order("count:examples", attribute_to_label_counts=None) == attributes
+    assert get_attribute_order("-method:other") == attributes
+
+
+def test_model_scores_table_sorts_the_attributes_by_a_column():
+    attributes = ["x", "y", "z"]
+    model = make_scored_model(1, {"x": 0.4, "y": 0.2, "z": 0.6})
+    model = dc.replace(model, scores=dc.replace(model.scores,
+                                                num_invalid={"x": 0, "y": 2, "z": 5}))
+    scores = compute_method_scores("m", [model], attributes)
+
+    def get_attribute_order(attribute_sort):
+        tables_html = make_model_scores_html(scores, None, 0.95, ShownMetrics.from_hidden(()),
+                                             attribute_sort)
+        return re.findall(r"<tr><td>(\w)</td>", tables_html)  # Without the Average row.
+
+    assert get_attribute_order("") == attributes
+    # A metric: worst first, then best first.
+    assert get_attribute_order("mF1") == ["y", "x", "z"]
+    assert get_attribute_order("-mF1") == ["z", "x", "y"]
+    # The invalid predictions: largest first, then smallest first.
+    assert get_attribute_order("invalid") == ["z", "y", "x"]
+    assert get_attribute_order("-invalid") == attributes
+    assert get_attribute_order("MRP90") == attributes  # Not a column of the table.
+
+
 def test_method_scores_have_the_mean_of_the_models():
     attributes = ["x", "y"]
     models = [make_scored_model(i, {"x": 0.2 * i, "y": 0.1}) for i in (1, 2)]
@@ -283,7 +356,27 @@ def test_shown_metrics_leave_out_the_hidden_ones():
     assert shown.average_names == tuple(n for n in RANKING_METRIC_NAMES
                                         if n not in ("amP", "aBrier"))
     assert "Brier" not in shown.per_attribute_names and "NLL" in shown.per_attribute_names
-    assert shown.attribute_table_names == ("mF1", "mR", "MCC")
+    assert shown.attribute_table_names == ("mF1", "mR", "MCC", "A", "MRP90")
+    assert ShownMetrics.from_hidden({"aMRP90"}).attribute_table_names == (
+        "mF1", "mP", "mR", "MCC", "A")
+
+
+def test_only_models_with_distributions_have_the_manual_review_proportion(
+        archive, dataset_contexts, worker):
+    submissions = [
+        add_model(archive, dataset_contexts, make_model(dataset_contexts, "probs")),
+        add_model(archive, dataset_contexts, make_model(dataset_contexts, "hard", is_hard=True))]
+    method_to_model = {m.submission.model.method_name: m
+                       for m in score_and_get_models(worker, [s.id for s in submissions])}
+    for method_name, has_manual_review_proportion in (("probs", True), ("hard", False)):
+        model = method_to_model[method_name]
+        scores = compute_method_scores(method_name, [model], model.scores.attributes)
+        assert ("aMRP90" in scores.metrics.averages) == has_manual_review_proportion
+        resamples = worker.get_method_resamples(scores, MODEL_SCORES_METRIC_NAMES)
+        assert ("MRP90" in resamples.per_attribute) == has_manual_review_proportion
+        # The tables of a hard model have no row and no column of the manual review proportion.
+        tables_html = make_model_scores_html(scores, resamples, 0.95, ShownMetrics.from_hidden(()))
+        assert ("MRP90" in tables_html) == has_manual_review_proportion
 
 
 def test_method_submitters_are_in_the_order_of_their_first_upload():

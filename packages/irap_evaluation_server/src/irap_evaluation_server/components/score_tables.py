@@ -20,6 +20,7 @@ from ..archive import get_description_summary
 from ..label_counts import AttributeLabelCounts
 from ..method_comparison import get_better_method
 from ..method_ranking import (
+    ATTRIBUTE_TABLE_METRIC_NAMES,
     RANKING_METRIC_NAMES,
     CellHighlight,
     ShownMetrics,
@@ -45,6 +46,12 @@ from .formatting import (
     make_truncated_name_html,
 )
 from .routes import get_methodology_path
+from .row_sorting import (
+    RowSorting,
+    SortColumn,
+    make_count_sort_column,
+    make_metric_sort_column,
+)
 
 V = T.TypeVar("V")
 
@@ -63,7 +70,7 @@ _SINGLE_MODEL_NOTE = (f'"{_SINGLE_MODEL_MARK}": its intervals do not cover the v
 
 #: The metrics of `make_model_scores_html` and `make_method_scores_html`, e.g. for
 #: `ScoringWorker.get_method_resamples`.
-MODEL_SCORES_METRIC_NAMES = (*RANKING_METRIC_NAMES, *ie.IRAP_ATTRIBUTE_METRIC_NAMES)
+MODEL_SCORES_METRIC_NAMES = (*RANKING_METRIC_NAMES, *ATTRIBUTE_TABLE_METRIC_NAMES)
 
 
 @dc.dataclass(frozen=True)
@@ -444,11 +451,14 @@ class _LabelCountColumn:
     """A label count column of `make_per_attribute_table_html`.
 
     Attributes:
+        key: Identifies the column in a row sort (`_get_label_count_sort_key`), e.g. in URLs, so
+            that it does not change with the header.
         title: The tooltip of the header.
         reveals_classes: Whether the count reveals the class distribution, so that it is hidden
             like the per-class scores (`accounts.can_see_class_scores`).
     """
 
+    key: str
     header: str
     title: str
     get_count: T.Callable[[AttributeLabelCounts], int | None]
@@ -457,18 +467,28 @@ class _LabelCountColumn:
 
 _LABEL_COUNT_COLUMNS = (
     _LabelCountColumn(
-        "Classes", "The number of classes of the attribute that occur as a label in the"
-                   " evaluation set.",
+        "classes", "Class count", "The number of classes of the attribute that occur as a label"
+                                  " in the evaluation set.",
         lambda c: c.num_labeled_classes, reveals_classes=True),
     _LabelCountColumn(
-        "Examples", "The number of labeled examples: the segments of the evaluation set with a"
-                    " label of the attribute.",
+        "examples", "Example count", "The number of labeled examples: the segments of the"
+                                     " evaluation set with a label of the attribute.",
         lambda c: c.num_labeled_segments, reveals_classes=False),
     _LabelCountColumn(
-        "Smallest class", "The number of labeled examples of the attribute's rarest class among"
-                          " those that occur as a label.",
+        "minority", "Minority-class example count",
+        "The number of labeled examples outside the attribute's majority class, the class with"
+        " the most labeled examples.",
+        lambda c: c.num_minority_class_segments, reveals_classes=True),
+    _LabelCountColumn(
+        "smallest", "Smallest-class example count",
+        "The number of labeled examples of the attribute's rarest class among those that occur"
+        " as a label.",
         lambda c: c.num_smallest_class_segments, reveals_classes=True),
 )
+
+
+def _is_label_count_hidden(column: _LabelCountColumn, shows_class_counts: bool) -> bool:
+    return column.reveals_classes and not shows_class_counts
 
 
 def _make_label_count_cells_html(counts: AttributeLabelCounts | None,
@@ -476,7 +496,7 @@ def _make_label_count_cells_html(counts: AttributeLabelCounts | None,
     """Makes the label count cells of an attribute, with '–' for counts that are None, undefined
     or hidden."""
     def format_count(column: _LabelCountColumn) -> str:
-        is_hidden = column.reveals_classes and not shows_class_counts
+        is_hidden = _is_label_count_hidden(column, shows_class_counts)
         count = None if counts is None or is_hidden else column.get_count(counts)
         return "–" if count is None else str(count)
 
@@ -494,21 +514,59 @@ def _make_label_count_note(split: str,
     note = (f"{columns}: counts of the labels of each attribute in the evaluation set, the same"
             f" for all methods.")
     if not shows_class_counts:
-        hidden_headers = " and ".join(c.header for c in _LABEL_COUNT_COLUMNS if c.reveals_classes)
-        note += (f" {hidden_headers} are hidden, since the labels of the {html.escape(split)}"
-                 f" split are protected.")
+        *hidden_headers, last_hidden_header = (c.header for c in _LABEL_COUNT_COLUMNS
+                                               if c.reveals_classes)
+        note += (f" {', '.join(hidden_headers)} and {last_hidden_header} are hidden, since the"
+                 f" labels of the {html.escape(split)} split are protected.")
     return note
+
+
+def _get_label_count_sort_key(column: _LabelCountColumn) -> str:
+    return f"count:{column.key}"
+
+
+def _get_method_sort_key(row: MethodScores) -> str:
+    return f"method:{row.method_name}"
+
+
+def _get_per_attribute_table_sort_columns(
+        rows: T.Iterable[MethodScores], metric_name: str,
+        attribute_to_label_counts: T.Mapping[str, AttributeLabelCounts] | None,
+        shows_class_counts: bool) -> dict[str, SortColumn[str]]:
+    """Returns the columns of `make_per_attribute_table_html` that its attribute rows can be
+    sorted by, by their keys in a row sort (`row_sorting`): the label counts that are shown,
+    smallest first, and the methods with values of the metric, worst first. A hidden label count
+    is left out, since the order of the attributes would reveal it.
+
+    Args: See `make_per_attribute_table_html`, with `rows` without errors.
+    """
+    key_to_column = {}
+    if attribute_to_label_counts is not None:
+        for column in _LABEL_COUNT_COLUMNS:
+            if not _is_label_count_hidden(column, shows_class_counts):
+                key_to_column[_get_label_count_sort_key(column)] = make_count_sort_column(
+                    {a: column.get_count(c) for a, c in attribute_to_label_counts.items()},
+                    is_descending_first=False)
+    for row in rows:
+        if (attribute_to_value := row.metrics.per_attribute.get(metric_name)) is not None:
+            key_to_column[_get_method_sort_key(row)] = make_metric_sort_column(
+                attribute_to_value, metric_name)
+    return key_to_column
 
 
 def make_per_attribute_table_html(
         rows: T.Sequence[MethodScores], method_to_resamples: T.Mapping[str, RowResamples],
         confidence: float, metric_name: str, scope: ScoresScope,
         attribute_to_label_counts: T.Mapping[str, AttributeLabelCounts] | None,
-        shows_class_counts: bool, comparisons: ReferenceComparisons | None = None) -> str:
+        shows_class_counts: bool, comparisons: ReferenceComparisons | None = None,
+        attribute_sort: str = "") -> str:
     """Makes a table of attribute rows × method columns of one per-attribute metric, for the rows
     without an error, in their order. The first row has the attribute average of the metric.
     Before the method columns, label count columns describe the evaluation set of the methods
     (`label_counts.AttributeLabelCounts`).
+
+    The attribute rows can be sorted by a label count or a method
+    (`_get_per_attribute_table_sort_columns`), by a click on its header (`row_sorting`).
 
     Args:
         rows: Over the same attribute subset.
@@ -521,6 +579,8 @@ def make_per_attribute_table_html(
         shows_class_counts: Whether the label counts that reveal the class distribution are
             shown (`accounts.can_see_class_scores`).
         comparisons: The comparisons with a reference method, or None.
+        attribute_sort: The row sort of the attribute rows (`row_sorting`), '' for the order of
+            the attribute subset.
 
     Raises:
         ValueError: If there are no rows, or they are over different attribute subsets.
@@ -529,6 +589,9 @@ def make_per_attribute_table_html(
         raise ValueError(f"The rows must be over one attribute subset, not {len(subsets)}.")
     [attributes] = subsets
     rows = [r for r in rows if r.metrics is not None]
+    sorting = RowSorting(
+        _get_per_attribute_table_sort_columns(rows, metric_name, attribute_to_label_counts,
+                                              shows_class_counts), attribute_sort)
     row_resamples = [method_to_resamples.get(r.method_name) for r in rows]
     is_tested = _are_tested(rows)
     average_name = ie.get_attribute_average_name(metric_name)
@@ -538,7 +601,7 @@ def make_per_attribute_table_html(
     html_rows = [f"<tr><td{make_title_attribute(ie.describe_metric(average_name))}>Average</td>"
                  f'<td colspan="{len(_LABEL_COUNT_COLUMNS)}"></td>'
                  f"{''.join(average_cells)}</tr>"]
-    for attribute in attributes:
+    for attribute in sorting.sort(attributes):
         label_count_cells = _make_label_count_cells_html(
             None if attribute_to_label_counts is None else attribute_to_label_counts[attribute],
             shows_class_counts)
@@ -548,15 +611,16 @@ def make_per_attribute_table_html(
             notes=["not predicted" if attribute in r.missing_attributes else "" for r in rows])
         html_rows.append(f"<tr><td>{html.escape(attribute)}</td>{label_count_cells}"
                          f"{''.join(cells)}</tr>")
-    # Vertical, so that the columns are as narrow as their values.
     label_count_headers = "".join(
-        f'<th class="number vertical-header"{make_title_attribute(c.title)}>'
-        f"<div>{html.escape(c.header)}</div></th>" for c in _LABEL_COUNT_COLUMNS)
+        sorting.make_column_header_html(html.escape(c.header), c.title,
+                                        _get_label_count_sort_key(c), is_vertical=True)
+        for c in _LABEL_COUNT_COLUMNS)
     method_headers = "".join(
-        f'<th class="number vertical-header"><div>{_make_method_label_html(r, comparisons, scope)}'
-        f"</div></th>" for r in rows)
+        sorting.make_column_header_html(_make_method_label_html(r, comparisons, scope), "",
+                                        _get_method_sort_key(r), is_vertical=True) for r in rows)
     return (make_table_html_from_header(
-                f"<th>Attribute</th>{label_count_headers}{method_headers}", html_rows)
+                f"{sorting.make_unsorted_header_html('Attribute')}{label_count_headers}"
+                f"{method_headers}", html_rows)
             + _make_note_lines_html(
                 html.escape(ie.describe_metric(metric_name)),
                 _make_label_count_note(scope.split, attribute_to_label_counts, shows_class_counts))
@@ -571,35 +635,57 @@ def _make_row_value_cell_html(row: MethodScores, resamples: RowResamples, averag
                                 _compute_row_interval(resamples, select_value, confidence))
 
 
+def _get_nums_invalid(scores: MethodScores, attributes: T.Iterable[str]) -> list[int]:
+    """Returns the number of invalid predictions of each model for each of the attributes."""
+    return [m.scores.num_invalid[a] for m in scores.scored_models for a in attributes]
+
+
 def _format_num_invalid(scores: MethodScores, attributes: T.Sequence[str]) -> str:
     """Formats the number of invalid predictions of the attributes, the mean over the models and
     the attributes if there are several."""
-    counts = [m.scores.num_invalid[a] for m in scores.scored_models for a in attributes]
+    counts = _get_nums_invalid(scores, attributes)
     return str(counts[0]) if len(counts) == 1 else f"{sum(counts) / len(counts):.1f}"
 
 
+#: The key of the invalid predictions column of `_make_attribute_scores_table_html` in a row sort
+#: (`row_sorting`). The keys of its metric columns are the metric names.
+_NUM_INVALID_SORT_KEY = "invalid"
+
+
 def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamples,
-                                     confidence: float, metric_names: T.Sequence[str]) -> str:
-    """Makes a table of the iRAP metrics and invalid predictions of each attribute of a subset, of
-    one model or the mean over the models of a method. The attributes are compared with each other
+                                     confidence: float, metric_names: T.Sequence[str],
+                                     attribute_sort: str = "") -> str:
+    """Makes a table of the metrics and invalid predictions of each attribute of a subset, of one
+    model or the mean over the models of a method. The attributes are compared with each other
     in each metric column, without tests against the best (bold), which are meant for comparing
     methods. The first row has the attribute averages and the mean number of invalid predictions,
     and is not shaded.
+
+    The attribute rows can be sorted by a metric, worst first, or by the invalid predictions,
+    largest first, by a click on its header (`row_sorting`).
 
     Args:
         scores: `method_scores.compute_method_scores`, without an error.
         resamples: Its resampled values of `metric_names`, or None.
         confidence: The confidence of the intervals.
-        metric_names: The metrics of the columns, of
-            `irap_evaluation.IRAP_ATTRIBUTE_METRIC_NAMES`, e.g. the shown ones
-            (`ShownMetrics.attribute_table_names`).
+        metric_names: The metrics of the columns, of `method_ranking.ATTRIBUTE_TABLE_METRIC_NAMES`,
+            e.g. the shown ones (`ShownMetrics.attribute_table_names`). Those that the scores
+            lack, e.g. the manual review proportion of hard predictions, get no column.
+        attribute_sort: The row sort of the attribute rows (`row_sorting`), '' for the order of
+            the attribute subset.
 
     Raises:
         ValueError: If `scores` has an error.
     """
     if (metrics := scores.metrics) is None:
         raise ValueError(f"The scores of {scores.method_name} have an error: {scores.error}")
-    attributes = scores.attributes
+    metric_names = [n for n in metric_names if n in metrics.per_attribute]
+    sorting = RowSorting({
+        **{n: make_metric_sort_column(metrics.per_attribute[n], n) for n in metric_names},
+        _NUM_INVALID_SORT_KEY: make_count_sort_column(
+            {a: sum(_get_nums_invalid(scores, [a])) for a in scores.attributes},
+            is_descending_first=True)}, attribute_sort)
+    attributes = sorting.sort(scores.attributes)
     metric_columns = []
     for n in metric_names:
         values = [metrics.per_attribute[n].get(a) for a in attributes]
@@ -622,16 +708,17 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
                               f'<td class="number">{num_invalid}</td></tr>')
     invalid_header = ("Invalid predictions" if scores.num_models == 1
                       else "Invalid predictions (mean)")
-    number_headers = [*metric_names, invalid_header]
-    return make_table_html(
-        ["Attribute", *number_headers], attribute_rows, number_headers,
-        header_titles={n: ie.describe_metric(n) for n in metric_names})
+    headers = [sorting.make_unsorted_header_html("Attribute"),
+               *(sorting.make_column_header_html(n, ie.describe_metric(n), n)
+                 for n in metric_names),
+               sorting.make_column_header_html(invalid_header, "", _NUM_INVALID_SORT_KEY)]
+    return make_table_html_from_header("".join(headers), attribute_rows)
 
 
 def make_model_scores_html(scores: MethodScores, resamples: RowResamples, confidence: float,
-                           shown_metrics: ShownMetrics) -> str:
+                           shown_metrics: ShownMetrics, attribute_sort: str = "") -> str:
     """Makes the tables of the scores of one model over a subset of the attributes: the attribute
-    averages, and the iRAP metrics and invalid predictions of each attribute
+    averages, and the metrics and invalid predictions of each attribute
     (`_make_attribute_scores_table_html`). `make_model_scores_note_html` explains them.
 
     Args:
@@ -639,6 +726,7 @@ def make_model_scores_html(scores: MethodScores, resamples: RowResamples, confid
         resamples: Its resampled values of `MODEL_SCORES_METRIC_NAMES`, or None.
         confidence: The confidence of the intervals.
         shown_metrics: The metrics of the tables, those that the model has.
+        attribute_sort: The row sort of the attribute rows (`row_sorting`).
     """
     if scores.metrics is None:
         return f'<div class="error">{html.escape(scores.error or "")}</div>'
@@ -646,18 +734,19 @@ def make_model_scores_html(scores: MethodScores, resamples: RowResamples, confid
                     f"{_make_row_value_cell_html(scores, resamples, n, confidence)}</tr>"
                     for n in shown_metrics.average_names if n in scores.metrics.averages]
     average_table = make_table_html(["Average", "Value"], average_rows, number_headers=["Value"])
-    attribute_table = _make_attribute_scores_table_html(scores, resamples, confidence,
-                                                        shown_metrics.attribute_table_names)
+    attribute_table = _make_attribute_scores_table_html(
+        scores, resamples, confidence, shown_metrics.attribute_table_names, attribute_sort)
     return f'<div class="score-tables">{average_table}{attribute_table}</div>'
 
 
 def make_method_scores_html(method_scores: MethodScores, method_resamples: RowResamples,
                             seed_scores: T.Sequence[MethodScores],
                             seed_resamples: T.Sequence[RowResamples], confidence: float,
-                            shown_metrics: ShownMetrics, scope: ScoresScope) -> str:
+                            shown_metrics: ShownMetrics, scope: ScoresScope,
+                            attribute_sort: str = "") -> str:
     """Makes the tables of the scores of a method over a subset of the attributes: the attribute
     averages of the mean over its models and of each model alone (`_make_seed_table_html`), and
-    the iRAP metrics and invalid predictions of each attribute of the mean
+    the metrics and invalid predictions of each attribute of the mean
     (`_make_attribute_scores_table_html`), unless the mean has an error.
     `make_method_scores_note_html` explains them.
 
@@ -671,6 +760,7 @@ def make_method_scores_html(method_scores: MethodScores, method_resamples: RowRe
         confidence: The confidence of the intervals.
         shown_metrics: The metrics of the tables.
         scope: For the links to the models.
+        attribute_sort: The row sort of the attribute rows (`row_sorting`).
     """
     seed_table = _make_seed_table_html(method_scores, method_resamples, seed_scores,
                                        seed_resamples, confidence,
@@ -678,7 +768,8 @@ def make_method_scores_html(method_scores: MethodScores, method_resamples: RowRe
     tables_html = f"<div>{seed_table}</div>"
     if method_scores.metrics is not None:
         attribute_table = _make_attribute_scores_table_html(
-            method_scores, method_resamples, confidence, shown_metrics.attribute_table_names)
+            method_scores, method_resamples, confidence, shown_metrics.attribute_table_names,
+            attribute_sort)
         tables_html += f'<div><div class="muted">Mean over the seeds</div>{attribute_table}</div>'
     return f'<div class="score-tables">{tables_html}</div>'
 

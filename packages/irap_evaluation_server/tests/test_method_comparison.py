@@ -13,6 +13,7 @@ from run_helpers import (
 )
 from synthetic_vietnam import SPLIT
 
+from irap_evaluation_server.components.score_tables import get_per_attribute_table_metric_names
 from irap_evaluation_server.method_comparison import (
     compare_with_reference,
     get_better_method,
@@ -80,6 +81,23 @@ def test_hard_predictions_are_compared_on_the_common_metrics(worker, method_to_m
         differences = _compare(worker, method_to_models, *names, attributes)
         assert "amF1" in differences.averages and "aNLL" not in differences.averages
         assert "mF1" in differences.per_attribute
+
+
+def test_a_method_has_no_resampled_values_of_metrics_that_it_lacks(worker, method_to_models):
+    # As in the per-attribute view of a metric of distributions, next to a hard method.
+    attributes = method_to_models["a"][0].scores.attributes
+    row_a, row_hard = (compute_method_scores(n, method_to_models[n], attributes)
+                       for n in ("a", "hard"))
+    for metric_name in ("NLL", "MRP90"):
+        names = get_per_attribute_table_metric_names(metric_name)
+        assert worker.get_method_resamples(row_a, names).names == (
+            ie.get_attribute_average_name(metric_name), metric_name)
+        hard_resamples = worker.get_method_resamples(row_hard, names)
+        assert hard_resamples.names == ()
+        differences, errors = compare_with_reference(
+            [row_a, row_hard], {"a": worker.get_method_resamples(row_a, names),
+                                "hard": hard_resamples}, row_a, worker.settings.confidence)
+        assert errors == [] and differences["hard"].names == ()
 
 
 def test_get_comparison_error(method_to_models):

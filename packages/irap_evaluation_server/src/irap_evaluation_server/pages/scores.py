@@ -27,7 +27,13 @@ from ..components.native_controls import (
 )
 from ..components.page_frame import create_page_frame, show_view_error
 from ..components.refresh_timer import RefreshTimer
-from ..components.routes import ATTRIBUTE_PARAMETER, SCORES_PATH, make_query_path
+from ..components.routes import (
+    ATTRIBUTE_PARAMETER,
+    ATTRIBUTE_SORT_PARAMETER,
+    SCORES_PATH,
+    make_query_path,
+)
+from ..components.row_sorting import SORT_CLICK_JS_HANDLER
 from ..components.score_tables import (
     ReferenceComparisons,
     ScoresScope,
@@ -74,6 +80,8 @@ class _ScoresView:
         reference_method: The method that the others are compared with, on a shared set
             (`irap_evaluation.SHARED_EVALUATION_SET_NAMES`) only, or '' for none.
         shows_trained_methods: Whether the methods trained on the split are shown.
+        attribute_sort: The order of the attribute rows of the per-attribute table
+            (`make_per_attribute_table_html`), or '' for that of the attribute subset.
     """
 
     dataset: str
@@ -84,6 +92,7 @@ class _ScoresView:
     method_pattern: str = ""
     reference_method: str = ""
     shows_trained_methods: bool = False
+    attribute_sort: str = ""
 
     def to_path(self, attributes: T.Sequence[str] = ()) -> str:
         """
@@ -96,13 +105,14 @@ class _ScoresView:
             "sort": "" if self.sort_metric == DEFAULT_SORT_METRIC else self.sort_metric,
             "metric": self.metric_name, "methods": self.method_pattern,
             "ref": self.reference_method, "trained": "1" if self.shows_trained_methods else "",
-            ATTRIBUTE_PARAMETER: attributes})
+            ATTRIBUTE_SORT_PARAMETER: self.attribute_sort, ATTRIBUTE_PARAMETER: attributes})
 
 
 def _parse_view(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, DatasetContext],
                 shown_metrics: ShownMetrics) -> _ScoresView:
     """Parses the view from the query parameters of `_ScoresView.to_path`. The page checks the
-    method pattern and the reference method against the scored models.
+    method pattern and the reference method against the scored models, and the per-attribute
+    table ignores an attribute sort by a column that it lacks.
 
     Raises:
         ValueError: For an unknown dataset, split or evaluation set, a metric that is unknown or
@@ -122,7 +132,8 @@ def _parse_view(query: T.Mapping[str, str], dataset_contexts: T.Mapping[str, Dat
                        sort_metric=sort_metric, metric_name=metric_name,
                        method_pattern=query.get("methods", ""),
                        reference_method=reference_method,
-                       shows_trained_methods=query.get("trained") == "1")
+                       shows_trained_methods=query.get("trained") == "1",
+                       attribute_sort=query.get(ATTRIBUTE_SORT_PARAMETER, ""))
 
 
 def register_scores_page(dataset_contexts: T.Mapping[str, DatasetContext],
@@ -238,7 +249,7 @@ def _compute_method_table(worker: ScoringWorker, context: DatasetContext,
             table_html = make_per_attribute_table_html(
                 shown, method_to_resamples, confidence, view.metric_name, scope,
                 _count_shown_labels(context, shown, subset.selected), shows_class_counts,
-                comparisons)
+                comparisons, view.attribute_sort)
         else:
             table_html = make_method_table_html(
                 shown, method_to_resamples, confidence, average_names, view.sort_metric, scope,
@@ -368,10 +379,10 @@ async def _create_scores(dataset_contexts: T.Mapping[str, DatasetContext], worke
             if not table.num_hidden:  # Otherwise, the label above says that the matches are hidden.
                 ui.label("The filter matches no method.").classes("muted")
             return
+        sort_field = "attribute_sort" if shown_view.metric_name else "sort_metric"
         ui.html(table.table_html, sanitize=False).classes("w-full overflow-x-auto").on(
-            "click", lambda e: on_view_changed(sort_metric=e.args),
-            js_handler="(e) => { const th = e.target.closest('th[data-sort]');"
-                       " if (th) emit(th.dataset.sort); }")
+            "click", lambda e: on_view_changed(**{sort_field: e.args}),
+            js_handler=SORT_CLICK_JS_HANDLER)
         for error in table.comparison_errors:
             ui.label(error).classes("error")
 

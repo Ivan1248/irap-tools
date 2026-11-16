@@ -70,6 +70,7 @@ from ..components.page_frame import (
 )
 from ..components.routes import (
     ATTRIBUTE_PARAMETER,
+    ATTRIBUTE_SORT_PARAMETER,
     CODING_TABLE_DOWNLOAD_PATH,
     MODEL_PATH,
     MODEL_PREDICTIONS_DOWNLOAD_PATH,
@@ -129,22 +130,22 @@ class _ModelSnapshot:
 
 def _make_set_score_tables_html(worker: ScoringWorker,
                                 set_to_models: T.Mapping[str, T.Sequence[ScoredModel]],
-                                subset: AttributeSubset,
-                                shown_metrics: ShownMetrics) -> dict[str, str]:
+                                subset: AttributeSubset, shown_metrics: ShownMetrics,
+                                attribute_sort: str) -> dict[str, str]:
     """Makes the score tables of a submission over the attributes of `subset`
     (`make_model_scores_html`) on each evaluation set that it is scored on.
 
     Args:
         set_to_models: Evaluation set name -> the submission with its scores on it.
         shown_metrics: The metrics of the tables.
+        attribute_sort: See `make_model_scores_html`.
     """
     set_to_tables_html = {}
     for name, [model] in set_to_models.items():
         scores = compute_method_scores(model.submission.label, [model], subset.selected)
         resamples = worker.get_method_resamples(scores, MODEL_SCORES_METRIC_NAMES)
-        set_to_tables_html[name] = make_model_scores_html(scores, resamples,
-                                                          worker.settings.confidence,
-                                                          shown_metrics)
+        set_to_tables_html[name] = make_model_scores_html(
+            scores, resamples, worker.settings.confidence, shown_metrics, attribute_sort)
     return set_to_tables_html
 
 
@@ -341,7 +342,7 @@ class _ModelPage:
     # Scores #######################################################################################
 
     def create_scores(self, split_query: str, attribute_query: T.Sequence[str],
-                      shown_metrics: ShownMetrics) -> None:
+                      attribute_sort_query: str, shown_metrics: ShownMetrics) -> None:
         dataset = self.snapshot.model.dataset
         context = self.dataset_contexts.get(dataset)
         if context is None:
@@ -352,11 +353,13 @@ class _ModelPage:
             return
 
         self.refreshes.append(create_split_scores_panel(
-            self.worker, "model", split_query, attribute_query, context.metadata.splits,
+            self.worker, "model", split_query, attribute_query, attribute_sort_query,
+            context.metadata.splits,
             lambda: group_submissions_by_split([self.snapshot.summary], context.split_names),
-            lambda split, attributes: get_model_path(self.model_id, split, attributes),
-            lambda set_to_models, subset, _: _make_set_score_tables_html(
-                self.worker, set_to_models, subset, shown_metrics),
+            lambda split, attributes, attribute_sort: get_model_path(
+                self.model_id, split, attributes, attribute_sort),
+            lambda set_to_models, subset, _, attribute_sort: _make_set_score_tables_html(
+                self.worker, set_to_models, subset, shown_metrics, attribute_sort),
             lambda shown: self._show_submission_scores(context, shown)))
 
     def _show_submission_scores(self, context: DatasetContext, shown: ShownSplitScores) -> None:
@@ -563,7 +566,8 @@ def register_model_page(archive: ModelArchive,
                               sessions.require_writer_name, account, snapshot)
             page.create_details()
             page.create_files()
-            page.create_scores(request.query_params.get("split", ""),
-                               request.query_params.getlist(ATTRIBUTE_PARAMETER), shown_metrics)
+            query = request.query_params
+            page.create_scores(query.get("split", ""), query.getlist(ATTRIBUTE_PARAMETER),
+                               query.get(ATTRIBUTE_SORT_PARAMETER, ""), shown_metrics)
             page.create_coding_table_export()
             page.create_actions()

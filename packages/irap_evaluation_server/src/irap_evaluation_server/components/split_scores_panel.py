@@ -15,6 +15,7 @@ from .formatting import make_split_options
 from .latest_updates import LatestUpdates
 from .native_controls import create_native_select
 from .refresh_timer import RefreshTimer
+from .row_sorting import SORT_CLICK_JS_HANDLER
 
 
 @dc.dataclass(frozen=True)
@@ -43,30 +44,37 @@ class ShownSplitScores:
 
 def create_split_scores_panel(
         worker: ScoringWorker, owner_noun: str, split_query: str,
-        attribute_query: T.Sequence[str], split_to_segment_ids: T.Mapping[str, T.Sequence[str]],
+        attribute_query: T.Sequence[str], attribute_sort_query: str,
+        split_to_segment_ids: T.Mapping[str, T.Sequence[str]],
         group_submissions_by_split: T.Callable[[], T.Mapping[str, T.Sequence[Submission]]],
-        make_path: T.Callable[[str, T.Sequence[str]], str],
+        make_path: T.Callable[[str, T.Sequence[str], str], str],
         make_set_score_tables_html: T.Callable[
-            [T.Mapping[str, T.Sequence[ScoredModel]], AttributeSubset, str], dict[str, str]],
+            [T.Mapping[str, T.Sequence[ScoredModel]], AttributeSubset, str, str], dict[str, str]],
         show_split_scores: T.Callable[[ShownSplitScores], None]
 ) -> T.Callable[[], T.Awaitable[None]]:
     """Creates the Scores panel, with a select of the split and an attribute filter, and starts
     its first update. Returns the update, e.g. for after a change of the files.
 
+    A click on a header with a `data-sort` attribute in the panel
+    (`row_sorting.SORT_CLICK_JS_HANDLER`) sorts the attribute rows of the score tables.
+
     Args:
         owner_noun: What has the files, e.g. 'model', for the messages.
         split_query: The split of the URL, '' for the first one.
+        attribute_sort_query: The order of the attribute rows of the URL, '' for that of the
+            attribute subset.
         split_to_segment_ids: The segments of each split of the dataset
             (`irap_data.metadata.IRAPMetadata.splits`), whose numbers the select shows.
         group_submissions_by_split: Gets split -> its files, in the order of the select.
-        make_path: Makes the path of the page with a split and an attribute subset
-            (`AttributeSubset.to_query`), for the URL after a choice.
+        make_path: Makes the path of the page with a split, an attribute subset
+            (`AttributeSubset.to_query`) and the order of the attribute rows, for the URL after
+            a choice.
         make_set_score_tables_html: Makes evaluation set name -> its score tables of the files
             of the chosen split (`ShownSplitScores.set_to_models`) over the attributes of the
-            subset. Runs in a thread.
+            subset, of the split, with the attribute rows in the given order. Runs in a thread.
         show_split_scores: Shows the scores below the select.
     """
-    state = {"split": split_query}
+    state = {"split": split_query, "attribute_sort": attribute_sort_query}
     latest_updates = LatestUpdates()
 
     async def on_split_changed(split: str) -> None:
@@ -78,9 +86,15 @@ def create_split_scores_panel(
         update_url(subset)
         await update_scores()
 
+    async def on_attribute_sort_changed(attribute_sort: str) -> None:
+        state["attribute_sort"] = attribute_sort
+        update_url()
+        await update_scores()
+
     def update_url(subset: AttributeSubset | None = None) -> None:
         subset = subset or attribute_filter.subset
-        ui.navigate.history.replace(make_path(state["split"], subset.to_query()))
+        ui.navigate.history.replace(make_path(state["split"], subset.to_query(),
+                                              state["attribute_sort"]))
 
     async def update_scores() -> None:
         """Loads and computes the scores of the chosen split in threads, and shows them if no
@@ -105,8 +119,9 @@ def create_split_scores_panel(
             subset = attribute_filter.set_options(collect_scored_attributes(
                 m for models in set_to_models.values() for m in models))
             if subset.selected:
-                set_to_tables_html = await run.io_bound(make_set_score_tables_html,
-                                                        set_to_models, subset, split)
+                set_to_tables_html = await run.io_bound(
+                    make_set_score_tables_html, set_to_models, subset, split,
+                    state["attribute_sort"])
                 if set_to_tables_html is None or not is_latest():
                     return
         show_scores.refresh(ShownSplitScores(split, split_error, list(split_to_submissions),
@@ -131,7 +146,9 @@ def create_split_scores_panel(
                                  shown.split, on_split_changed)
         show_split_scores(shown)
 
-    with ui.element("section").classes("panel"):
+    with ui.element("section").classes("panel").on(
+            "click", lambda e: on_attribute_sort_changed(e.args),
+            js_handler=SORT_CLICK_JS_HANDLER):
         ui.label("Scores").classes("section-title")
         attribute_filter = AttributeFilter(attribute_query, on_subset_changed)
         refresh_timer = RefreshTimer(update_scores)
