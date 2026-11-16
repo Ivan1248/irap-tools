@@ -49,7 +49,6 @@ from .routes import get_methodology_path
 from .row_sorting import (
     RowSorting,
     SortColumn,
-    make_count_sort_column,
     make_metric_sort_column,
 )
 
@@ -394,9 +393,8 @@ def _make_notes_html(row: MethodScores) -> str:
 def _make_sortable_metric_header_html(metric_name: str, is_sorted: bool) -> str:
     """Makes the header of a metric column with a `data-sort` attribute (`make_method_table_html`)
     and the description of the metric as its tooltip."""
-    title = f"{ie.describe_metric(metric_name)}\nClick to sort by it, best first."
     return (f'<th class="number sortable{" sorted" if is_sorted else ""}"'
-            f' data-sort="{metric_name}"{make_title_attribute(title)}>'
+            f' data-sort="{metric_name}"{make_title_attribute(ie.describe_metric(metric_name))}>'
             f'{metric_name}{" ▾" if is_sorted else ""}</th>')
 
 
@@ -544,7 +542,7 @@ def _get_per_attribute_table_sort_columns(
     if attribute_to_label_counts is not None:
         for column in _LABEL_COUNT_COLUMNS:
             if not _is_label_count_hidden(column, shows_class_counts):
-                key_to_column[_get_label_count_sort_key(column)] = make_count_sort_column(
+                key_to_column[_get_label_count_sort_key(column)] = SortColumn(
                     {a: column.get_count(c) for a, c in attribute_to_label_counts.items()},
                     is_descending_first=False)
     for row in rows:
@@ -682,7 +680,7 @@ def _make_attribute_scores_table_html(scores: MethodScores, resamples: RowResamp
     metric_names = [n for n in metric_names if n in metrics.per_attribute]
     sorting = RowSorting({
         **{n: make_metric_sort_column(metrics.per_attribute[n], n) for n in metric_names},
-        _NUM_INVALID_SORT_KEY: make_count_sort_column(
+        _NUM_INVALID_SORT_KEY: SortColumn(
             {a: sum(_get_nums_invalid(scores, [a])) for a in scores.attributes},
             is_descending_first=True)}, attribute_sort)
     attributes = sorting.sort(scores.attributes)

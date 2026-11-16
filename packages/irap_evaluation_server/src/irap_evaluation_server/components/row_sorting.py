@@ -34,29 +34,16 @@ class SortColumn(T.Generic[K]):
     Attributes:
         row_to_value: Row -> its value in the column, None if it has none.
         is_descending_first: Whether the first order of the column is descending.
-        first_order_start: What the first order of the column starts with, e.g. "worst".
-        reverse_order_start: What the reverse of the first order starts with, e.g. "best".
     """
 
     row_to_value: T.Mapping[K, float | None]
     is_descending_first: bool
-    first_order_start: str
-    reverse_order_start: str
 
 
 def make_metric_sort_column(row_to_value: T.Mapping[K, float | None],
                             metric_name: str) -> SortColumn[K]:
     """Makes a column of the values of a metric, sorted worst first."""
-    return SortColumn(row_to_value, is_descending_first=ie.is_lower_better(metric_name),
-                      first_order_start="worst", reverse_order_start="best")
-
-
-def make_count_sort_column(row_to_value: T.Mapping[K, int | None],
-                           is_descending_first: bool) -> SortColumn[K]:
-    """Makes a column of counts, sorted largest first if `is_descending_first`, else smallest
-    first."""
-    orders = ("largest", "smallest") if is_descending_first else ("smallest", "largest")
-    return SortColumn(row_to_value, is_descending_first, *orders)
+    return SortColumn(row_to_value, is_descending_first=ie.is_lower_better(metric_name))
 
 
 @dc.dataclass(frozen=True)
@@ -117,13 +104,8 @@ class RowSorting(T.Generic[K]):
             content_html = f"<div>{content_html}</div>"
         if (column := self.key_to_column.get(sort_key)) is not None:
             is_sorted = sort_key == self._sorted_key
-            if is_sorted and not self._is_reversed:
-                next_sort = REVERSED_SORT_PREFIX + sort_key
-                next_start = column.reverse_order_start
-            else:
-                next_sort, next_start = sort_key, column.first_order_start
-            click_note = f"Click to sort the {self.rows_noun} by it, {next_start} first."
-            title = f"{title}\n{click_note}" if title else click_note
+            next_sort = (REVERSED_SORT_PREFIX + sort_key if is_sorted and not self._is_reversed
+                         else sort_key)
             classes.append("sortable")
             sort_attribute = f' data-sort="{html.escape(next_sort)}"'
             if is_sorted:

@@ -25,7 +25,7 @@ from .formatting import (
     make_title_attribute,
     make_truncated_name_html,
 )
-from .row_sorting import RowSorting, SortColumn, make_count_sort_column, make_metric_sort_column
+from .row_sorting import RowSorting, SortColumn, make_metric_sort_column
 from .score_tables import format_metric_value, format_optional_metric_value
 
 
@@ -165,15 +165,12 @@ def _make_class_sort_columns(class_scores: T.Sequence[ClassScores]
         return {i: get_value(c) for i, c in enumerate(class_scores)}
 
     return {
-        "class": SortColumn({i: i for i in range(len(class_scores))}, False,
-                            "the first attribute", "the last attribute"),
-        "support": make_count_sort_column(map_rows(lambda c: c.support), is_descending_first=True),
+        "class": SortColumn({i: i for i in range(len(class_scores))}, False),
+        "support": SortColumn(map_rows(lambda c: c.support), is_descending_first=True),
         "f1": make_metric_sort_column(map_rows(lambda c: c.f1), "F1"),
-        "auroc": SortColumn(map_rows(lambda c: c.auroc), False, "lowest", "highest"),
-        "informedness": SortColumn(map_rows(lambda c: c.informedness), False, "lowest",
-                                   "highest"),
-        "missed": make_count_sort_column(map_rows(lambda c: c.num_missed),
-                                         is_descending_first=True)}
+        "auroc": SortColumn(map_rows(lambda c: c.auroc), False),
+        "informedness": SortColumn(map_rows(lambda c: c.informedness), False),
+        "missed": SortColumn(map_rows(lambda c: c.num_missed), is_descending_first=True)}
 
 
 def make_class_analysis_html(class_scores: T.Sequence[ClassScores],
