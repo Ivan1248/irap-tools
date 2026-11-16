@@ -37,7 +37,7 @@ annotators (``--min-annotators``):
   the unordered annotation pairs (kappa is ``None`` when the codes show no
   variability, e.g. everyone agreed on one code).
 - ``conflicts`` lists the actual segments whose genuine codes disagree, naming
-  each annotator's source table and 1-based source row alongside its code.
+  each annotator's source table and Excel row number alongside its code.
 """
 
 import argparse
@@ -57,7 +57,6 @@ import layout
 from parse_coding_tables import (
     ParseSetupError,
     collect_all_rows,
-    conflicting_attributes,
     format_row_ranges,
     is_real_attribute_code,
     num_filled_attribute_cells,
@@ -184,6 +183,24 @@ def compute_attribute_metrics(
     return {"n_compared_segments": n_segments, "pooled": pooled, "pairs": pairs}
 
 
+def find_conflicting_attributes(
+    group: T.Sequence[dict],
+    attribute_names: T.Sequence[str],
+) -> dict[str, set[int]]:
+    """Finds the attributes whose genuine values disagree across a duplicate group.
+
+    Only genuinely-coded values (not ``None`` and not ``MISSING_ATTR_CODE``) are
+    compared. An attribute conflicts when the rows carry two or more distinct
+    such values. Returns ``{attr: {value, ...}}`` for the conflicting attributes.
+    """
+    conflicts: dict[str, set[int]] = {}
+    for attr in attribute_names:
+        values = {r.get(attr) for r in group if is_real_attribute_code(r.get(attr))}
+        if len(values) > 1:
+            conflicts[attr] = values
+    return conflicts
+
+
 def collect_conflicts(
     shared: T.Mapping[str, dict[str, dict]],
     attribute_names: T.Sequence[str],
@@ -200,7 +217,7 @@ def collect_conflicts(
     counts: Counter = Counter()
     for seg_id, per_file in shared.items():
         group = list(per_file.values())
-        for attr in conflicting_attributes(group, attribute_names):
+        for attr in find_conflicting_attributes(group, attribute_names):
             counts[attr] += 1
             if len(conflicts_per_attr[attr]) >= max_per_attribute:
                 continue
@@ -228,8 +245,7 @@ def shared_segment_ranges(
 
     Groups the shared segments by the exact set of annotators (source files)
     that coded them and collapses each group's seg_ids into continuous ranges
-    (the same ``format_row_ranges`` rendering parse_coding_tables uses for its
-    duplicate warnings). Returns one entry per annotator set, most segments
+    (``format_row_ranges``). Returns one entry per annotator set, most segments
     first.
     """
     by_set: dict[tuple[str, ...], list[int]] = defaultdict(list)

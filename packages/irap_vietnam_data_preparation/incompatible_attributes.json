@@ -2,7 +2,6 @@
   "_comment": "Attribute names present in BH attribute_metadata.json that should be excluded when parsing Vietnam coding tables (the corresponding table columns either don't exist or encode incompatible semantics).",
   "incompatible_with_bh": [
     "Variable speed limit",
-    "Speed limit",
     "Centreline rumble strips",
     "Facilities for motorcycles",
     "Facilities for bicycles",

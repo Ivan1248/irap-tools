@@ -29,7 +29,8 @@ BH loader, `irap_data.IRAPDataset`, can load it without substantial changes.
    Skip files missing the required columns; one sheet per file.
 5. One section per file is expected; **warn** if a file mixes sections.
 6. On duplicate `seg_id` rows, keep the row with **the most non-empty
-   attribute cells**; warn on every duplicate.
+   attribute cells**, and the first one in a tie. Report ties and
+   conflicting codes as issues.
 7. Column order is **not guaranteed**; identify columns by header name.
    **Error** if any required column (or any expected attribute column)
    is missing.
@@ -177,8 +178,7 @@ For each `.xls`/`.xlsx` in the unzipped `coding-tables/` directory:
 6. Verify the file's rows belong to a single `Section`; **warn** if mixed
    (Decision 5).
 7. Resolve duplicate `seg_id` rows by keeping the row with the most
-   non-empty cells in the attribute columns; warn on every duplicate
-   (Decision 6).
+   non-empty cells in the attribute columns (Decision 6).
 8. Build a row record:
    `(section, distance, length, lat, lon, seg_id, comments, attr_values)`.
 
@@ -213,8 +213,9 @@ the Vietnam data against it:
   shared with BH.
 - For each row, look up each attribute's iRAP code (numeric in the XLS
   cell) and confirm it appears in
-  `attribute_value_to_irap_number[attr].values()`; warn-and-drop the row
-  on unknown codes (matches Decision 9 / BH semantics).
+  `attribute_value_to_irap_number[attr].values()`. A cell with an unknown
+  code, or with a non-integer value, becomes -1 like a blank cell, so that
+  the row's other attributes are kept. The parser reports it as an issue.
 - The validated file is **copied into the metadata directory**, normalized as
   in Decision 14.
 
@@ -240,7 +241,7 @@ For each kept segment:
 }
 ```
 
-A blank attribute cell becomes -1, which the loader reads as a missing code
+A blank or invalid attribute cell becomes -1, which the loader reads as a missing code
 (`irap_data.metadata.compute_segment_labels`). With
 `allow_missing_attributes=True`, the default of `make_vietnam_data`, a missing
 code becomes the ignore label. Otherwise, as for BH, the segment is left out.

@@ -28,25 +28,29 @@ Validation rules (see irap_vietnam_data_preparation/vietnam_data_preparation.md)
 - Files lacking the labeling columns entirely (Section + at least one
   attribute) are skipped as "non-coding files".
 - Rows are dropped (and counted) when:
+    * a scalar cell (Distance, Length, coordinates, ``offset_distance_m``) is
+      not numeric,
+    * the optional ``offset_distance_m`` column (distance in meters between the
+      row's FPZ image coordinates and its annotation coordinates) is greater
+      than MAX_ANNOT_LOC_OFFSET_M (a blank offset is not checked),
     * Length != 0.02 (within 1e-6),
     * any required scalar field is missing,
-    * Image Reference FPZ does not contain a parseable segment id,
-    * the row has no genuine attribute value at all (every attribute cell blank
-      / file-level-empty) — dropped as a non-coding/padding row,
-    * a required attribute cell is empty (but the row has at least one genuine
-      attribute value): kept with MISSING_ATTR_CODE (-1) in that cell instead of
-      being dropped, unless --drop-rows-missing-attributes is passed; which
-      attributes are missing and in how many kept rows is reported per file in
-      the parse report (attributes with zero non-empty values across the whole
-      file are stored as None — a distinct file-level concept),
-    * any attribute iRAP code is not in attribute_value_to_irap_number,
-    * the optional ``offset_distance_m`` column (distance in meters between the
-      row's FPZ image coordinates and its annotation coordinates) is present,
-      non-blank, and greater than MAX_ANNOT_LOC_OFFSET_M (rows whose annotation
-      sits too far from the FPZ point are dropped; the column is ignored when
-      absent or blank).
+    * Image Reference FPZ does not contain "seg. no. <N>",
+    * the row has no genuine attribute value at all, as a non-coding or
+      padding row.
+- An attribute cell that is blank, not an integer, or without an iRAP code in
+  attribute_value_to_irap_number becomes MISSING_ATTR_CODE (-1). With
+  --drop-rows-missing-attributes, the row is dropped instead. Speed limit (in
+  km/h) and Intersecting road volume (a vehicle count) are converted to iRAP
+  codes (see ATTR_VALUE_CLASSIFIERS).
 - Duplicate segment ids across the entire dataset are resolved by keeping
-  the row with the most non-empty attribute cells; warns on every collision.
+  the row with the most non-empty attribute cells, and the first one in a tie.
+
+Every value that is set to missing or interpreted, and every file-level
+irregularity, is recorded as an :class:`Issue` (see :class:`IssueKind`). The
+issues are printed as warnings to stderr, summarized on stdout, and listed per
+file in parse_report.json. Row numbers are Excel row numbers (the header is
+row 1).
 """
 
 import argparse
@@ -69,13 +73,14 @@ from tqdm import tqdm
 import layout
 
 
+SEG_ID_COLUMN = "Image Reference FPZ"
 REQUIRED_SCALAR_COLUMNS = (
     "Section",
     "Distance",
     "Length",
     "Latitude start",
     "Longitude start",
-    "Image Reference FPZ",
+    SEG_ID_COLUMN,
     "Comments",
 )
 
@@ -87,12 +92,11 @@ INCOMPATIBLE_ATTRIBUTES_FILE = "incompatible_attributes.json"
 # FPZ point are dropped. The column is ignored when absent or blank.
 ANNOT_LOC_OFFSET_COLUMN = "offset_distance_m"
 MAX_ANNOT_LOC_OFFSET_M = 5
-# Sentinel stored in attribute columns when a row-level cell is blank.
-# Distinct from None, which means the attribute was entirely absent in the file.
+# Stored in an attribute column for a cell that is blank, not an integer, or
+# without an iRAP code (see SET_TO_MISSING_KINDS).
 MISSING_ATTR_CODE = -1
 
 SEG_ID_RE = re.compile(r"seg\.?\s*no\.?\s*(\d+)", re.IGNORECASE)
-SEG_ID_FALLBACK_RE = re.compile(r"\b(\d{4,})\b")
 
 
 def resolve_coding_tables_dir(data_dir: Path) -> Path:
@@ -214,47 +218,101 @@ def format_row_ranges(rows: T.Iterable[int]) -> str:
     return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in ranges)
 
 
+class IssueKind:
+    """Kinds of :class:`Issue`, grouped by their effect on the output."""
+
+    # An attribute cell that is set to MISSING_ATTR_CODE.
+    BLANK = "blank"
+    NON_NUMERIC = "non_numeric"
+    NON_INTEGER = "non_integer"
+    UNKNOWN_VALUE = "unknown_value"  # a code or raw value without a valid iRAP code
+    # A value that is used with an interpretation.
+    SPEED_LIMIT_BELOW_30_KMH = "speed_limit_below_30_kmh"  # coded as <30km/h
+    BLANK_ANNOT_LOC_OFFSET = "blank_annot_loc_offset"  # row kept without the offset check
+    DUPLICATE_TIE = "duplicate_dropped_in_tie"  # an equally filled earlier row was kept
+    DUPLICATE_CONFLICT = "duplicate_conflict"  # value: (kept code, dropped code)
+    # A file-level irregularity.
+    EXTRA_SHEETS_IGNORED = "extra_sheets_ignored"  # value: the ignored sheet names
+    IGNORED_COLUMN_WITH_VALUES = "ignored_column_with_values"
+    EMPTY_ATTRIBUTE = "empty_attribute"  # all cells blank
+    NO_ANNOT_LOC_OFFSET_COLUMN = "no_annot_loc_offset_column"
+
+
+SET_TO_MISSING_KINDS = (
+    IssueKind.UNKNOWN_VALUE, IssueKind.NON_NUMERIC, IssueKind.NON_INTEGER, IssueKind.BLANK)
+ISSUE_KINDS_BY_EFFECT: dict[str, tuple[str, ...]] = {
+    f"Attribute cells set to {MISSING_ATTR_CODE}": SET_TO_MISSING_KINDS,
+    "Values interpreted": (
+        IssueKind.SPEED_LIMIT_BELOW_30_KMH, IssueKind.BLANK_ANNOT_LOC_OFFSET,
+        IssueKind.DUPLICATE_TIE, IssueKind.DUPLICATE_CONFLICT),
+    "File level": (
+        IssueKind.EXTRA_SHEETS_IGNORED, IssueKind.IGNORED_COLUMN_WITH_VALUES,
+        IssueKind.EMPTY_ATTRIBUTE, IssueKind.NO_ANNOT_LOC_OFFSET_COLUMN),
+}
+ISSUE_KIND_ORDER = [k for kinds in ISSUE_KINDS_BY_EFFECT.values() for k in kinds]
+
+
+@dataclass(frozen=True)
+class Issue:
+    """A value that was set to missing or interpreted, or a file-level irregularity."""
+
+    kind: str
+    file: str
+    row: int | None = None  # Excel row number, None for a file-level issue
+    column: str | None = None  # canonical attribute name for an attribute column
+    value: T.Hashable = None
+
+
+class InvalidCellValueError(ValueError):
+    """Raised for a non-blank cell value that cannot be converted. ``kind`` is an IssueKind."""
+
+    def __init__(self, kind: str, value: T.Any):
+        super().__init__(f"{kind}: {value!r}")
+        self.kind = kind
+        self.value = value
+
+
 def parse_seg_id(cell: T.Any) -> int | None:
-    """Extract the segment id integer from an Image Reference FPZ cell."""
+    """Extracts the segment id from an Image Reference FPZ cell ("seg. no. <N>"), or returns None."""
     if is_blank(cell):
         return None
-    s = str(cell)
-    m = SEG_ID_RE.search(s) or SEG_ID_FALLBACK_RE.search(s)
+    m = SEG_ID_RE.search(str(cell))
     return int(m.group(1)) if m else None
 
 
 def parse_float(cell: T.Any) -> float | None:
-    """Coerce a cell to float; return None on blank/parse failure."""
+    """Converts a cell to float, or returns None for a blank cell.
+
+    Raises :class:`InvalidCellValueError` for a non-numeric cell.
+    """
     if is_blank(cell):
         return None
     try:
         return float(cell)
     except (TypeError, ValueError):
-        print(f"WARNING: expected numeric value, got non-numeric {cell!r}")
-        return None
+        raise InvalidCellValueError(IssueKind.NON_NUMERIC, cell) from None
 
 
 def parse_int_code(cell: T.Any) -> int | None:
-    """Coerce a cell to int; return None on blank/parse failure."""
-    if is_blank(cell):
+    """Converts a cell to int, or returns None for a blank cell.
+
+    Raises :class:`InvalidCellValueError` for a non-numeric or non-integer cell.
+    """
+    f = parse_float(cell)  # Excel often loads integer codes as floats (e.g. 1.0).
+    if f is None:
         return None
-    try:
-        # Excel often loads numeric codes as floats (e.g. 1.0).
-        f = float(cell)
-    except (TypeError, ValueError):
-        if isinstance(cell, str) and cell.split(' ')[0].isdigit():
-            return int(cell.split(' ')[0])
-        print(f"WARNING: expected numeric code, got non-numeric {cell!r}")
-        return None
-    i = int(f)
-    if float(i) != f:
-        print(f"WARNING: expected integer code, got non-integer {f} in cell with value {cell!r}")
-        return None
-    return i
+    if not f.is_integer():
+        raise InvalidCellValueError(IssueKind.NON_INTEGER, cell)
+    return int(f)
 
 
-def classify_road_volume(cell: T.Any) -> int | None:
-    """Map a raw intersecting road volume count to an iRAP code.
+# The result of an attribute value classifier: the iRAP code (None for a blank
+# cell), and the kind of the interpretation issue, if any.
+ClassifiedValue = tuple[int | None, str | None]
+
+
+def classify_road_volume(cell: T.Any) -> ClassifiedValue:
+    """Maps an intersecting road volume (vehicle count) to an iRAP code.
 
     Codes match attribute_metadata.json:
         1: ≥15,000 vehicles
@@ -263,50 +321,79 @@ def classify_road_volume(cell: T.Any) -> int | None:
         4: 1,000 to <5,000 vehicles
         5: 100 to <1,000 vehicles
         6: 1 to <100 vehicles
-        7: Not applicable (0 or blank)
+        7: Not applicable (0 vehicles)
+
+    Raises :class:`InvalidCellValueError` for a non-numeric count, and for a
+    count that is negative or between 0 and 1.
     """
     v = parse_float(cell)
     if v is None:
-        return None
-    if v >= 15000:
-        return 1
-    if v >= 10000:
-        return 2
-    if v >= 5000:
-        return 3
-    if v >= 1000:
-        return 4
-    if v >= 100:
-        return 5
-    if v >= 1:
-        return 6
-    return 7  # 0 vehicles – not applicable
+        return None, None
+    # The smallest count of the codes 1 to 6.
+    for code, min_count in enumerate((15000, 10000, 5000, 1000, 100, 1), start=1):
+        if v >= min_count:
+            return code, None
+    if v == 0:
+        return 7, None
+    raise InvalidCellValueError(IssueKind.UNKNOWN_VALUE, cell)
+
+
+def classify_speed_limit_kmh(cell: T.Any) -> ClassifiedValue:
+    """Maps a speed limit in km/h to an iRAP code.
+
+    Codes match attribute_metadata.json:
+        1: <30km/h (also 30 km/h, which has no code of its own)
+        3: 40km/h, 5: 50km/h, ..., 23: 140km/h (each step of 10 km/h adds 2)
+        25: ≥150km/h
+
+    A speed limit below 30 km/h is reported (SPEED_LIMIT_BELOW_30_KMH), as it
+    shares the code with 30 km/h. Raises :class:`InvalidCellValueError` for a
+    speed limit that is not a positive integer, or that is between 30 and
+    150 km/h but not a multiple of 10.
+    """
+    kmh = parse_int_code(cell)
+    if kmh is None:
+        return None, None
+    if 0 < kmh < 30:
+        return 1, IssueKind.SPEED_LIMIT_BELOW_30_KMH
+    if kmh == 30:
+        return 1, None
+    if kmh >= 150:
+        return 25, None
+    if kmh > 30 and kmh % 10 == 0:
+        return 3 + 2 * (kmh - 40) // 10, None
+    raise InvalidCellValueError(IssueKind.UNKNOWN_VALUE, kmh)
 
 
 # Attributes whose table cells contain raw values (not iRAP codes) that need
-# classification into codes.  The classifier is called instead of
-# ``parse_int_code`` and the result is not validated against
-# ``valid_codes_per_attr`` (the classifier itself produces only valid codes).
-ATTR_VALUE_CLASSIFIERS: dict[str, T.Callable[[T.Any], int | None]] = {
+# classification into codes. The classifier is called instead of
+# ``parse_int_code``, and its result is validated against
+# ``valid_codes_per_attr`` like any other code, so that a mismatch with
+# attribute_metadata.json is not silent.
+ATTR_VALUE_CLASSIFIERS: dict[str, T.Callable[[T.Any], ClassifiedValue]] = {
     "Intersecting road volume": classify_road_volume,
+    "Speed limit": classify_speed_limit_kmh,
 }
 
 
-def read_sheet(path: Path) -> pd.DataFrame:
-    """Read the (single) sheet of an XLS/XLSX file as a DataFrame.
+def read_sheet(path: Path) -> tuple[pd.DataFrame, list[str]]:
+    """Reads the first non-empty sheet of an XLS/XLSX file as a DataFrame.
 
-    Errors out if the file has more than one non-empty sheet.
+    Returns the DataFrame (empty if all sheets are empty) and the names of the
+    other non-empty sheets, which are ignored.
     """
     engine = "xlrd" if path.suffix.lower() == ".xls" else "openpyxl"
     sheets = pd.read_excel(path, sheet_name=None, engine=engine, dtype=object)
     non_empty_sheets = {n: df for n, df in sheets.items() if not df.empty}
     if not non_empty_sheets:
-        return pd.DataFrame()
-    if len(non_empty_sheets) > 1:
-        print(
-            f"WARN: {path}: parsed first of {len(non_empty_sheets)} sheets: {list(non_empty_sheets)}"
-        )
-    return next(iter(non_empty_sheets.values()))
+        return pd.DataFrame(), []
+    first_name, *other_names = non_empty_sheets
+    return non_empty_sheets[first_name], other_names
+
+
+def excel_row(df_index: int) -> int:
+    """Returns the Excel row number of a DataFrame row read by :func:`read_sheet` (the header is row 1)."""
+    return df_index + 2
 
 
 def file_is_coding_table(
@@ -330,8 +417,12 @@ def validate_columns(
     file: Path,
     ignored_attributes: list[str] | None = None,
     name_mapping: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Return ``{logical_name: actual_column_name}`` for every required column.
+) -> tuple[dict[str, str], list[str]]:
+    """Resolves the table column of every required column.
+
+    Returns ``{logical_name: actual_column_name}`` for every required column,
+    and the ignored attributes whose column is present in the table and has a
+    non-blank value (so that callers can report that values are ignored).
 
     Header lookup is case-insensitive (after whitespace stripping). Attribute
     columns are looked up by their metadata name directly (table column names
@@ -343,10 +434,6 @@ def validate_columns(
     missing required columns next to their closest header found in the file,
     and separately lists headers present in the file but unused by the
     schema (so renames vs. truly-extra columns are easy to tell apart).
-
-    When all required columns are found, also prints:
-    - Per ignored attribute that is present in the table: how many non-empty
-      values it contains (WARN; so callers can verify the skip is intentional).
     """
     ignored_attributes = ignored_attributes or []
     name_mapping = name_mapping or {}
@@ -405,20 +492,12 @@ def validate_columns(
         )
 
     result = {r: actual[h] for r, h in resolved.items() if h is not None}
-
-    # Warn about ignored attributes that are present in the table.
-    for attr in ignored_attributes:
-        h = resolve_one(attr)
-        if h is not None:
-            actual_col = actual[h]
-            num_vals = sum(1 for v in df[actual_col] if not is_blank(v))
-            print(
-                f"WARN: {file.name}: ignoring (as per configuration) column '{attr}' "
-                f"({num_vals} non-empty value(s))",
-                file=sys.stderr,
-            )
-
-    return result
+    ignored_with_values = [
+        attr for attr in ignored_attributes
+        if (h := resolve_one(attr)) is not None
+        and not df[actual[h]].apply(is_blank).all()
+    ]
+    return result, ignored_with_values
 
 
 # -----------------------------------------------------------------------------
@@ -446,64 +525,67 @@ class ParseReport:
     there to parse without the (otherwise unused) bookkeeping.
     """
 
-    drop_counts: Counter = field(default_factory=Counter)
-    unknown_codes: dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
-    empty_attr_file_counts: Counter = field(default_factory=Counter)
-    missing_rows_per_attr_per_file: dict[str, dict[str, int]] = field(default_factory=dict)
     non_empty_rows_per_file: dict[str, int] = field(default_factory=dict)
     drop_counts_per_file: dict[str, Counter] = field(default_factory=dict)
-    empty_attrs_per_file: dict[str, list[str]] = field(default_factory=dict)
-    rows_with_missing_attrs_per_file: dict[str, int] = field(default_factory=dict)
     rows_kept_per_file: dict[str, int] = field(default_factory=dict)
     skipped_files: dict[str, str] = field(default_factory=dict)
     processed_files: list[str] = field(default_factory=list)
+    # Issues of the parsed files and the kept rows, before duplicate resolution.
+    issues: list[Issue] = field(default_factory=list)
+
+    @property
+    def drop_counts(self) -> Counter:
+        return sum(self.drop_counts_per_file.values(), Counter())
 
 
 class RowDropReason:
+    NON_NUMERIC_SCALAR = "non_numeric_scalar"
     LENGTH_MISMATCH = "length_mismatch"
     MISSING_SCALAR = "missing_scalar"
     BAD_SEG_ID = "bad_seg_id"
     NO_ATTRIBUTES = "no_attributes"
-    MISSING_ATTRIBUTE = "missing_attribute"
-    UNKNOWN_CODE = "unknown_code"
+    MISSING_ATTRIBUTE = "missing_attribute"  # with drop_missing_attrs
+    INVALID_ATTRIBUTE_VALUE = "invalid_attribute_value"  # with drop_missing_attrs
     ANNOT_LOC_OFFSET_TOO_FAR = "annot_loc_offset_too_far"
+
 
 def parse_row_attributes(
     raw: T.Mapping[T.Any, T.Any],
     attribute_names: T.Sequence[str],
     cols: T.Mapping[str, str],
     valid_codes_per_attr: T.Mapping[str, set[int]],
-    unknown_codes: dict[str, Counter],
-    *,
-    drop_missing_attrs: bool = False,
-) -> tuple[dict[str, int | None] | None, str | None]:
-    """Resolve every attribute code for one row.
+    file: str,
+    row: int,
+) -> tuple[dict[str, int], list[Issue]]:
+    """Resolves every attribute code of one row.
 
-    Returns ``(attrs, None)`` on success, or ``(None, reason)`` if the row must
-    be dropped. When ``drop_missing_attrs`` is False (default), blank cells are
-    stored as ``MISSING_ATTR_CODE`` (-1) and the row is kept; when True, a
-    blank cell causes the row to be dropped with MISSING_ATTRIBUTE. Classifier-
-    backed attributes produce codes directly and are not validated against
-    ``valid_codes_per_attr``; all others are parsed as integer codes and
-    checked.
+    Returns the codes, and the issues of the cells, which have the given
+    ``file`` and ``row``. The cells of classifier-backed attributes are
+    converted from raw values to codes, the others are parsed as integer
+    codes. A cell that is blank, not an integer, or without a code in
+    ``valid_codes_per_attr`` becomes MISSING_ATTR_CODE, with an issue of a
+    kind in SET_TO_MISSING_KINDS.
     """
-    attrs: dict[str, int | None] = {}
+    attrs = dict.fromkeys(attribute_names, MISSING_ATTR_CODE)
+    issues: list[Issue] = []
     for attr in attribute_names:
+        cell = raw[cols[attr]]
         classifier = ATTR_VALUE_CLASSIFIERS.get(attr)
-        if classifier is not None:
-            code = classifier(raw[cols[attr]])
-        else:
-            code = parse_int_code(raw[cols[attr]])
-        if code is None:
-            if drop_missing_attrs:
-                return None, RowDropReason.MISSING_ATTRIBUTE
-            attrs[attr] = MISSING_ATTR_CODE
+        try:
+            code, interpretation = (classifier(cell) if classifier is not None
+                                    else (parse_int_code(cell), None))
+        except InvalidCellValueError as e:
+            issues.append(Issue(e.kind, file, row, attr, e.value))
             continue
-        if classifier is None and code not in valid_codes_per_attr[attr]:
-            unknown_codes[attr][code] += 1
-            return None, RowDropReason.UNKNOWN_CODE
-        attrs[attr] = code
-    return attrs, None
+        if code is None:
+            issues.append(Issue(IssueKind.BLANK, file, row, attr))
+        elif code not in valid_codes_per_attr[attr]:
+            issues.append(Issue(IssueKind.UNKNOWN_VALUE, file, row, attr, code))
+        else:
+            attrs[attr] = code
+            if interpretation is not None:
+                issues.append(Issue(interpretation, file, row, attr, cell))
+    return attrs, issues
 
 
 def process_file(
@@ -518,56 +600,44 @@ def process_file(
 
     Records are dicts with keys:
         section, distance, length, lat, lon, seg_id, comments, source_file,
-        and one entry per attribute (iRAP code as int).
+        source_row (Excel row number), and one entry per attribute (iRAP code
+        as int).
 
-    Mutates the per-file and total tallies in ``report`` for the parse report.
+    Mutates the per-file tallies and issues in ``report`` for the parse report.
+    Issues are recorded for the kept rows only. The dropped rows are counted
+    by drop reason. Blank cells of an attribute that is blank in the whole
+    file are reported once, as EMPTY_ATTRIBUTE.
     """
     attribute_names = inputs.attribute_names
-    cols = validate_columns(
+    cols, ignored_with_values = validate_columns(
         df, attribute_names, file=path,
         ignored_attributes=inputs.ignored_attributes,
         name_mapping=inputs.name_mapping,
     )
 
+    report.issues.extend(Issue(IssueKind.IGNORED_COLUMN_WITH_VALUES, path.name, column=attr)
+                         for attr in ignored_with_values)
+
     # Optional FPZ-to-annotation offset column (not a required column).
     norm_to_actual = {normalize_header(c).lower(): c for c in df.columns}
     annot_loc_offset_col = norm_to_actual.get(ANNOT_LOC_OFFSET_COLUMN.lower())
+    if annot_loc_offset_col is None:
+        report.issues.append(Issue(IssueKind.NO_ANNOT_LOC_OFFSET_COLUMN, path.name,
+                                   column=ANNOT_LOC_OFFSET_COLUMN))
 
     attr_blank = pd.DataFrame(
         {a: df[cols[a]].apply(is_blank) for a in attribute_names}
     )
     empty_attrs = [attr for attr in attribute_names if attr_blank[attr].all()]
-    if empty_attrs:
-        for attr in empty_attrs:
-            report.empty_attr_file_counts[attr] += 1
-        report.empty_attrs_per_file[path.name] = list(empty_attrs)
-        print(
-            f"INFO: {path.name}: {len(empty_attrs)} attribute(s) with no values: "
-            + ", ".join(f"'{a}'" for a in empty_attrs),
-            file=sys.stderr,
-        )
-    per_file_skip = set(empty_attrs)
+    report.issues.extend(Issue(IssueKind.EMPTY_ATTRIBUTE, path.name, column=attr)
+                         for attr in empty_attrs)
 
     # A row with no values for any attribute is treated as empty (padding /
     # non-coding row); only non-empty rows count toward num_rows_non_empty.
     report.non_empty_rows_per_file[path.name] = int((~attr_blank.all(axis=1)).sum())
 
     rows: list[dict] = []
-    sections_in_file: set[str] = set()
     file_drops: Counter = Counter()
-    rows_with_missing: int = 0
-    # Source row indices of kept rows whose cell was set to MISSING_ATTR_CODE,
-    # per attribute. Counted over kept rows only, so each per-attribute total is
-    # consistent with rows_with_missing (always <= rows_with_missing).
-    missing_attr_row_indices: dict[str, list[int]] = defaultdict(list)
-    # 1-based row numbers grouped by the exact set (tuple) of missing
-    # attributes, so identical missing-attribute warnings are emitted once as
-    # continuous row ranges instead of one line per row.
-    missing_attrs_rows: dict[tuple[str, ...], list[int]] = defaultdict(list)
-
-    def drop(reason: str) -> None:
-        report.drop_counts[reason] += 1
-        file_drops[reason] += 1
 
     # Plain dicts: per-cell lookups on them are far cheaper than on the
     # ``pd.Series`` rows that ``iterrows`` yields.
@@ -575,51 +645,59 @@ def process_file(
         # Skip wholly empty rows (XLSX often pads with blanks).
         if all(is_blank(raw[cols[k]]) for k in REQUIRED_SCALAR_COLUMNS):
             continue
+        row = excel_row(idx)
 
-        # Drop rows whose annotation sits too far from the FPZ point.
-        annot_loc_offset = (parse_float(raw[annot_loc_offset_col])
-                            if annot_loc_offset_col is not None else None)
-        if (annot_loc_offset or 0.) > MAX_ANNOT_LOC_OFFSET_M:
-            drop(RowDropReason.ANNOT_LOC_OFFSET_TOO_FAR)
+        try:
+            annot_loc_offset = (parse_float(raw[annot_loc_offset_col])
+                                if annot_loc_offset_col is not None else None)
+            length = parse_float(raw[cols["Length"]])
+            distance = parse_float(raw[cols["Distance"]])
+            lat = parse_float(raw[cols["Latitude start"]])
+            lon = parse_float(raw[cols["Longitude start"]])
+        except InvalidCellValueError:
+            file_drops[RowDropReason.NON_NUMERIC_SCALAR] += 1
             continue
 
-        length = parse_float(raw[cols["Length"]])
+        # Drop rows whose annotation sits too far from the FPZ point.
+        if annot_loc_offset is not None and annot_loc_offset > MAX_ANNOT_LOC_OFFSET_M:
+            file_drops[RowDropReason.ANNOT_LOC_OFFSET_TOO_FAR] += 1
+            continue
+
         if length is None or abs(length - EXPECTED_LENGTH_KM) > LENGTH_TOLERANCE:
-            drop(RowDropReason.LENGTH_MISMATCH)
+            file_drops[RowDropReason.LENGTH_MISMATCH] += 1
             continue
 
         section = raw[cols["Section"]]
-        distance = parse_float(raw[cols["Distance"]])
-        lat = parse_float(raw[cols["Latitude start"]])
-        lon = parse_float(raw[cols["Longitude start"]])
         if is_blank(section) or distance is None or lat is None or lon is None:
-            drop(RowDropReason.MISSING_SCALAR)
+            file_drops[RowDropReason.MISSING_SCALAR] += 1
             continue
         section = str(section).strip()
-        sections_in_file.add(section)
 
-        seg_id = parse_seg_id(raw[cols["Image Reference FPZ"]])
+        seg_id = parse_seg_id(raw[cols[SEG_ID_COLUMN]])
         if seg_id is None:
-            drop(RowDropReason.BAD_SEG_ID)
+            file_drops[RowDropReason.BAD_SEG_ID] += 1
             continue
 
-        attrs, attr_drop_reason = parse_row_attributes(
-            raw, attribute_names, cols, inputs.valid_codes,
-            report.unknown_codes, drop_missing_attrs=drop_missing_attrs,
-        )
-        if attr_drop_reason is not None:
-            drop(attr_drop_reason)
-            continue
-        missing_attrs_row = [a for a, v in attrs.items() if v == MISSING_ATTR_CODE and a not in per_file_skip]
-        if missing_attrs_row:
-            missing_attrs_rows[tuple(missing_attrs_row)].append(idx + 1)
-
+        attrs, attr_issues = parse_row_attributes(raw, attribute_names, cols, inputs.valid_codes,
+                                                  path.name, row)
         # A row with no genuine attribute value (all blank / file-level-empty)
         # is a non-coding / padding row carrying no labeling signal; drop it
         # rather than keep an all-(-1) record.
         if not any(is_real_attribute_code(v) for v in attrs.values()):
-            drop(RowDropReason.NO_ATTRIBUTES)
+            file_drops[RowDropReason.NO_ATTRIBUTES] += 1
             continue
+        if drop_missing_attrs:
+            missing_kinds = {i.kind for i in attr_issues if i.kind in SET_TO_MISSING_KINDS}
+            if missing_kinds:
+                file_drops[RowDropReason.MISSING_ATTRIBUTE if missing_kinds == {IssueKind.BLANK}
+                           else RowDropReason.INVALID_ATTRIBUTE_VALUE] += 1
+                continue
+
+        report.issues.extend(i for i in attr_issues
+                             if not (i.kind == IssueKind.BLANK and i.column in empty_attrs))
+        if annot_loc_offset_col is not None and annot_loc_offset is None:
+            report.issues.append(Issue(IssueKind.BLANK_ANNOT_LOC_OFFSET, path.name, row,
+                                       ANNOT_LOC_OFFSET_COLUMN))
 
         comments = raw[cols["Comments"]]
         comments = "" if is_blank(comments) else str(comments)
@@ -633,52 +711,14 @@ def process_file(
             "seg_id": str(seg_id),
             "comments": comments,
             "source_file": path.name,
-            # 1-based source spreadsheet row (matches warning numbering);
-            # provenance for downstream tooling. Dropped before rows.parquet.
-            "source_row": idx + 1,
+            # Provenance for downstream tooling. Dropped before rows.parquet.
+            "source_row": row,
         }
         rec.update(attrs)
-        missing_attrs = [a for a, v in attrs.items() if v == MISSING_ATTR_CODE]
-        if missing_attrs:
-            rows_with_missing += 1
-            for a in missing_attrs:
-                missing_attr_row_indices[a].append(idx)
         rows.append(rec)
-
-    # Emit one warning per distinct set of missing attributes, collapsing the
-    # affected rows into continuous ranges.
-    for attrs_tuple, row_nums in missing_attrs_rows.items():
-        print(
-            f"WARN: {path.name}: missing value for attribute(s) {', '.join(attrs_tuple)}"
-            f" in rows: {format_row_ranges(row_nums)}",
-            file=sys.stderr,
-        )
 
     if file_drops:
         report.drop_counts_per_file[path.name] = file_drops
-    if rows_with_missing:
-        report.rows_with_missing_attrs_per_file[path.name] = rows_with_missing
-
-    # Per-attribute missing counts over kept rows (consistent with the totals
-    # above). Warn per attribute, collapsing source row indices into ranges.
-    if missing_attr_row_indices:
-        num_kept = len(rows)
-        missing_per_attr: dict[str, int] = {}
-        for attr in attribute_names:
-            idxs = missing_attr_row_indices.get(attr)
-            if not idxs:
-                continue
-            missing_per_attr[attr] = len(idxs)
-            indices_str = format_row_ranges(int(i) + 1 for i in idxs)
-            print(
-                f"WARN: {path.name}: attribute '{attr}' set to "
-                f"{MISSING_ATTR_CODE} in {len(idxs)}/{num_kept} kept row(s) "
-                f"(row indices: {indices_str})",
-                file=sys.stderr,
-            )
-        if missing_per_attr:
-            report.missing_rows_per_attr_per_file[path.name] = missing_per_attr
-
     return rows
 
 
@@ -687,33 +727,17 @@ def num_filled_attribute_cells(rec: dict, attribute_names: T.Sequence[str]) -> i
     return sum(1 for a in attribute_names if is_real_attribute_code(rec.get(a)))
 
 
-def conflicting_attributes(
-    group: T.Sequence[dict],
-    attribute_names: T.Sequence[str],
-) -> dict[str, set[int]]:
-    """Return attributes whose genuine values disagree across a duplicate group.
-
-    Only genuinely-coded values (not ``None`` and not ``MISSING_ATTR_CODE``) are
-    compared; an attribute conflicts when the rows carry two or more distinct
-    such values. Returns ``{attr: {value, ...}}`` for the conflicting attributes.
-    """
-    conflicts: dict[str, set[int]] = {}
-    for attr in attribute_names:
-        values = {r.get(attr) for r in group if is_real_attribute_code(r.get(attr))}
-        if len(values) > 1:
-            conflicts[attr] = values
-    return conflicts
-
-
 def resolve_duplicates(
     rows: list[dict],
     attribute_names: T.Sequence[str],
-) -> tuple[list[dict], list[dict]]:
-    """Return (kept_rows, dropped_duplicate_rows). Keep row with most filled cells.
+) -> tuple[list[dict], list[dict], list[Issue]]:
+    """Keeps one row per seg_id: the one with the most filled cells, and the first one in a tie.
 
-    Ties broken by source_file then row order (stable). Warns on every
-    collision, and additionally warns when the duplicates' genuine attribute
-    values disagree (the winner's values are still used).
+    Returns the kept rows, the dropped duplicate rows, and the issues of the
+    dropped rows: DUPLICATE_TIE for a row dropped in a tie, and
+    DUPLICATE_CONFLICT (value: ``(kept code, dropped code)``) for each
+    attribute where the dropped row has a genuine code that differs from the
+    kept one, including where the kept row's cell is missing.
     """
     by_seg: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -721,48 +745,23 @@ def resolve_duplicates(
 
     kept: list[dict] = []
     dropped: list[dict] = []
-    # Collect the per-collision warnings and collapse seg_ids that share an
-    # identical message (same source files, winner and reason) into row ranges,
-    # mirroring the missing-attribute reporting. Insertion order is preserved.
-    dup_warnings: dict[tuple[tuple[str, ...], str, str], list[int]] = defaultdict(list)
-    conflict_warnings: dict[str, list[int]] = defaultdict(list)
-    for seg_id, group in by_seg.items():
-        if len(group) == 1:
-            kept.append(group[0])
-            continue
-        # Stable sort by (-filled, original index): keep the first.
-        scored = sorted(
-            enumerate(group),
-            key=lambda ix_r: (-num_filled_attribute_cells(ix_r[1], attribute_names),
-                              ix_r[0]),
-        )
-        winner = scored[0][1]
+    issues: list[Issue] = []
+    for group in by_seg.values():
+        # Stable sort by the number of filled cells: keep the first.
+        scored = sorted(((num_filled_attribute_cells(r, attribute_names), r) for r in group),
+                        key=lambda filled_and_row: -filled_and_row[0])
+        (winner_filled, winner), losers = scored[0], scored[1:]
         kept.append(winner)
-        for _, r in scored[1:]:
+        for num_filled, r in losers:
             dropped.append(r)
-        winner_filled = num_filled_attribute_cells(winner, attribute_names)
-        runner_up_filled = num_filled_attribute_cells(scored[1][1], attribute_names)
-        if winner_filled > runner_up_filled:
-            reason = f"most filled cells ({winner_filled} vs {runner_up_filled})"
-        else:
-            reason = f"first occurrence (tie at {winner_filled} filled cells)"
-        files = tuple(r["source_file"] for r in group)
-        dup_warnings[(files, winner["source_file"], reason)].append(int(seg_id))
-        conflicts = conflicting_attributes(group, attribute_names)
-        if conflicts:
-            details = "; ".join(
-                f"{attr}={sorted(vals)}" for attr, vals in sorted(conflicts.items())
-            )
-            conflict_warnings[details].append(int(seg_id))
-
-    for (files, winner_file, reason), seg_ids in dup_warnings.items():
-        print(f"WARN: duplicate seg_id(s) {format_row_ranges(seg_ids)} "
-              f"across {list(files)}; kept row from {winner_file} ({reason})",
-              file=sys.stderr)
-    for details, seg_ids in conflict_warnings.items():
-        print(f"WARN: duplicate seg_id(s) {format_row_ranges(seg_ids)} "
-              f"with conflicting attribute value(s): {details}", file=sys.stderr)
-    return kept, dropped
+            file, row = r["source_file"], r["source_row"]
+            if num_filled == winner_filled:
+                issues.append(Issue(IssueKind.DUPLICATE_TIE, file, row, SEG_ID_COLUMN))
+            issues.extend(
+                Issue(IssueKind.DUPLICATE_CONFLICT, file, row, attr, (winner[attr], r[attr]))
+                for attr in attribute_names
+                if is_real_attribute_code(r[attr]) and r[attr] != winner[attr])
+    return kept, dropped, issues
 
 
 # -----------------------------------------------------------------------------
@@ -846,10 +845,13 @@ def collect_all_rows(
     all_rows: list[dict] = []
     for path in tqdm(inputs.files, desc="Parsing", unit="file"):
         try:
-            df = read_sheet(path)
+            df, ignored_sheets = read_sheet(path)
         except Exception as e:
             print(f"ERROR reading {path}: {e}", file=sys.stderr)
             raise
+        if ignored_sheets:
+            rep.issues.append(Issue(IssueKind.EXTRA_SHEETS_IGNORED, path.name,
+                                    value=tuple(ignored_sheets)))
         if df.empty:
             print(f"INFO: {path.name}: skipping – empty sheet", file=sys.stderr)
             rep.skipped_files[path.name] = "empty sheet"
@@ -878,6 +880,100 @@ def collect_all_rows(
 
 
 # -----------------------------------------------------------------------------
+# Issue reporting
+# -----------------------------------------------------------------------------
+
+MAX_SUMMARY_LINES_PER_ISSUE_KIND = 10
+
+IssueGroupKey = tuple[str, str, str | None, T.Hashable]  # (file, kind, column, value)
+
+
+def group_issues(issues: T.Iterable[Issue]) -> dict[IssueGroupKey, list[int]]:
+    """Groups issues by (file, kind, column, value), with the Excel rows of each group.
+
+    Groups are ordered by file, kind (as in ISSUE_KINDS_BY_EFFECT), column and
+    value. The rows of a file-level group are empty.
+    """
+    def sort_key(i: Issue):
+        return (i.file, ISSUE_KIND_ORDER.index(i.kind), i.column or "", str(i.value),
+                i.row or 0)
+
+    groups: dict[IssueGroupKey, list[int]] = {}
+    for i in sorted(issues, key=sort_key):
+        rows = groups.setdefault((i.file, i.kind, i.column, i.value), [])
+        if i.row is not None:
+            rows.append(i.row)
+    return groups
+
+
+def issue_label(column: str | None, value: T.Hashable) -> str:
+    """Returns ``"<column> = <value>"``, leaving out the parts that are None."""
+    parts = [] if column is None else [column]
+    if value is not None:
+        parts.append(repr(value))
+    return " = ".join(parts)
+
+
+def to_json_value(value: T.Any) -> T.Any:
+    """Converts an issue value to a JSON-serializable value (str for unusual cell types)."""
+    if isinstance(value, tuple):
+        return [to_json_value(v) for v in value]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def issue_group_entry(kind: str, column: str | None, value: T.Hashable, rows: list[int]) -> dict:
+    """Returns the parse_report.json entry of an issue group from :func:`group_issues`."""
+    return {
+        "kind": kind,
+        **({"column": column} if column is not None else {}),
+        **({"value": to_json_value(value)} if value is not None else {}),
+        **({"num_rows": len(rows), "rows": format_row_ranges(rows)} if rows else {}),
+    }
+
+
+def count_issues_by_kind(issues: T.Iterable[Issue]) -> dict[str, int]:
+    """Counts issues by kind, in the order of ISSUE_KINDS_BY_EFFECT."""
+    counts = Counter(i.kind for i in issues)
+    return {kind: counts[kind] for kind in ISSUE_KIND_ORDER if counts[kind]}
+
+
+def print_issue_warnings(issue_groups: T.Mapping[IssueGroupKey, list[int]]) -> None:
+    """Prints a warning per issue group of :func:`group_issues` to stderr."""
+    for (fname, kind, column, value), rows in issue_groups.items():
+        label = issue_label(column, value)
+        where = f" in {len(rows)} row(s): {format_row_ranges(rows)}" if rows else ""
+        print(f"WARN: {fname}: {kind}{f' ({label})' if label else ''}{where}", file=sys.stderr)
+
+
+def print_issue_summary(issues: T.Sequence[Issue]) -> None:
+    """Prints the numbers of issues by effect, kind, column and value.
+
+    Shows at most MAX_SUMMARY_LINES_PER_ISSUE_KIND (column, value) lines per
+    kind, the most frequent first.
+    """
+    if not issues:
+        return
+    kind_to_counts: dict[str, Counter] = defaultdict(Counter)  # kind -> (column, value) -> number
+    for i in issues:
+        kind_to_counts[i.kind][i.column, i.value] += 1
+    print("Issues (cells, rows or files, with the duplicate issues of the dropped duplicates):")
+    for effect, kinds in ISSUE_KINDS_BY_EFFECT.items():
+        present_kinds = [kind for kind in kinds if kind in kind_to_counts]
+        if present_kinds:
+            print(f"  {effect}:")
+        for kind in present_kinds:
+            counts = sorted(kind_to_counts[kind].items(),
+                            key=lambda c: (-c[1], c[0][0] or "", str(c[0][1])))
+            print(f"    {kind}: {sum(n for _, n in counts)}")
+            for (column, value), n in counts[:MAX_SUMMARY_LINES_PER_ISSUE_KIND]:
+                print(f"      {issue_label(column, value)}: {n}")
+            if len(counts) > MAX_SUMMARY_LINES_PER_ISSUE_KIND:
+                print(f"      ... and {len(counts) - MAX_SUMMARY_LINES_PER_ISSUE_KIND} more")
+
+
+# -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 
@@ -889,8 +985,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="iRAP-Vietnam dataset root.")
     parser.add_argument(
         "--drop-rows-missing-attributes", action="store_true",
-        help="Drop rows with any blank attribute cell (old behaviour). "
-             "By default such rows are kept with the missing cells set to "
+        help="Drop rows with any blank or invalid attribute cell. "
+             "By default such rows are kept with the cells set to "
              f"{MISSING_ATTR_CODE} (MISSING_ATTR_CODE).",
     )
     args = parser.parse_args(argv)
@@ -910,11 +1006,13 @@ def main(argv: list[str] | None = None) -> int:
         report=rep,
     )
 
-    # Resolve duplicates first: it streams a per-collision WARN to stderr for
-    # every duplicate seg_id, so printing the summary beforehand would bury it
-    # above that wall of warnings. Emit the whole summary as one contiguous
-    # block afterwards, in the order rows flow through the pipeline.
-    kept, dup_dropped = resolve_duplicates(all_rows, attribute_names)
+    kept, dup_dropped, dup_issues = resolve_duplicates(all_rows, attribute_names)
+    issues = rep.issues + dup_issues
+    issue_groups = group_issues(issues)
+    # Print the warnings before the summary, so that the summary is not buried
+    # above them. The summary is one contiguous block, in the order rows flow
+    # through the pipeline.
+    print_issue_warnings(issue_groups)
     total_dropped = sum(rep.drop_counts.values())
     if rep.drop_counts:
         total_rows = len(all_rows) + total_dropped
@@ -938,8 +1036,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(dup_dropped)} duplicate row(s) dropped.")
 
     # Missing-attribute tallies computed over the final kept rows so every
-    # count below refers to the written output (the per-file dicts gathered
-    # during parsing are pre-dedup and would over-count by the duplicates).
+    # count below refers to the written output.
     missing_per_attr_kept: Counter = Counter()
     total_rows_with_missing = 0
     for rec in kept:
@@ -950,27 +1047,21 @@ def main(argv: list[str] | None = None) -> int:
                 row_has_missing = True
         if row_has_missing:
             total_rows_with_missing += 1
+    num_files_empty_per_attr = Counter(
+        i.column for i in issues if i.kind == IssueKind.EMPTY_ATTRIBUTE)
     if total_rows_with_missing:
         attr_missing_totals = sorted(
             ((attr, missing_per_attr_kept.get(attr, 0)) for attr in attribute_names),
             key=lambda kv: (-kv[1], kv[0]),
         )
-        print(f"Rows kept with at least one missing (-1) attribute: "
+        print(f"Rows kept with at least one missing ({MISSING_ATTR_CODE}) attribute: "
               f"{total_rows_with_missing}")
         for attr, count in attr_missing_totals:
             if count:
-                nfe = int(rep.empty_attr_file_counts[attr])
-                suffix = f"  [entirely absent in {nfe} file(s)]" if nfe > 0 else ""
+                nfe = num_files_empty_per_attr[attr]
+                suffix = f"  [entirely blank in {nfe} file(s)]" if nfe > 0 else ""
                 print(f"  {attr}: {count}{suffix}")
-    entirely_file_empty = [
-        attr for attr in attribute_names
-        if int(rep.empty_attr_file_counts[attr]) > 0
-        and missing_per_attr_kept.get(attr, 0) == 0
-    ]
-    if entirely_file_empty:
-        print("Attributes entirely absent from contributing files (no kept rows generated):")
-        for attr in entirely_file_empty:
-            print(f"  {attr}: entirely absent in {int(rep.empty_attr_file_counts[attr])} file(s)")
+    print_issue_summary(issues)
 
     layout.work_dir(args.data_dir).mkdir(parents=True, exist_ok=True)
     # ``source_row`` is provenance for other tools (e.g. cross-annotator eval);
@@ -985,19 +1076,10 @@ def main(argv: list[str] | None = None) -> int:
             "status": "processed",
             "num_rows_non_empty": rep.non_empty_rows_per_file.get(fname, 0),
             "num_rows_kept": rep.rows_kept_per_file.get(fname, 0),
-            "num_rows_with_missing_attributes": rep.rows_with_missing_attrs_per_file.get(fname, 0),
         }
         file_drops = rep.drop_counts_per_file.get(fname)
         if file_drops:
             entry["rows_dropped_by_reason"] = dict(file_drops)
-        empty_attrs = rep.empty_attrs_per_file.get(fname)
-        if empty_attrs:
-            entry["empty_attributes"] = empty_attrs
-        missing_per_attr = rep.missing_rows_per_attr_per_file.get(fname)
-        if missing_per_attr:
-            entry["num_rows_missing_per_attribute"] = dict(
-                sorted(missing_per_attr.items(), key=lambda kv: (-kv[1], kv[0]))
-            )
         return entry
 
     files_section: dict[str, dict] = {}
@@ -1005,7 +1087,15 @@ def main(argv: list[str] | None = None) -> int:
         files_section[fname] = file_entry(fname)
     for fname, reason in rep.skipped_files.items():
         files_section[fname] = {"status": "skipped", "skip_reason": reason}
+    # Every file with an issue is processed or skipped.
+    for (fname, kind, column, value), rows in issue_groups.items():
+        files_section[fname].setdefault("issues", []).append(
+            issue_group_entry(kind, column, value, rows))
     files_section = dict(sorted(files_section.items()))
+
+    issues_per_column: dict[str | None, list[Issue]] = defaultdict(list)
+    for i in issues:
+        issues_per_column[i.column].append(i)
 
     report = {
         "meta": {
@@ -1032,13 +1122,16 @@ def main(argv: list[str] | None = None) -> int:
                 "dropped_duplicates": len(dup_dropped),
             },
             "num_sections": df_out["section"].nunique() if not df_out.empty else 0,
+            "issues": count_issues_by_kind(issues),
         },
         "files": files_section,
+        # Per attribute: the number of kept rows (after duplicate resolution)
+        # in which it is missing, and the numbers of its issues by kind.
         "attributes": {
             attr: {
-                **({"num_files_empty": nfe} if (nfe := int(rep.empty_attr_file_counts[attr])) > 0 else dict()),
-                **({"total_rows_missing": trm} if (trm := missing_per_attr_kept.get(attr, 0)) > 0 else dict()),
-                **({"num_files_unknown_code": uc} if len(uc := dict(rep.unknown_codes.get(attr, Counter()))) > 0 else dict()),
+                **({"num_rows_missing": n} if (n := missing_per_attr_kept.get(attr, 0)) > 0 else {}),
+                **({"issues": count_issues_by_kind(issues_per_column[attr])}
+                   if attr in issues_per_column else {}),
             }
             for attr in attribute_names
         },

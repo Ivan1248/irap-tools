@@ -70,9 +70,11 @@ A coding table is an Excel sheet with one row per 20 m segment, for example:
 - Distance and length are in km.
 - The `seg_id` in `Image Reference FPZ` identifies the image, e.g. `FRAMES/VID_20241211_153327_00_024/VID_20241211_153327_00_024_seg1809249.png`.
 - The images between two rows, e.g. `…_seg1809250.png`, have no row and become unlabeled segments.
-- The attribute columns, from `Carriageway` to just before `Additional comments`, hold iRAP codes. `attribute_metadata.json` maps the codes to values, e.g. `3` is an undivided road. `incompatible_attributes.json` maps each iRAP-BH attribute name to its header where the two differ, e.g. `Carriageway label` to `Carriageway`.
+- The attribute columns, from `Carriageway` to just before `Additional comments`, hold iRAP codes. `attribute_metadata.json` maps the codes to values, e.g. `3` is an undivided road. The exceptions are `Speed limit` in km/h and `Intersecting road volume` as a number of vehicles, which the parser converts to codes. 30 km/h becomes the code of <30 km/h, as it has no code of its own. `incompatible_attributes.json` maps each iRAP-BH attribute name to its header where the two differ, e.g. `Carriageway label` to `Carriageway`.
 
-Writes one row per segment to `_work/rows.parquet` and a summary to `_work/parse_report.json`. The docstring of `parse_coding_tables.py` lists the rules for dropped rows. A duplicate `seg_id` keeps the row with the most coded attributes. A blank attribute cell becomes `-1`, which is an _ignore_ label. `--drop-rows-missing-attributes` drops such rows instead.
+Writes one row per segment to `_work/rows.parquet` and a summary to `_work/parse_report.json`. The docstring of `parse_coding_tables.py` lists the rules for dropped rows. A duplicate `seg_id` keeps the row with the most coded attributes, and the first one in a tie. An attribute cell that is blank, not an integer, or without an iRAP code (e.g. an unknown code) becomes `-1`, which is an _ignore_ label. `--drop-rows-missing-attributes` drops such rows instead.
+
+Each cell set to `-1`, each interpreted value (e.g. a speed limit below 30 km/h, a duplicate dropped in a tie, or a duplicate with different codes) and each file-level irregularity (e.g. an ignored column with values) is an _issue_. The parser prints a warning per group of equal issues with their Excel row numbers to stderr, and a summary of the issues to stdout. `parse_report.json` lists the issues of each file, with their rows.
 
 Optional: `python cross_annotator_eval.py $DATA_DIR` measures the agreement between the coding tables that code the same segments. It writes `_work/cross_annotator_report.json`.
 
