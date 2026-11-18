@@ -47,8 +47,8 @@ def write_archive(path, member_name_to_contents, tmp_path, compression=zipfile.Z
 
 def plan_archive(archive, dataset_contexts, member_name_to_contents, tmp_path, seed=None):
     path = write_archive(archive.make_upload_path("m.zip"), member_name_to_contents, tmp_path)
-    return plan_upload(archive, dataset_contexts, path, file_name="m.zip", seed=seed,
-                       description="all splits")
+    return plan_upload(archive, dataset_contexts, path, file_name="m.zip",
+                       missing_segment_policy="invalid", seed=seed, description="all splits")
 
 
 def read_member_sha256s(path):
@@ -60,16 +60,19 @@ def read_member_sha256s(path):
 def test_uploads_are_checked(archive, dataset_contexts):
     predictions = make_model(dataset_contexts)
 
-    def plan(predictions):
+    def plan(predictions, missing_segment_policy="invalid"):
         return plan_upload(archive, dataset_contexts, write_upload(archive, predictions),
-                           file_name="m")
+                           file_name="m", missing_segment_policy=missing_segment_policy)
 
     other_dataset = dc.replace(predictions, header=dc.replace(predictions.header, dataset="bh"))
     with pytest.raises(ValueError, match="dataset 'bh'"):
         plan(other_dataset)
+    # Missing segments of the model-compatible set are a warning, or refused with 'error'.
     incomplete = ie.select_segments(predictions, predictions.segment_ids[:-3])
+    assert any(note.startswith(f"{SPLIT}: No predictions for 3") and "scored as invalid" in note
+               for note in plan(incomplete).notes)
     with pytest.raises(ValueError, match="No predictions for 3"):
-        plan(incomplete)
+        plan(incomplete, "error")
     wrong_codes = dc.replace(predictions, attribute_to_irap_codes={
         **predictions.attribute_to_irap_codes, "Curvature": (1, 3)})
     with pytest.raises(ie.PredictionFormatError, match="Curvature"):
@@ -106,7 +109,8 @@ def test_upload_paths(archive):
 
 def test_discarded_upload_keeps_only_the_uploaded_file(archive, dataset_contexts):
     path = write_upload(archive, make_model(dataset_contexts, model_seed=1))
-    planned = plan_upload(archive, dataset_contexts, path, file_name="m", seed=2)
+    planned = plan_upload(archive, dataset_contexts, path, file_name="m",
+                          missing_segment_policy="invalid", seed=2)
     assert len(list(archive.uploads_dir.iterdir())) == 2  # With the rewritten file.
     planned.discard()
     assert list(archive.uploads_dir.iterdir()) == [path]
@@ -202,7 +206,8 @@ def test_archive_contents_are_checked(archive, two_split_contexts, tmp_path,
     path = write_archive(archive.make_upload_path("m.zip"),
                          make_member_name_to_contents(two_split_contexts), tmp_path)
     with pytest.raises(ValueError, match=message):
-        plan_upload(archive, two_split_contexts, path, file_name="m.zip")
+        plan_upload(archive, two_split_contexts, path, file_name="m.zip",
+                    missing_segment_policy="invalid")
     assert archive.list_models() == []
     assert list(archive.uploads_dir.iterdir()) == [path]
 
@@ -211,7 +216,8 @@ def test_upload_that_is_not_a_zip_archive_is_refused(archive, dataset_contexts):
     path = archive.make_upload_path("m.zip")
     path.write_bytes(b"not a zip")
     with pytest.raises(ValueError, match=r"m\.zip is not a \.zip archive"):
-        plan_upload(archive, dataset_contexts, path, file_name="m.zip")
+        plan_upload(archive, dataset_contexts, path, file_name="m.zip",
+                    missing_segment_policy="invalid")
     assert path.exists()
 
 
@@ -231,7 +237,8 @@ def test_encrypted_archive_member_is_refused(archive, dataset_contexts):
     data[data.rfind(b"PK\x01\x02") + 8] |= 0x01  # The encryption flag of the central directory.
     path.write_bytes(data)
     with pytest.raises(ValueError, match=r"^m\.parquet: It cannot be extracted: .*encrypted"):
-        plan_upload(archive, dataset_contexts, path, file_name="m.zip")
+        plan_upload(archive, dataset_contexts, path, file_name="m.zip",
+                    missing_segment_policy="invalid")
     assert list(archive.uploads_dir.iterdir()) == [path]
 
 
@@ -241,5 +248,6 @@ def test_archive_extraction_is_limited(archive, dataset_contexts, monkeypatch):
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr("m.parquet", bytes(10 ** 6))  # A zip bomb, compressed to 1 kB.
     with pytest.raises(ValueError, match=r"^m\.parquet: The files of the archive have more"):
-        plan_upload(archive, dataset_contexts, path, file_name="m.zip")
+        plan_upload(archive, dataset_contexts, path, file_name="m.zip",
+                    missing_segment_policy="invalid")
     assert list(archive.uploads_dir.iterdir()) == [path]  # Without the extracted part.

@@ -33,10 +33,11 @@ def test_unlabeled_split_is_not_scored(metadata_dir):
         dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=())})["vietnam"]
     predictions = make_predictions(context.metadata.vocabulary, splits["unlabeled_val"],
                                    name="m", seed=0)
-    evaluation_sets, notes = context.select_evaluation_sets(
-        with_split(predictions, "unlabeled_val"))
-    assert evaluation_sets == []
-    assert len(notes) == 3 and all("has no labels" in note for note in notes)
+    selection = context.select_evaluation_sets(with_split(predictions, "unlabeled_val"),
+                                               "invalid")
+    assert selection.evaluation_sets == ()
+    assert (len(selection.notes) == 3
+            and all("has no labels" in note for note in selection.notes))
 
 
 def test_shared_evaluation_sets(dataset_contexts):

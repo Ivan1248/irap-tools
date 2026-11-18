@@ -57,7 +57,7 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
                               method_display_name="Ensemble", seed=7,
                               segment_combination="same", attribute_combination="same",
-                              description="test")
+                              description="test", missing_segment_policy="invalid")
     assert update.confirmations == []
     created = archive.apply_model_update(update, submitter="Bo")
     assert [(s.split, s.label, s.shown_label, s.model.description) for s in created] == [
@@ -87,7 +87,7 @@ def test_create_ensemble(archive, two_split_contexts, submissions):
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
                               method_display_name=None, seed=7,
                               segment_combination="same", attribute_combination="same",
-                              description=None)
+                              description=None, missing_segment_policy="invalid")
     assert len(update.confirmations) == 2
     discard_model_update(update)
     assert not list(archive.uploads_dir.iterdir())
@@ -100,7 +100,7 @@ def test_an_ensemble_gets_the_default_method_name(archive, two_split_contexts, s
     update = prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name=None,
                               method_display_name=None, seed=0,
                               segment_combination="same", attribute_combination="same",
-                              description=None)
+                              description=None, missing_segment_policy="invalid")
     created = archive.apply_model_update(update, submitter="Bo")
     assert {(s.label, s.model.method_display_name) for s in created} == {
         ("a_seed1+b_seed0/seed0", None)}
@@ -112,7 +112,7 @@ def _prepare(archive, two_split_contexts, submissions, names):
     return prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
                             method_display_name=None, seed=0,
                             segment_combination="same", attribute_combination="same",
-                            description=None)
+                            description=None, missing_segment_policy="invalid")
 
 
 def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts, submissions):
@@ -175,5 +175,5 @@ def test_ensemble_files_are_removed_if_it_fails(archive, two_split_contexts, sub
         prepare_ensemble(archive, two_split_contexts["vietnam"], plan, method_name="ens",
                          method_display_name=None, seed=0,
                          segment_combination="same", attribute_combination="same",
-                         description=None)
+                         description=None, missing_segment_policy="invalid")
     assert not list(archive.uploads_dir.iterdir())

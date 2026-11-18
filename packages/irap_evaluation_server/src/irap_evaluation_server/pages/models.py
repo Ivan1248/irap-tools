@@ -5,6 +5,7 @@ import dataclasses as dc
 import typing as T
 from pathlib import Path
 
+import irap_evaluation as ie
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from nicegui import app, run, ui
@@ -211,7 +212,10 @@ def _create_upload_form(archive: ModelArchive,
         set_checking(True)
         try:
             submissions = await _check_and_store(archive, dataset_contexts, upload_path,
-                                                 file_name=file_name, seed=seed,
+                                                 file_name=file_name,
+                                                 missing_segment_policy=(
+                                                     worker.settings.missing_segment_policy),
+                                                 seed=seed,
                                                  description=form.description,
                                                  method_display_name=form.method_display_name,
                                                  actor=actor)
@@ -266,11 +270,13 @@ def _create_upload_form(archive: ModelArchive,
 
 async def _check_and_store(archive: ModelArchive,
                            dataset_contexts: T.Mapping[str, DatasetContext], upload_path: Path, *,
-                           file_name: str, seed: int | None, description: str,
+                           file_name: str, missing_segment_policy: ie.MissingSegmentPolicy,
+                           seed: int | None, description: str,
                            method_display_name: str, actor: str) -> list[Submission]:
     """Plans an upload, asks the user to confirm its changes, if any, and applies it.
 
     Args:
+        file_name, missing_segment_policy, seed: See `uploads.plan_upload`.
         description, method_display_name: As entered, blank to keep the stored one.
         actor: The name of the signed-in account.
 
@@ -283,7 +289,8 @@ async def _check_and_store(archive: ModelArchive,
     """
     client = ui.context.client
     planned = await run.io_bound(plan_upload, archive, dataset_contexts, upload_path,
-                                 file_name=file_name, seed=seed,
+                                 file_name=file_name,
+                                 missing_segment_policy=missing_segment_policy, seed=seed,
                                  description=parse_optional_text(description),
                                  method_display_name=parse_optional_text(method_display_name))
     if planned is None:  # The server is stopping.

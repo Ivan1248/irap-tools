@@ -107,9 +107,13 @@ class DatasetContext:
         return name_to_set
 
     def select_evaluation_sets(
-            self, predictions: ie.Predictions) -> tuple[list[ie.EvaluationSet], list[str]]:
+            self, predictions: ie.Predictions,
+            missing_segment_policy: ie.MissingSegmentPolicy) -> ie.EvaluationSetSelection:
         """Applies `irap_evaluation.select_evaluation_sets` to predictions, with the shared sets
         of their split and the model-compatible set of the context offsets in their header.
+
+        Args:
+            missing_segment_policy: `scoring.ScoringSettings.missing_segment_policy`.
 
         Raises:
             ValueError: If the predictions are of another dataset or of an unknown split, or
@@ -122,16 +126,21 @@ class DatasetContext:
         offsets = header.context_offsets
         return ie.select_evaluation_sets(
             predictions.segment_ids, self.get_shared_evaluation_sets(header.split).values(),
-            None if offsets is None else self.get_model_compatible_set(header.split, offsets))
+            None if offsets is None else self.get_model_compatible_set(header.split, offsets),
+            missing_segment_policy)
 
-    def check_new_predictions(self, predictions: ie.Predictions) -> list[str]:
+    def check_new_predictions(self, predictions: ie.Predictions,
+                              missing_segment_policy: ie.MissingSegmentPolicy) -> tuple[str, ...]:
         """Checks the contents of predictions that are to be stored: the split names of their
         model (`irap_evaluation.check_split_names`), their attributes and classes
         (`check_predicted_classes`), and their evaluation sets (`select_evaluation_sets`).
 
+        Args:
+            missing_segment_policy: See `select_evaluation_sets`.
+
         Returns:
             The notes of `select_evaluation_sets`, e.g. that the model is not scored on the
-            reference set.
+            reference set, or that segments are missing.
 
         Raises:
             irap_evaluation.PredictionFormatError: For an unknown split name, and see
@@ -140,8 +149,7 @@ class DatasetContext:
         """
         ie.check_split_names(predictions.header.model, self.split_names)
         self.check_predicted_classes(predictions)
-        _, notes = self.select_evaluation_sets(predictions)
-        return notes
+        return self.select_evaluation_sets(predictions, missing_segment_policy).notes
 
     def find_segment_image(self, segment_id: str) -> Path | None:
         """Finds the RGB image of a segment in `config.dataset_dir`, None if the segment has no

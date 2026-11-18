@@ -67,7 +67,8 @@ def make_scored_model(submission_id, attribute_to_value, method_name="m",
         evaluation_set="reference", context_offsets=(0,), evaluation_set_fingerprint="f",
         attributes=tuple(attribute_to_value),
         metrics=ie.select_metric_attributes(metrics, list(attribute_to_value)),
-        num_invalid={a: 3 for a in attribute_to_value}, missing_attributes=missing_attributes)
+        num_invalid={a: 3 for a in attribute_to_value}, missing_attributes=missing_attributes,
+        missing_segment_ids=())
     return ScoredModel(make_submission(submission_id, method_name, seed=submission_id,
                                        training_splits=training_splits), scores)
 
@@ -251,7 +252,8 @@ def test_method_tables_escape_names():
             make_method_scores("<n>", {}, error="Models <differ>.", attributes=("x", "y"))]
     resamples = ie.MetricValues(averages={"amF1": np.linspace(0.1, 0.3, 20)}, per_attribute={})
     scope = ScoresScope("vietnam", "val", ("x",))
-    table = make_method_table_html(rows, {"<m>": resamples}, 0.95, ["amF1"], "amF1", scope)
+    table = make_method_table_html(rows, {"<m>": resamples}, 0.95, ["amF1"], "amF1", scope,
+                                   "reference")
     assert "&lt;m&gt;" in table and "<m>" not in table
     assert "method=%3Cm%3E" in table  # The link to the Method page.
     assert "Models &lt;differ&gt;." in table

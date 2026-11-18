@@ -107,7 +107,8 @@ def add_model(archive, dataset_contexts, predictions, description=None):
     """Uploads and stores predictions, replacing the submission of their split, if any.
     Returns the new submission."""
     planned = plan_upload(archive, dataset_contexts, write_upload(archive, predictions),
-                          file_name="model.parquet", description=description)
+                          file_name="model.parquet", missing_segment_policy="invalid",
+                          description=description)
     [submission] = apply_upload(archive, planned, submitter="Al")
     return submission
 

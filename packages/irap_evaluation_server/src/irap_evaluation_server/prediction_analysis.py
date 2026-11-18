@@ -59,7 +59,8 @@ def align_predictions(submission: Submission, predictions: ie.Predictions,
     """
     aligned = ie.align_to_evaluation_set(
         predictions, evaluation_set, select_scored_attributes(evaluation_set, settings),
-        missing_attribute_policy=settings.missing_attribute_policy)
+        missing_attribute_policy=settings.missing_attribute_policy,
+        missing_segment_policy=settings.missing_segment_policy)
     return AlignedPredictions(
         submission, evaluation_set, aligned,
         {a: v.astype(np.int16) for a, v in ie.to_class_indices(aligned).items()})

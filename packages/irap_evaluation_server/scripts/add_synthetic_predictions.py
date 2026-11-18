@@ -26,6 +26,7 @@ from irap_evaluation_server.archive import ModelArchive
 from irap_evaluation_server.config import load_server_config
 from irap_evaluation_server.datasets import load_dataset_contexts
 from irap_evaluation_server.ensembles import EnsembleMember, plan_ensemble, prepare_ensemble
+from irap_evaluation_server.scoring import SCORING_SETTINGS
 from irap_evaluation_server.uploads import apply_upload, plan_upload
 
 DATASET = "vietnam"
@@ -142,6 +143,7 @@ def main():
         path = archive.make_upload_path(file_name)
         ie.write_predictions(path, predictions)
         planned = plan_upload(archive, dataset_contexts, path, file_name=file_name,
+                              missing_segment_policy=SCORING_SETTINGS.missing_segment_policy,
                               description=f"Synthetic predictions of {method.name!r}, seed"
                                           f" {model_seed} (add_synthetic_predictions.py).")
         [submission] = apply_upload(archive, planned, submitter=SUBMITTER)
@@ -155,7 +157,8 @@ def main():
     update = prepare_ensemble(archive, context, plan, method_name=None,
                               method_display_name="Strong ensemble", seed=0,
                               segment_combination="same", attribute_combination="same",
-                              description="Ensemble of strong-probs seeds 1-3.")
+                              description="Ensemble of strong-probs seeds 1-3.",
+                              missing_segment_policy=SCORING_SETTINGS.missing_segment_policy)
     created = archive.apply_model_update(update, submitter=SUBMITTER)
     print("Ensemble: " + ", ".join(f"#{s.id} {s.label} {s.split}" for s in created))
 

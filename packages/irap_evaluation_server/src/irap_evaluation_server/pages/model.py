@@ -150,6 +150,15 @@ def _make_set_score_tables_html(worker: ScoringWorker,
     return set_to_tables_html
 
 
+def _make_missing_segments_html(missing_segment_ids: T.Sequence[str]) -> str:
+    """Makes a warning that the file lacks segments of an evaluation set, which lists them when
+    it is clicked."""
+    return (f'<details class="collapsible-section"><summary class="error">The file has no'
+            f" predictions for {len(missing_segment_ids)} segments of this set, which are scored"
+            f" as invalid predictions. It may be of an older metadata build.</summary>"
+            f'<div class="muted">{html.escape(", ".join(missing_segment_ids))}</div></details>')
+
+
 @dc.dataclass(frozen=True)
 class _PreparedFile:
     path: Path
@@ -382,10 +391,17 @@ class _ModelPage:
             ui.label(explanation).classes("error" if split_use == "training" else "muted")
         is_analysed = not context.config.is_protected_split(submission.split)
         shows_class_scores = can_see_class_scores(self.account, context.config, submission.split)
+        model_compatible_set = scorings.current[submission.id].model_compatible_set
         for name, [model] in shown.set_to_models.items():
             ui.label(format_evaluation_set_title(
                 name, format_context_offsets(model.scores.context_offsets))).classes(
                 "subsection-title")
+            if name != ie.MODEL_COMPATIBLE_SET_NAME and name == model_compatible_set:
+                ui.label(f"Also the model-compatible set: the context offsets"
+                         f" {format_context_offsets(submission.context_offsets)} select its"
+                         f" segments.").classes("muted")
+            if missing := model.scores.missing_segment_ids:
+                ui.html(_make_missing_segments_html(missing), sanitize=False)
             ui.label(f"Averages over {shown.subset.label}").classes("muted")
             ui.html(shown.set_to_tables_html[name], sanitize=False).classes("w-full")
             with ui.element("div").classes("form-row"):

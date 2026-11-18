@@ -29,5 +29,5 @@ def test_linked_sections_exist():
 
 
 def test_settings_that_the_text_does_not_describe_are_refused():
-    with pytest.raises(ValueError, match="null policy"):
+    with pytest.raises(ValueError, match="null, missing attribute and missing segment policies"):
         check_described_settings(dc.replace(SCORING_SETTINGS, null_policy="exclude"))

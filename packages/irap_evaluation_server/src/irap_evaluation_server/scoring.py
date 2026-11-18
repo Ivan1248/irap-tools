@@ -40,8 +40,8 @@ _logger = logging.getLogger(__name__)
 
 #: 'scored': the scores are stored (none for a split without labels, see
 #: `SubmissionScoring.notes`).
-#: 'failed': the file cannot be scored, e.g. it lacks segments of a new metadata build. It is
-#: scored again only when the settings or the evaluation sets change.
+#: 'failed': the file cannot be scored, e.g. it has no evaluation set with labels. It is scored
+#: again only when the settings or the evaluation sets change.
 #: 'error': an unexpected error, e.g. a missing file. It is scored again at the next start.
 ScoringStatus = T.Literal["scored", "failed", "error"]
 
@@ -60,7 +60,7 @@ DATABASE_FILE_NAME = "scores.sqlite3"
 #: The version of the tables of the score cache (`_SCHEMA`, `PRAGMA user_version`). A cache of
 #: another version, e.g. of an older server, is created again, and the files are scored again,
 #: since the cache is computed from the files (`ScoreStore`).
-SCORE_CACHE_VERSION = 1
+SCORE_CACHE_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE submission_scorings (
@@ -68,6 +68,7 @@ CREATE TABLE submission_scorings (
     status TEXT NOT NULL,
     message TEXT NOT NULL,
     notes TEXT NOT NULL,
+    model_compatible_set TEXT,
     settings_fingerprint TEXT NOT NULL,
     evaluation_sets_fingerprint TEXT NOT NULL,
     scored_at TEXT NOT NULL
@@ -82,6 +83,7 @@ CREATE TABLE submission_scores (
     metrics TEXT NOT NULL,
     num_invalid TEXT NOT NULL,
     missing_attributes TEXT NOT NULL,
+    missing_segment_ids TEXT NOT NULL,
     report TEXT NOT NULL,
     -- `resamples_to_bytes` of `resample_result`.
     resamples BLOB NOT NULL,
@@ -102,12 +104,13 @@ def compute_json_sha256(value: T.Any) -> str:
 class ScoringSettings:
     """How the server scores submissions and computes intervals: the defaults of
     `irap-eval evaluate`, but with 1000 bootstrap resamples, and with the attribute predictions of
-    missing attributes counted as invalid, so that all models are scored on the same
-    attributes."""
+    missing attributes and missing segments counted as invalid, so that all models are scored on
+    the same attributes and segments, also files of an older metadata build."""
 
     attribute_selection: ie.AttributeSelection = "canonical"
     null_policy: ie.NullPolicy = "first_class"
     missing_attribute_policy: ie.MissingAttributePolicy = "invalid"
+    missing_segment_policy: ie.MissingSegmentPolicy = "invalid"
     num_resamples: int = 1000
     confidence: float = 0.95
     bootstrap_seed: int = 0
@@ -139,7 +142,8 @@ def score_predictions(predictions: ie.Predictions, evaluation_set: ie.Evaluation
     return ie.evaluate_predictions(
         predictions, evaluation_set, attributes=select_scored_attributes(evaluation_set, settings),
         null_policy=settings.null_policy,
-        missing_attribute_policy=settings.missing_attribute_policy)
+        missing_attribute_policy=settings.missing_attribute_policy,
+        missing_segment_policy=settings.missing_segment_policy)
 
 
 def resample_result(result: ie.EvaluationResult,
@@ -244,6 +248,7 @@ class EvaluationSetScores:
         num_invalid: Attribute -> the number of labeled segments with an invalid prediction,
             including those of missing attributes.
         missing_attributes: See `irap_evaluation.EvaluationResult.missing_attributes`.
+        missing_segment_ids: See `irap_evaluation.EvaluationResult.missing_segment_ids`.
     """
 
     evaluation_set: str
@@ -253,6 +258,7 @@ class EvaluationSetScores:
     metrics: ie.MetricValues[float]
     num_invalid: T.Mapping[str, int]
     missing_attributes: tuple[str, ...]
+    missing_segment_ids: tuple[str, ...]
 
     @classmethod
     def from_result(cls, result: ie.EvaluationResult) -> T.Self:
@@ -262,7 +268,8 @@ class EvaluationSetScores:
                    evaluation_set_fingerprint=evaluation_set.fingerprint,
                    attributes=result.attributes, metrics=result.metrics,
                    num_invalid=dict(result.num_invalid),
-                   missing_attributes=result.missing_attributes)
+                   missing_attributes=result.missing_attributes,
+                   missing_segment_ids=result.missing_segment_ids)
 
 
 @dc.dataclass(frozen=True)
@@ -272,6 +279,10 @@ class SubmissionScoring:
     Attributes:
         message: Why the scoring failed, empty if it did not.
         notes: The notes of `irap_evaluation.select_evaluation_sets`, e.g. why a set is left out.
+        model_compatible_set: The name of the evaluation set whose scores are those on the
+            model-compatible set (`irap_evaluation.EvaluationSetSelection
+            .model_compatible_set_name`), e.g. 'reference' if the context offsets select its
+            segments. None if there are none.
         settings_fingerprint: `ScoringSettings.fingerprint` of the settings it was scored with.
         evaluation_sets_fingerprint: `get_evaluation_sets_fingerprint` when it was scored.
         evaluation_set_scores: The scores on each evaluation set, empty unless 'scored'.
@@ -281,6 +292,7 @@ class SubmissionScoring:
     status: ScoringStatus
     message: str
     notes: tuple[str, ...]
+    model_compatible_set: str | None
     settings_fingerprint: str
     evaluation_sets_fingerprint: str
     scored_at: datetime
@@ -288,16 +300,19 @@ class SubmissionScoring:
 
     def get_scores(self, evaluation_set: str) -> EvaluationSetScores | None:
         """Returns the scores on the evaluation set with this name, None if it is not scored on
-        it."""
-        return next((s for s in self.evaluation_set_scores if s.evaluation_set == evaluation_set),
-                    None)
+        it. The scores on the model-compatible set (`irap_evaluation.MODEL_COMPATIBLE_SET_NAME`)
+        are those of `model_compatible_set`, so they can be of a shared set."""
+        name = (self.model_compatible_set if evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME
+                else evaluation_set)
+        return next((s for s in self.evaluation_set_scores if s.evaluation_set == name), None)
 
 
 def make_unscored_scoring(submission_id: int, status: T.Literal["failed", "error"],
                           message: str, settings: ScoringSettings,
                           evaluation_sets_fingerprint: str = "") -> SubmissionScoring:
     return SubmissionScoring(submission_id=submission_id, status=status, message=message,
-                             notes=(), settings_fingerprint=settings.fingerprint,
+                             notes=(), model_compatible_set=None,
+                             settings_fingerprint=settings.fingerprint,
                              evaluation_sets_fingerprint=evaluation_sets_fingerprint,
                              scored_at=get_utc_now())
 
@@ -343,14 +358,16 @@ def _to_evaluation_set_scores(row: sqlite3.Row) -> EvaluationSetScores:
         attributes=tuple(json.loads(row["attributes"])),
         metrics=metric_values_from_json(row["metrics"]),
         num_invalid=json.loads(row["num_invalid"]),
-        missing_attributes=tuple(json.loads(row["missing_attributes"])))
+        missing_attributes=tuple(json.loads(row["missing_attributes"])),
+        missing_segment_ids=tuple(json.loads(row["missing_segment_ids"])))
 
 
 def _to_scoring(row: sqlite3.Row,
                 evaluation_set_scores: T.Iterable[EvaluationSetScores]) -> SubmissionScoring:
     return SubmissionScoring(
         submission_id=row["submission_id"], status=row["status"], message=row["message"],
-        notes=tuple(json.loads(row["notes"])), settings_fingerprint=row["settings_fingerprint"],
+        notes=tuple(json.loads(row["notes"])), model_compatible_set=row["model_compatible_set"],
+        settings_fingerprint=row["settings_fingerprint"],
         evaluation_sets_fingerprint=row["evaluation_sets_fingerprint"],
         scored_at=datetime.fromisoformat(row["scored_at"]),
         evaluation_set_scores=tuple(evaluation_set_scores))
@@ -358,7 +375,7 @@ def _to_scoring(row: sqlite3.Row,
 
 #: The columns of `submission_scores` except the large report.
 _SCORES_COLUMNS = ("submission_id, evaluation_set, context_offsets, evaluation_set_fingerprint,"
-                   " attributes, metrics, num_invalid, missing_attributes")
+                   " attributes, metrics, num_invalid, missing_attributes, missing_segment_ids")
 
 
 class ScoreStore:
@@ -449,22 +466,24 @@ class ScoreStore:
                                (scoring.submission_id,))
             connection.execute(
                 "INSERT OR REPLACE INTO submission_scorings (submission_id, status, message,"
-                " notes, settings_fingerprint, evaluation_sets_fingerprint, scored_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " notes, model_compatible_set, settings_fingerprint,"
+                " evaluation_sets_fingerprint, scored_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (scoring.submission_id, scoring.status, scoring.message,
-                 json.dumps(list(scoring.notes)), scoring.settings_fingerprint,
-                 scoring.evaluation_sets_fingerprint, scoring.scored_at.isoformat()))
+                 json.dumps(list(scoring.notes)), scoring.model_compatible_set,
+                 scoring.settings_fingerprint, scoring.evaluation_sets_fingerprint,
+                 scoring.scored_at.isoformat()))
             for scores in scoring.evaluation_set_scores:
                 connection.execute(
                     "INSERT INTO submission_scores (submission_id, evaluation_set,"
                     " context_offsets, evaluation_set_fingerprint, attributes, metrics,"
-                    " num_invalid, missing_attributes, report, resamples)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " num_invalid, missing_attributes, missing_segment_ids, report, resamples)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (scoring.submission_id, scores.evaluation_set,
                      json.dumps(list(scores.context_offsets)),
                      scores.evaluation_set_fingerprint, json.dumps(list(scores.attributes)),
                      metric_values_to_json(scores.metrics), json.dumps(scores.num_invalid),
                      json.dumps(list(scores.missing_attributes)),
+                     json.dumps(list(scores.missing_segment_ids)),
                      json.dumps(reports[scores.evaluation_set]),
                      resamples_to_bytes(resamples[scores.evaluation_set])))
         self.delete_scorings_of_deleted_submissions()
@@ -545,8 +564,9 @@ def score_submission(
 ) -> tuple[SubmissionScoring, dict[str, dict[str, T.Any]], dict[str, ie.MetricValues[np.ndarray]]]:
     """Scores a stored submission on its evaluation sets.
 
-    A `ValueError`, e.g. of a file that lacks segments of a new metadata build or of a split that
-    is not in the metadata, gives a 'failed' scoring with its message. Other errors are raised.
+    A `ValueError`, e.g. of a file without context offsets that lacks segments of a new metadata
+    build or of a split that is not in the metadata, gives a 'failed' scoring with its message.
+    Other errors are raised.
 
     Returns:
         The scoring, the reports and the resampled values for `ScoreStore.set_scoring`.
@@ -559,14 +579,15 @@ def score_submission(
         return make_unscored_scoring(submission.id, "failed", str(e), settings), {}, {}
     try:
         predictions = ie.read_predictions(archive.get_predictions_path(submission.id))
-        evaluation_sets, notes = context.select_evaluation_sets(predictions)
-        results = [score_predictions(predictions, s, settings) for s in evaluation_sets]
+        selection = context.select_evaluation_sets(predictions, settings.missing_segment_policy)
+        results = [score_predictions(predictions, s, settings) for s in selection.evaluation_sets]
         resamples = {r.evaluation_set.name: resample_result(r, settings) for r in results}
     except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
         return make_unscored_scoring(submission.id, "failed", str(e), settings,
                                      sets_fingerprint), {}, {}
     scoring = SubmissionScoring(
-        submission_id=submission.id, status="scored", message="", notes=tuple(notes),
+        submission_id=submission.id, status="scored", message="", notes=selection.notes,
+        model_compatible_set=selection.model_compatible_set_name,
         settings_fingerprint=settings.fingerprint, evaluation_sets_fingerprint=sets_fingerprint,
         scored_at=scored_at,
         evaluation_set_scores=tuple(EvaluationSetScores.from_result(r) for r in results))

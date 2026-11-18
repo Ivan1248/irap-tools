@@ -80,6 +80,7 @@ def _prepare_file(
     *,
     seed: int | None,
     details: T.Mapping[str, T.Any],
+    missing_segment_policy: ie.MissingSegmentPolicy,
 ) -> NewSubmission:
     """Checks the contents of an uploaded prediction file, read from `uploaded_path`, and makes
     its new submission. The dataset must be configured, and `DatasetContext.check_new_predictions`
@@ -101,7 +102,8 @@ def _prepare_file(
     if header.dataset not in dataset_contexts:
         raise ValueError(f"The predictions are of the dataset {header.dataset!r}, which is not"
                          f" configured. The configured datasets: {', '.join(dataset_contexts)}.")
-    notes = dataset_contexts[header.dataset].check_new_predictions(uploaded)
+    notes = dataset_contexts[header.dataset].check_new_predictions(uploaded,
+                                                                   missing_segment_policy)
     if model.seed == header.model.seed:
         return NewSubmission.from_predictions(uploaded, uploaded_path, details=details,
                                               notes=notes)
@@ -187,6 +189,7 @@ def _extract_archive_member(zip_file: zipfile.ZipFile, member: zipfile.ZipInfo, 
 
 def _prepare_archive(archive: ModelArchive, dataset_contexts: T.Mapping[str, DatasetContext],
                      uploaded_path: Path, *, file_name: str, seed: int | None,
+                     missing_segment_policy: ie.MissingSegmentPolicy,
                      new_paths: list[Path]) -> list[NewSubmission]:
     """Extracts and checks the files of an uploaded .zip archive (see `plan_upload`).
 
@@ -213,7 +216,8 @@ def _prepare_archive(archive: ModelArchive, dataset_contexts: T.Mapping[str, Dat
                 split_to_member_name[split] = member.filename
                 new = _prepare_file(
                     dataset_contexts, uploaded, path, seed=seed,
-                    details={"file_name": file_name, "archive_member": member.filename})
+                    details={"file_name": file_name, "archive_member": member.filename},
+                    missing_segment_policy=missing_segment_policy)
                 if prepared:
                     _check_same_model(new, prepared[0], prepared[0].details["archive_member"])
                 prepared.append(new)
@@ -289,6 +293,7 @@ def plan_upload(
     uploaded_path: Path,
     *,
     file_name: str,
+    missing_segment_policy: ie.MissingSegmentPolicy,
     seed: int | None = None,
     description: str | None = None,
     method_display_name: str | None = None,
@@ -306,6 +311,8 @@ def plan_upload(
         uploaded_path: At `archive.make_upload_path`. It is kept, also if the upload is refused.
         file_name: The name of the file on the uploader's computer, for the action log, which
             also records the name of each file in an archive.
+        missing_segment_policy: `scoring.ScoringSettings.missing_segment_policy`, so that the
+            files that scoring would refuse are refused.
         seed: If not None, it replaces the seed in each header (`irap_evaluation.ModelInfo.seed`),
             e.g. to add another model of a method, or to give a seed to files without one, which
             the archive requires (see `ModelArchive.plan_model_update`). The files are then
@@ -327,12 +334,13 @@ def plan_upload(
         if is_archive_upload(uploaded_path):
             new_submissions = _prepare_archive(archive, dataset_contexts, uploaded_path,
                                                file_name=file_name, seed=seed,
+                                               missing_segment_policy=missing_segment_policy,
                                                new_paths=temporary_paths)
         else:
             temporary_paths.append(_get_rewritten_path(uploaded_path))
             new_submissions = [_prepare_file(
                 dataset_contexts, ie.read_predictions(uploaded_path), uploaded_path, seed=seed,
-                details={"file_name": file_name})]
+                details={"file_name": file_name}, missing_segment_policy=missing_segment_policy)]
         update = archive.plan_model_update(new_submissions, action="upload",
                                            description=description,
                                            method_display_name=method_display_name)

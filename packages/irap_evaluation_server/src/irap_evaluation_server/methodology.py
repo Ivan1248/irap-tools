@@ -103,13 +103,21 @@ scored on up to three evaluation sets:
   for all models, but only the files that predict all its segments are scored on it, e.g. of
   models without context or with padding for missing context segments.
 - **Model-compatible set**: the segments for which every offset of the model points to a segment of
-  the same road with an image, as in the evaluation during training. It is shown only if it
-  differs from the reference set and the full set. Models with different context offsets are not
-  tested against each other on their model-compatible sets, since these can differ.
+  the same road with an image, as in the evaluation during training. If it equals the reference
+  set or the full set, the scores on that set are also those on the model-compatible set, which
+  "Model-compatible sets" on the Scores page shows with the other models' model-compatible sets.
+  Models with different context offsets are not tested against each other on their
+  model-compatible sets, since these can differ.
 
 A model with an offset outside the reference window cannot predict all segments of the reference
 set, so it is scored only on its model-compatible set, and on the full set if it predicts all its
 segments. Files of unlabeled splits are not scored.
+
+If a file does not predict segments of its model-compatible set, e.g. since a new build of the
+dataset metadata added them to the split, their attribute predictions count as invalid (see
+[attributes](#attributes)) on every set that the file is scored on, so that all models are still
+scored on the same segments. The Model page lists these segments, and the Scores page notes their
+number. Predictions of segments that are in no evaluation set of the split are not scored.
 """
 
 
@@ -349,16 +357,18 @@ whose models used the shown split:
 
 
 def check_described_settings(settings: ScoringSettings) -> None:
-    """Checks that the text describes how the settings score invalid attribute predictions and
-    missing attributes.
+    """Checks that the text describes how the settings score invalid attribute predictions,
+    missing attributes and missing segments.
 
     Raises:
         ValueError: If it does not.
     """
-    if (settings.null_policy, settings.missing_attribute_policy) != ("first_class", "invalid"):
-        raise ValueError(f"The methodology text describes the null policy 'first_class' and the"
-                         f" missing attribute policy 'invalid', not {settings.null_policy!r} and"
-                         f" {settings.missing_attribute_policy!r}.")
+    described = ("first_class", "invalid", "invalid")
+    actual = (settings.null_policy, settings.missing_attribute_policy,
+              settings.missing_segment_policy)
+    if actual != described:
+        raise ValueError(f"The methodology text describes the null, missing attribute and missing"
+                         f" segment policies {described}, not {actual}.")
 
 
 def make_methodology_sections(settings: ScoringSettings, dataset_names: T.Sequence[str],

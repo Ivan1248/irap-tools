@@ -100,6 +100,7 @@ def prepare_ensemble(
     segment_combination: ie.MemberCombination,
     attribute_combination: ie.MemberCombination,
     description: str | None,
+    missing_segment_policy: ie.MissingSegmentPolicy,
 ) -> ModelUpdate:
     """Makes the ensemble of each split of a plan, checks each as an upload
     (`DatasetContext.check_new_predictions`), and plans storing them as the submissions of their
@@ -122,6 +123,7 @@ def prepare_ensemble(
         attribute_combination: Which attributes to combine if the members predict different
             ones (`irap_evaluation.MemberCombination`).
         description: The new description of the model, or None to keep it.
+        missing_segment_policy: `scoring.ScoringSettings.missing_segment_policy`.
 
     Raises:
         irap_evaluation.PredictionFormatError: If the members cannot be combined, e.g. they
@@ -139,7 +141,7 @@ def prepare_ensemble(
                 method_name, method_display_name=method_display_name, seed=seed, weights=weights,
                 segment_combination=segment_combination,
                 attribute_combination=attribute_combination)
-            notes = context.check_new_predictions(ensemble)
+            notes = context.check_new_predictions(ensemble, missing_segment_policy)
             paths.append(path := archive.make_upload_path("ensemble.predictions.parquet"))
             ie.write_predictions(path, ensemble)
             new_submissions.append(NewSubmission.from_predictions(

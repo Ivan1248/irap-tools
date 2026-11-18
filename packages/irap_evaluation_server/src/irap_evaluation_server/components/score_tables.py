@@ -379,14 +379,32 @@ def _make_method_notes_html(rows: T.Sequence[MethodScores], confidence: float,
     return _make_note_lines_html(*lines)
 
 
-def _make_notes_html(row: MethodScores) -> str:
+#: The most missing segments that the tooltip of a row's note lists (`_make_notes_html`).
+_MAX_NUM_LISTED_MISSING_SEGMENTS = 20
+
+
+def _make_notes_html(row: MethodScores, evaluation_set: str) -> str:
+    """Notes the attributes and segments that the models of a row do not predict, and on the
+    model-compatible sets, the context offsets of the models and the set whose scores the row
+    shows if it is a shared one.
+
+    Args:
+        evaluation_set: The name of the set of the table.
+    """
     notes = []
     if row.missing_attributes:
         title_attribute = make_title_attribute(", ".join(row.missing_attributes))
         notes.append(f"<span{title_attribute}>{len(row.missing_attributes)} not predicted</span>")
-    first_scores = row.scored_models[0].scores
-    if first_scores.evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME:
-        notes.append(f"context offsets {format_context_offsets(first_scores.context_offsets)}")
+    if missing := row.missing_segment_ids:
+        listed = ie.format_examples(missing, max_num_shown=_MAX_NUM_LISTED_MISSING_SEGMENTS)
+        notes.append(f"<span{make_title_attribute(listed)}>{len(missing)} segments not"
+                     f" predicted</span>")
+    if evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME:
+        offsets = "; ".join(dict.fromkeys(format_context_offsets(m.submission.context_offsets)
+                                          for m in row.scored_models))
+        scored_set = row.scored_models[0].scores.evaluation_set
+        notes.append(f"context offsets {offsets}" + (
+            "" if scored_set == evaluation_set else f" (the {scored_set} set)"))
     return "<br>".join(notes)
 
 
@@ -401,12 +419,15 @@ def _make_sortable_metric_header_html(metric_name: str, is_sorted: bool) -> str:
 def make_method_table_html(rows: T.Sequence[MethodScores],
                            method_to_resamples: T.Mapping[str, RowResamples], confidence: float,
                            metric_names: T.Sequence[str], sort_metric: str, scope: ScoresScope,
+                           evaluation_set: str,
                            comparisons: ReferenceComparisons | None = None) -> str:
     """Makes a table of method rows × attribute averages.
 
     The metric headers have a `data-sort` attribute with the metric name, for a click handler.
 
     Args:
+        evaluation_set: The name of the set that the rows are scored on
+            (`scoring.SubmissionScoring.get_scores`).
         method_to_resamples: Method name -> its resampled values of `metric_names`, or None.
         confidence: The confidence of the intervals.
         metric_names: The attribute averages of the columns, e.g. the shown ones
@@ -433,7 +454,8 @@ def make_method_table_html(rows: T.Sequence[MethodScores],
         html_rows.append(f"<tr><td>{_make_method_label_html(row, comparisons, scope)}</td>"
                          f"<td>{_make_model_links_html(row, scope)}</td>{cells}"
                          f"<td>{html.escape(', '.join(row.submitters))}</td>"
-                         f"<td>{_make_notes_html(row)}</td><td>{description}</td></tr>")
+                         f"<td>{_make_notes_html(row, evaluation_set)}</td>"
+                         f"<td>{description}</td></tr>")
     return (make_table_html_from_header(header, html_rows)
             + _make_method_notes_html(rows, confidence, "column", is_tested, comparisons))
 

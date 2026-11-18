@@ -62,14 +62,21 @@ class SubmissionScorings:
 
     def select_scored_models(self, evaluation_set: str) -> list[ScoredModel]:
         """Selects the submissions with current scores on the evaluation set with this name
-        (`method_scores.select_scored_models`)."""
+        (`method_scores.select_scored_models`). On the model-compatible set, these can be the
+        scores of a shared set (`SubmissionScoring.get_scores`)."""
         return select_scored_models(self.submissions, self.current, evaluation_set)
 
     def group_scored_models_by_set(self) -> dict[str, list[ScoredModel]]:
-        """Groups the submissions with current scores by evaluation set name
-        (`select_scored_models`), for the sets with some."""
-        return {n: models for n in EVALUATION_SET_NAMES
-                if (models := self.select_scored_models(n))}
+        """Groups the submissions with current scores by the evaluation set that they are scored
+        on, for the sets with some. A model whose model-compatible set equals a shared set is
+        only in the group of the shared set."""
+        set_to_models: dict[str, list[ScoredModel]] = {}
+        for submission in self.submissions:
+            if (scoring := self.current.get(submission.id)) is not None:
+                for scores in scoring.evaluation_set_scores:
+                    set_to_models.setdefault(scores.evaluation_set, []).append(
+                        ScoredModel(submission, scores))
+        return {n: set_to_models[n] for n in EVALUATION_SET_NAMES if n in set_to_models}
 
     def list_unscored(self) -> list[tuple[Submission, str]]:
         """Lists the submissions without current scores, each with the reason

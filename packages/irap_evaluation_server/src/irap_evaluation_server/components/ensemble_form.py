@@ -237,7 +237,8 @@ class EnsembleForm:
                 method_display_name=parse_optional_text(self.inputs.display_name),
                 seed=seed, segment_combination=self.inputs.segment_combination,
                 attribute_combination=self.inputs.attribute_combination,
-                description=parse_optional_text(self.inputs.description), actor=actor)
+                description=parse_optional_text(self.inputs.description),
+                missing_segment_policy=self.worker.settings.missing_segment_policy, actor=actor)
         except ValueError as e:  # Also irap_evaluation.PredictionFormatError.
             if not client.is_deleted:
                 set_status(self._status_label, str(e), is_error=True)
@@ -312,13 +313,14 @@ async def _create(archive: ModelArchive, context: DatasetContext, plan: Ensemble
                   method_name: str | None, method_display_name: str | None, seed: int | None,
                   segment_combination: ie.MemberCombination,
                   attribute_combination: ie.MemberCombination, description: str | None,
+                  missing_segment_policy: ie.MissingSegmentPolicy,
                   actor: str) -> list[Submission]:
     """Makes the ensemble files (`ensembles.prepare_ensemble`), asks the user to confirm the
     changes, if any, and stores them.
 
     Args:
         method_name, method_display_name, segment_combination, attribute_combination,
-            description: See `ensembles.prepare_ensemble`.
+            description, missing_segment_policy: See `ensembles.prepare_ensemble`.
         actor: The name of the signed-in account.
 
     Returns:
@@ -334,7 +336,8 @@ async def _create(archive: ModelArchive, context: DatasetContext, plan: Ensemble
                                 method_name=method_name, method_display_name=method_display_name,
                                 seed=seed, segment_combination=segment_combination,
                                 attribute_combination=attribute_combination,
-                                description=description)
+                                description=description,
+                                missing_segment_policy=missing_segment_policy)
     if update is None:  # The server is stopping.
         return []
     try:

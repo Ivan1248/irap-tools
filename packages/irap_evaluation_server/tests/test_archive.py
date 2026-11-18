@@ -31,7 +31,8 @@ from irap_evaluation_server.uploads import apply_upload, plan_upload
 
 def plan(archive, dataset_contexts, predictions, **kwargs):
     return plan_upload(archive, dataset_contexts, write_upload(archive, predictions),
-                       file_name="m.predictions.parquet", **kwargs)
+                       file_name="m.predictions.parquet", missing_segment_policy="invalid",
+                       **kwargs)
 
 
 def test_upload_creates_a_model(archive, dataset_contexts):
@@ -232,9 +233,11 @@ def test_seed_override_adds_another_model(archive, dataset_contexts):
 def test_a_model_needs_a_seed(archive, dataset_contexts):
     path = write_upload(archive, make_model(dataset_contexts, model_seed=None))
     with pytest.raises(ValueError, match="The model has no seed. Enter one"):
-        plan_upload(archive, dataset_contexts, path, file_name="m")
+        plan_upload(archive, dataset_contexts, path, file_name="m",
+                    missing_segment_policy="invalid")
     assert list(archive.uploads_dir.iterdir()) == [path]  # Kept for a retry.
-    planned = plan_upload(archive, dataset_contexts, path, file_name="m", seed=0)
+    planned = plan_upload(archive, dataset_contexts, path, file_name="m",
+                          missing_segment_policy="invalid", seed=0)
     [submission] = apply_upload(archive, planned, submitter="Al")
     assert submission.model.seed == 0
 
@@ -255,7 +258,8 @@ def test_models_of_a_method_need_the_same_training_splits(archive, dataset_conte
 def test_unknown_split_names_are_refused(archive, dataset_contexts):
     path = write_upload(archive, make_model(dataset_contexts, training_splits=("trian",)))
     with pytest.raises(ie.PredictionFormatError, match=r"unknown splits \['trian'\]"):
-        plan_upload(archive, dataset_contexts, path, file_name="m")
+        plan_upload(archive, dataset_contexts, path, file_name="m",
+                    missing_segment_policy="invalid")
     assert path.exists()
 
 
@@ -285,7 +289,8 @@ def test_a_change_after_the_planning_is_refused(archive, dataset_contexts):
         apply_upload(archive, planned, submitter="Al")
     assert planned.uploaded_path.exists()  # Kept for a retry.
 
-    replanned = plan_upload(archive, dataset_contexts, planned.uploaded_path, file_name="m")
+    replanned = plan_upload(archive, dataset_contexts, planned.uploaded_path, file_name="m",
+                            missing_segment_policy="invalid")
     newer = plan(archive, dataset_contexts, make_model(dataset_contexts, random_seed=3))
     apply_upload(archive, newer, submitter="Bo")
     with pytest.raises(ValueError, match="files of m/seed0 have changed"):
@@ -377,7 +382,8 @@ def test_download_and_upload_the_files_of_a_model(archive, two_split_contexts):
     with pytest.raises(LookupError):
         archive.write_model_predictions_zip(model.id, io.BytesIO())
 
-    planned = plan_upload(archive, two_split_contexts, path, file_name="m.zip")
+    planned = plan_upload(archive, two_split_contexts, path, file_name="m.zip",
+                          missing_segment_policy="invalid")
     uploaded = apply_upload(archive, planned, submitter="Al")
     assert ({(s.split, s.file_sha256) for s in uploaded}
             == {(s.split, s.file_sha256) for s in submissions})
@@ -514,7 +520,8 @@ def test_updates_are_of_one_model(archive, two_split_contexts):
 def test_seed_must_fit_64_bits(archive, dataset_contexts, model_seed, seed):
     path = write_upload(archive, make_model(dataset_contexts, model_seed=model_seed))
     with pytest.raises(ValueError, match="64-bit"):
-        plan_upload(archive, dataset_contexts, path, file_name="m", seed=seed)
+        plan_upload(archive, dataset_contexts, path, file_name="m",
+                    missing_segment_policy="invalid", seed=seed)
     assert path.exists()
 
 

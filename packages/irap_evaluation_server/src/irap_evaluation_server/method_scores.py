@@ -81,6 +81,13 @@ class MethodScores:
         return tuple(a for a in self.attributes if a in unpredicted)
 
     @property
+    def missing_segment_ids(self) -> tuple[str, ...]:
+        """The segments of the evaluation set that some model does not predict, in the order of
+        the models and the set."""
+        return tuple(dict.fromkeys(s for m in self.scored_models
+                                   for s in m.scores.missing_segment_ids))
+
+    @property
     def shown_method_name(self) -> str:
         """The shown method name of the models (`archive.Model.shown_method_name`), which is the
         same for the models of a method, or `method_name` if there are no models."""
@@ -103,7 +110,8 @@ def select_scored_models(submissions: T.Iterable[Submission],
                          submission_id_to_scoring: T.Mapping[int, SubmissionScoring],
                          evaluation_set: str) -> list[ScoredModel]:
     """Selects the submissions that are scored on the evaluation set with this name, with those
-    scores.
+    scores (`scoring.SubmissionScoring.get_scores`). On the model-compatible set, these are the
+    scores of a shared set for a model whose context offsets select the segments of that set.
 
     Args:
         submissions: Of one split, so that the submissions of a method are its models.

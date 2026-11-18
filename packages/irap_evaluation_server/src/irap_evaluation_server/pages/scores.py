@@ -253,7 +253,7 @@ def _compute_method_table(worker: ScoringWorker, context: DatasetContext,
         else:
             table_html = make_method_table_html(
                 shown, method_to_resamples, confidence, average_names, view.sort_metric, scope,
-                comparisons)
+                view.evaluation_set, comparisons)
     return _MethodTable(
         rows, name_to_comparable, reference,
         reference is not None and reference.method_name not in matching_method_names, shown,

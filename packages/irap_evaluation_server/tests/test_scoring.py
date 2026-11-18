@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import irap_evaluation as ie
 import numpy as np
 import pytest
-from irap_data.metadata import MetaFiles
+from irap_data.metadata import MetaFiles, get_dataset_preset
 from irap_evaluation.reports.evaluation_report import to_json_dict
 from run_helpers import (
     add_model,
@@ -14,6 +14,7 @@ from run_helpers import (
     make_model,
     score_and_get_models,
     score_submission_again,
+    with_context_offsets,
 )
 from synthetic_vietnam import SPLIT
 
@@ -24,6 +25,7 @@ from irap_evaluation_server.database import connect
 from irap_evaluation_server.datasets import load_dataset_contexts
 from irap_evaluation_server.method_scores import compute_method_scores
 from irap_evaluation_server.scoring import (
+    SCORE_CACHE_VERSION,
     ScoreStore,
     ScoringSettings,
     SubmissionScoring,
@@ -31,6 +33,7 @@ from irap_evaluation_server.scoring import (
     get_unscored_reason,
     is_scoring_current,
     remove_class_scores,
+    score_predictions,
 )
 from irap_evaluation_server.scoring_worker import ScoringWorker
 
@@ -58,6 +61,47 @@ def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker
     assert compatible_scores.context_offsets == (0, -1)
     assert_close(compatible_scores.metrics,
                  score_submission_again(worker, submission, model_compatible_set).metrics)
+
+
+def test_missing_segments_are_scored_as_invalid(archive, dataset_contexts, store, worker):
+    context = dataset_contexts["vietnam"]
+    reference_set = context.get_reference_set(SPLIT)
+    missing = reference_set.segment_ids[:2]
+    complete = make_model(dataset_contexts, "m")
+    submission = add_model(archive, dataset_contexts, ie.select_segments(
+        complete, [s for s in complete.segment_ids if s not in missing]))
+    [model] = score_and_get_models(worker, [submission.id])
+
+    assert model.scores.missing_segment_ids == missing
+    without_predictions = ie.select_segments(ie.add_invalid_segments(
+        ie.select_segments(complete, [s for s in complete.segment_ids if s not in missing]),
+        missing), complete.segment_ids)
+    assert_close(model.scores.metrics, score_predictions(
+        without_predictions, reference_set, worker.settings).metrics)
+    scoring = store.get_scoring(submission.id)
+    assert any("scored as invalid" in note for note in scoring.notes)
+    assert scoring.get_scores(ie.MODEL_COMPATIBLE_SET_NAME).missing_segment_ids == missing
+    # The full set has segments outside the model-compatible set, which are all predicted.
+    assert scoring.get_scores(ie.FULL_SET_NAME).missing_segment_ids == missing
+
+
+def test_model_compatible_sets_include_models_whose_set_is_a_shared_one(archive,
+                                                                       dataset_contexts, worker):
+    reference_offsets = get_dataset_preset("vietnam").reference_context_offsets
+    submissions = [add_model(archive, dataset_contexts,
+                             with_context_offsets(make_model(dataset_contexts, name), offsets))
+                   for name, offsets in (("m", (0, -1)), ("r", reference_offsets))]
+    models = score_and_get_models(worker, [s.id for s in submissions],
+                                  ie.MODEL_COMPATIBLE_SET_NAME)
+    assert sorted((m.submission.model.method_name, m.scores.evaluation_set) for m in models) == [
+        ("m", ie.MODEL_COMPATIBLE_SET_NAME), ("r", ie.REFERENCE_SET_NAME)]
+    scorings = worker.load_split_scorings("vietnam", SPLIT)
+    assert scorings.current[submissions[1].id].model_compatible_set == ie.REFERENCE_SET_NAME
+    # The Model and Method pages show the scores of a set once.
+    assert {n: sorted(m.submission.model.method_name for m in models)
+            for n, models in scorings.group_scored_models_by_set().items()} == {
+        ie.REFERENCE_SET_NAME: ["m", "r"], ie.FULL_SET_NAME: ["m", "r"],
+        ie.MODEL_COMPATIBLE_SET_NAME: ["m"]}
 
 
 def test_remove_class_scores(archive, dataset_contexts, store, worker):
@@ -179,7 +223,8 @@ def test_scoring_errors(archive, dataset_contexts, store, worker):
 
 def test_get_unscored_reason():
     scoring = SubmissionScoring(submission_id=1, status="scored", message="", notes=(),
-                                settings_fingerprint="s", evaluation_sets_fingerprint="e",
+                                model_compatible_set=None, settings_fingerprint="s",
+                                evaluation_sets_fingerprint="e",
                                 scored_at=datetime(2026, 10, 3, tzinfo=timezone.utc))
     assert get_unscored_reason(scoring, is_current=True, is_pending=False) is None
     assert get_unscored_reason(scoring, True, is_pending=True) == "Scoring…"
@@ -218,7 +263,8 @@ def test_a_score_cache_of_another_version_is_created_again(archive, dataset_cont
         connection.execute("PRAGMA user_version = 99")
 
     new_store = ScoreStore(archive.data_dir)
-    assert "version 99, so it is created again with version 1" in caplog.text
+    assert (f"version 99, so it is created again with version {SCORE_CACHE_VERSION}"
+            in caplog.text)
     assert new_store.get_scoring(submission.id) is None
     new_worker = ScoringWorker(archive, new_store, dataset_contexts, worker.settings)
     new_worker.update_all_submissions()
