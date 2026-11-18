@@ -13,6 +13,7 @@ from .predictions import (
     add_invalid_attributes,
     add_invalid_segments,
     align_classes,
+    format_examples,
     get_common_dataset_and_split,
     select_segments,
 )
@@ -22,11 +23,6 @@ MemberCombination = T.Literal["same", "intersection", "union"]
 'same' refuses such members, 'intersection' combines those that every member predicts, and 'union'
 those that any member predicts, where a member that does not predict one counts as invalid."""
 MEMBER_COMBINATIONS: tuple[str, ...] = T.get_args(MemberCombination)
-
-
-def _format_examples(keys: T.Sequence[str], max_num_shown: int = 5) -> str:
-    shown = ", ".join(keys[:max_num_shown])
-    return f"{shown}, …" if len(keys) > max_num_shown else shown
 
 
 def _combine_keys(labels: T.Sequence[str], key_seqs: T.Sequence[T.Sequence[str]],
@@ -59,7 +55,7 @@ def _combine_keys(labels: T.Sequence[str], key_seqs: T.Sequence[T.Sequence[str]]
         for label, keys in zip(labels, key_sets):
             if missing := [k for k in all_keys if k not in keys]:
                 lacking.append(f"{label} lacks {len(missing)} of the {len(all_keys)} {noun}"
-                               f" ({_format_examples(missing)})")
+                               f" ({format_examples(missing)})")
         if lacking:
             raise PredictionFormatError(
                 f"Every member must predict the same {noun}, but {'; '.join(lacking)}. Combine"
@@ -69,7 +65,7 @@ def _combine_keys(labels: T.Sequence[str], key_seqs: T.Sequence[T.Sequence[str]]
     if not common:
         raise PredictionFormatError(
             f"The members have no common {noun}: "
-            + "; ".join(f"{label} predicts {len(keys)} ({_format_examples(keys)})"
+            + "; ".join(f"{label} predicts {len(keys)} ({format_examples(keys)})"
                         for label, keys in zip(labels, key_seqs)) + ".")
     return tuple(k for k in key_seqs[0] if k in common)
 

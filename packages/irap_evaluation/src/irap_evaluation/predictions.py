@@ -60,6 +60,12 @@ def format_model_label(method_name: str, seed: int | None) -> str:
     return method_name if seed is None else f"{method_name}/seed{seed}"
 
 
+def format_examples(keys: T.Sequence[str], max_num_shown: int = 5) -> str:
+    """Joins the first `max_num_shown` keys, e.g. segment IDs, with ", …" if there are more."""
+    shown = ", ".join(keys[:max_num_shown])
+    return f"{shown}, …" if len(keys) > max_num_shown else shown
+
+
 def _to_split_names(splits: T.Iterable[str], field: str) -> tuple[str, ...]:
     """The split names in sorted order, so that their order does not matter."""
     if isinstance(splits, str):

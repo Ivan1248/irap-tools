@@ -20,11 +20,22 @@ from irap_data.metadata import (
     select_preset_split_segments,
 )
 
+from .predictions import format_examples
+
 REFERENCE_SET_NAME = "reference"
 FULL_SET_NAME = "full"
 MODEL_COMPATIBLE_SET_NAME = "compatible"
 #: The names of the sets that are the same for every model (`get_shared_evaluation_sets`).
 SHARED_EVALUATION_SET_NAMES = (REFERENCE_SET_NAME, FULL_SET_NAME)
+
+#: How a segment of an evaluation set that the predictions lack is scored:
+#: - 'error': not at all. `select_evaluation_sets` refuses predictions that lack segments of their
+#:   model-compatible set, and `evaluation.evaluate_predictions` raises an error.
+#: - 'invalid': as if every attribute prediction of it were invalid, e.g. for predictions of an
+#:   older metadata build, in which the split had other segments.
+#: `docs/evaluation.md#missing-segments` gives the reasons.
+MissingSegmentPolicy = T.Literal["error", "invalid"]
+MISSING_SEGMENT_POLICIES: tuple[str, ...] = T.get_args(MissingSegmentPolicy)
 
 
 @dc.dataclass(frozen=True)
@@ -182,14 +193,39 @@ def select_evaluation_subset(evaluation_set: EvaluationSet, is_selected: np.ndar
         segment_sequence_ids=tuple(evaluation_set.segment_sequence_ids[i] for i in rows))
 
 
+@dc.dataclass(frozen=True)
+class EvaluationSetSelection:
+    """The evaluation sets to score a model on (`select_evaluation_sets`).
+
+    Attributes:
+        evaluation_sets: The shared sets that the model is scored on, then its model-compatible
+            set if it is scored on it.
+        model_compatible_set_name: The name of the set of `evaluation_sets` that has the
+            segments of the model-compatible set: `MODEL_COMPATIBLE_SET_NAME`, or the name of
+            the shared set that equals it. None if the context offsets are unknown or the set has
+            no labels.
+        notes: Why sets are left out, and which segments the predictions lack or have in excess.
+    """
+
+    evaluation_sets: tuple[EvaluationSet, ...]
+    model_compatible_set_name: str | None
+    notes: tuple[str, ...]
+
+
 def select_evaluation_sets(
     predicted_segment_ids: T.Collection[str],
     shared_sets: T.Collection[EvaluationSet],
     model_compatible_set: EvaluationSet | None,
-) -> tuple[list[EvaluationSet], list[str]]:
-    """The evaluation sets to score a model on: each shared set of which the model predicts all
-    segments, and the model-compatible set, if it is known and has other segments than each
-    shared set.
+    missing_segment_policy: MissingSegmentPolicy = "error",
+) -> EvaluationSetSelection:
+    """Selects the evaluation sets to score a model on: its model-compatible set, if it is known
+    and has other segments than each shared set, and each shared set of which the model predicts
+    every segment, or, with `missing_segment_policy='invalid'`, every segment outside the
+    model-compatible set.
+
+    So with 'invalid', the segments of its model-compatible set that a model lacks, e.g. those
+    that a new metadata build adds, are scored as invalid, while a shared set whose context
+    window the model's context offsets do not cover is left out as with 'error'.
 
     A set without labels, e.g. of an unlabeled split (`irap_data.is_unlabeled_split`), is left
     out, but the predictions must still cover its segments as above.
@@ -199,34 +235,45 @@ def select_evaluation_sets(
         shared_sets: See `get_shared_evaluation_sets`.
         model_compatible_set: See `get_model_compatible_set`. None if the model's context
             offsets are unknown.
-
-    Returns:
-        The evaluation sets, and notes on why a set is left out.
+        missing_segment_policy: See `MissingSegmentPolicy`.
 
     Raises:
-        ValueError: If segments of `model_compatible_set` have no prediction, or segments of
-            each shared set have none and `model_compatible_set` is None.
+        ValueError: For an unknown `missing_segment_policy`, if segments of
+            `model_compatible_set` have no prediction and `missing_segment_policy` is 'error', or
+            if `model_compatible_set` is None and segments of each shared set have no prediction.
     """
+    if missing_segment_policy not in MISSING_SEGMENT_POLICIES:
+        raise ValueError(f"missing_segment_policy must be one of {MISSING_SEGMENT_POLICIES},"
+                         f" got {missing_segment_policy!r}.")
     predicted = set(predicted_segment_ids)
-
-    def count_missing(evaluation_set: EvaluationSet) -> int:
-        return sum(sid not in predicted for sid in evaluation_set.segment_ids)
-
-    if (model_compatible_set is not None
-            and (num_missing_model := count_missing(model_compatible_set))):
-        raise ValueError(
-            f"No predictions for {num_missing_model} of the {model_compatible_set.num_segments}"
-            f" segments of the model-compatible set (context offsets"
-            f" {model_compatible_set.context_offsets}), so the predictions are incomplete or of"
-            f" another metadata build.")
-    evaluation_sets, notes = [], []
+    notes = []
+    # The segments that the model is expected to predict, so that they are scored as invalid.
+    expected = (set(model_compatible_set.segment_ids)
+                if model_compatible_set is not None and missing_segment_policy == "invalid"
+                else set())
+    if model_compatible_set is not None and (missing := [
+            s for s in model_compatible_set.segment_ids if s not in predicted]):
+        description = (f"No predictions for {len(missing)} of the"
+                       f" {model_compatible_set.num_segments} segments of the model-compatible set"
+                       f" (context offsets {model_compatible_set.context_offsets})")
+        if missing_segment_policy == "error":
+            raise ValueError(f"{description}, so the predictions are incomplete or of another"
+                             f" metadata build.")
+        notes.append(f"{description}, e.g. {format_examples(missing)}. They are scored as"
+                     f" invalid predictions. The predictions are incomplete or of another"
+                     f" metadata build.")
+    evaluation_sets = []
     for shared_set in shared_sets:
-        if num_missing := count_missing(shared_set):
-            notes.append(f"No predictions for {num_missing} of the {shared_set.num_segments}"
+        if unscored := [s for s in shared_set.segment_ids
+                        if s not in predicted and s not in expected]:
+            outside = " outside the model-compatible set" if expected else ""
+            notes.append(f"No predictions for {len(unscored)} of the {shared_set.num_segments}"
                          f" segments of the {shared_set.name} set (context offsets"
-                         f" {shared_set.context_offsets}), so the model is not scored on it.")
+                         f" {shared_set.context_offsets}){outside}, so the model is not scored"
+                         f" on it.")
         else:
             evaluation_sets.append(shared_set)
+    model_compatible_set_name = None
     if model_compatible_set is None:
         if not evaluation_sets:
             raise ValueError(" ".join([
@@ -235,13 +282,17 @@ def select_evaluation_sets(
                 " Otherwise, the file is incomplete or of another metadata build."]))
         notes.append("No context offsets, so the model is not scored on its model-compatible"
                      " set.")
-    elif equal_set_names := [s.name for s in shared_sets
+    # A shared set with the segments of the model-compatible set is in `evaluation_sets`, since
+    # its unpredicted segments are those of the model-compatible set.
+    elif equal_set_names := [s.name for s in evaluation_sets
                              if s.segment_ids == model_compatible_set.segment_ids]:
+        model_compatible_set_name = equal_set_names[0]
         notes.append(f"The context offsets {model_compatible_set.context_offsets} select the"
-                     f" segments of the {equal_set_names[0]} set, so the model-compatible set is"
-                     f" left out.")
+                     f" segments of the {model_compatible_set_name} set, so the scores on the"
+                     f" model-compatible set are those on the {model_compatible_set_name} set.")
     else:
         evaluation_sets.append(model_compatible_set)
+        model_compatible_set_name = MODEL_COMPATIBLE_SET_NAME
     labeled_sets = []
     for evaluation_set in evaluation_sets:
         if any(evaluation_set.attr_to_num_labeled.values()):
@@ -249,4 +300,13 @@ def select_evaluation_sets(
         else:
             notes.append(f"The {evaluation_set.name} set has no labels, so the model is not"
                          f" scored on it.")
-    return labeled_sets, notes
+    if model_compatible_set_name not in {s.name for s in labeled_sets}:
+        model_compatible_set_name = None
+    candidate_sets = [*shared_sets, *([] if model_compatible_set is None
+                                      else [model_compatible_set])]
+    in_some_set = {s for evaluation_set in candidate_sets for s in evaluation_set.segment_ids}
+    if extra := [s for s in predicted_segment_ids if s not in in_some_set]:
+        notes.append(f"{len(extra)} predicted segments are in no evaluation set of the split, e.g."
+                     f" {format_examples(extra)}, so they are not scored. The predictions may be"
+                     f" of another metadata build.")
+    return EvaluationSetSelection(tuple(labeled_sets), model_compatible_set_name, tuple(notes))

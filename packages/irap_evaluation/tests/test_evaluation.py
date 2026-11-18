@@ -202,6 +202,27 @@ def test_missing_attributes_score_as_invalid_attribute_predictions(metadata, ref
         evaluate_predictions(predictions, reference_set, missing_attribute_policy="skip")
 
 
+def test_missing_segments_score_as_invalid_attribute_predictions(reference_set, predictions):
+    missing = reference_set.segment_ids[2:5]
+    without = select_segments(predictions,
+                              [s for s in predictions.segment_ids if s not in missing])
+    is_valid = ~np.isin(predictions.segment_ids, missing)
+    all_invalid = predictions
+    for attr in predictions.attributes:
+        all_invalid = invalidate_attribute_predictions(all_invalid, attr, is_valid)
+    result = evaluate_predictions(without, reference_set, missing_segment_policy="invalid")
+    expected = evaluate_predictions(all_invalid, reference_set)
+    np.testing.assert_equal(dc.asdict(result.metrics), dc.asdict(expected.metrics))
+    assert result.num_invalid == expected.num_invalid
+    assert result.missing_segment_ids == missing
+    assert expected.missing_segment_ids == ()
+    assert to_json_dict(result)["missing_segment_ids"] == list(missing)
+    with pytest.raises(PredictionFormatError, match="no prediction"):
+        evaluate_predictions(without, reference_set)
+    with pytest.raises(ValueError, match="missing_segment_policy"):
+        evaluate_predictions(predictions, reference_set, missing_segment_policy="skip")
+
+
 def test_select_result_attributes_equals_scoring_the_subset(reference_set, predictions):
     result = evaluate_predictions(predictions, reference_set)
     subset = ["Curvature", "Number of lanes"]  # Not in the order of the result.

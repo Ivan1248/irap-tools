@@ -42,11 +42,21 @@ A file is scored on up to three sets:
 
 `select_evaluation_sets` (used by `irap-eval evaluate`) selects the sets as follows:
 
-- A file that lacks segments of its model-compatible set is incomplete or of another metadata build, and is refused.
+- A file that lacks segments of its model-compatible set is incomplete or of another metadata build. It is refused, or its missing segments are scored as invalid ([missing segments](#missing-segments)).
 - A model whose offsets reach beyond the reference window lacks some reference segments. It is scored only on its model-compatible set, with a note, or refused if its offsets are unknown.
-- A model that lacks segments of the full set is not scored on it, with a note.
-- If the model-compatible set equals the reference set or the full set, it is left out.
+- A model that lacks segments of the full set outside its model-compatible set is not scored on it, with a note.
+- If the model-compatible set equals the reference set or the full set, it is left out, and the scores of that set are those of the model-compatible set (`EvaluationSetSelection.model_compatible_set_name`).
 - A set without labels, e.g. of an unlabeled split, is left out with a note. The file must still cover its segments as above.
+- Predicted segments that are in no set of the split are not scored, with a note, since the file may be of another metadata build.
+
+### Missing segments
+
+A segment of the model-compatible set that the file does not predict is handled according to `missing_segment_policy` (`MissingSegmentPolicy`, `--missing-segment-policy`):
+
+- **`error`** (default): the file is refused.
+- **`invalid`**: every attribute prediction of the segment counts as invalid ([invalid attribute predictions](#invalid-attribute-predictions)), on the model-compatible set and on every shared set that the model is scored on. This keeps files of an older metadata build usable after a build adds segments to a split: all models are still scored on the same segments, so their scores remain comparable. `EvaluationResult.missing_segment_ids` (`missing_segment_ids` in the JSON documents) lists them, and `num_invalid` counts their attribute predictions. The scores are those of a file with these predictions left empty, so for exact scores, predict the missing segments.
+
+The segments of a shared set outside the model-compatible set are not expected from the model, so with either policy a model that lacks some of them is not scored on that set.
 
 ## Attributes
 
@@ -61,7 +71,7 @@ A scored attribute that the file does not predict is handled according to `missi
 
 ## Matching
 
-- Every segment of the set must have a prediction. Extra predictions are ignored.
+- Every segment of the set must have a prediction, unless missing segments are scored as invalid ([missing segments](#missing-segments)). Extra predictions are ignored.
 - Classes are matched by iRAP code. The file must predict exactly the dataset's codes of each attribute, in any order.
 - The predicted class of an attribute prediction is the argmax of its distribution. On ties, it is the first maximum in dataset class order.
 
@@ -70,7 +80,7 @@ A scored attribute that the file does not predict is handled according to `missi
 An invalid attribute prediction is a null in the file: the method gave no usable prediction of the attribute for the segment. The producer of the file decides what is usable. For VLMs, `vidlu_irap_gaim` (`is_usable_prediction`) marks an attribute prediction invalid if the response leaves out the attribute or names a value that matches none of its classes. Both cases are one category, since the boundary between them depends on the response parser. An invalid attribute prediction is not the same as:
 
 - an unlabeled segment, which has no label and is not scored for the attribute,
-- a missing row, i.e. a segment without a prediction, which makes the file incomplete (see [Evaluation sets](#evaluation-sets)).
+- a missing row, i.e. a segment without a prediction, which makes the file incomplete (see [missing segments](#missing-segments)).
 
 The null policy (`NullPolicy`) selects how invalid attribute predictions are scored:
 

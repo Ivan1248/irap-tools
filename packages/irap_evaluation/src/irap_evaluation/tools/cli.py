@@ -30,7 +30,9 @@ from ..evaluation import (
     select_evaluated_attributes,
 )
 from ..evaluation_sets import (
+    MISSING_SEGMENT_POLICIES,
     EvaluationSet,
+    MissingSegmentPolicy,
     get_model_compatible_set,
     get_reference_set,
     get_shared_evaluation_sets,
@@ -118,16 +120,21 @@ def run_validate(args: argparse.Namespace) -> None:
 
 def _score(predictions: Predictions, evaluation_set: EvaluationSet, *, null_policy: NullPolicy,
            attribute_selection: AttributeSelection,
-           missing_attribute_policy: MissingAttributePolicy, num_resamples: int,
+           missing_attribute_policy: MissingAttributePolicy,
+           missing_segment_policy: MissingSegmentPolicy, num_resamples: int,
            confidence: float, seed: int) -> EvaluationResult:
     """Scores predictions, with bootstrap intervals of the model if `num_resamples` > 0."""
     result = evaluate_predictions(
         predictions, evaluation_set, null_policy=null_policy,
         missing_attribute_policy=missing_attribute_policy,
+        missing_segment_policy=missing_segment_policy,
         attributes=select_evaluated_attributes(evaluation_set, attribute_selection))
     if result.missing_attributes:
         print(f"Model {result.model.label!r}, {evaluation_set.name} set: scored as invalid, since"
               f" not predicted: {', '.join(result.missing_attributes)}.")
+    if result.missing_segment_ids:
+        print(f"Model {result.model.label!r}, {evaluation_set.name} set: segments without"
+              f" predictions, scored as invalid: {len(result.missing_segment_ids)}.")
     if not num_resamples:
         return result
     return dc.replace(result, intervals=compute_bootstrap_intervals(
@@ -139,7 +146,8 @@ def _select_model_evaluation_sets(
     context_offsets: tuple[int, ...] | None,
     shared_sets_f: T.Callable[[str, str], T.Mapping[str, EvaluationSet]],
     model_compatible_set_f: T.Callable[[str, str, tuple[int, ...]], EvaluationSet],
-) -> list[EvaluationSet]:
+    missing_segment_policy: MissingSegmentPolicy,
+) -> tuple[EvaluationSet, ...]:
     """`select_evaluation_sets` for a model, with its notes printed, and a note if it used the
     split (`_explain_split_use`)."""
     header = predictions.header
@@ -147,16 +155,18 @@ def _select_model_evaluation_sets(
     model_compatible_set = None if context_offsets is None else model_compatible_set_f(
         header.dataset, header.split, tuple(context_offsets))
     try:
-        evaluation_sets, notes = select_evaluation_sets(
+        selection = select_evaluation_sets(
             predictions.segment_ids, shared_sets_f(header.dataset, header.split).values(),
-            model_compatible_set)
+            model_compatible_set, missing_segment_policy)
     except ValueError as e:
         raise ValueError(f"Model {name!r}: {e}") from e
-    if evaluation_sets and (split_use_note := _explain_split_use(header.model, header.split)):
-        notes = [*notes, split_use_note]
+    notes = list(selection.notes)
+    if selection.evaluation_sets and (split_use_note := _explain_split_use(header.model,
+                                                                           header.split)):
+        notes.append(split_use_note)
     for note in notes:
         print(f"Model {name!r}: {note}")
-    return evaluation_sets
+    return selection.evaluation_sets
 
 
 def _compute_method_average_tables(
@@ -198,7 +208,8 @@ def run_evaluate(args: argparse.Namespace) -> None:
     model_compatible_set_f = functools.cache(functools.partial(get_model_compatible_set, metadata))
     score = functools.partial(
         _score, null_policy=args.null_policy, attribute_selection=args.attributes,
-        missing_attribute_policy=args.missing_attribute_policy, num_resamples=args.bootstrap,
+        missing_attribute_policy=args.missing_attribute_policy,
+        missing_segment_policy=args.missing_segment_policy, num_resamples=args.bootstrap,
         confidence=args.confidence, seed=args.seed)
     results = [
         score(predictions, evaluation_set)
@@ -207,7 +218,7 @@ def run_evaluate(args: argparse.Namespace) -> None:
             predictions,
             method_context_offsets.get(predictions.header.model.method_name,
                                        predictions.header.context_offsets),
-            shared_sets_f, model_compatible_set_f)]
+            shared_sets_f, model_compatible_set_f, args.missing_segment_policy)]
     if not results:
         raise ValueError("No model has an evaluation set with labels (see the notes above), so"
                          " nothing is scored.")
@@ -358,6 +369,13 @@ def make_argument_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--missing-attribute-policy", choices=MISSING_ATTRIBUTE_POLICIES,
                           default="error",
                           help="How a selected attribute that a file does not predict is scored."
+                               " error: not at all, the command fails. invalid: as if every"
+                               " attribute prediction of it were invalid (see --null-policy)."
+                               " Default: error.")
+    evaluate.add_argument("--missing-segment-policy", choices=MISSING_SEGMENT_POLICIES,
+                          default="error",
+                          help="How a segment of the model-compatible set that a file does not"
+                               " predict is scored, e.g. of a file of an older metadata build."
                                " error: not at all, the command fails. invalid: as if every"
                                " attribute prediction of it were invalid (see --null-policy)."
                                " Default: error.")

@@ -8,7 +8,7 @@ import numpy as np
 from irap_data.attrs import filter_labeled_attrs, get_attrs_to_include
 from irap_data.metadata import IGNORE_LABEL_INDEX, ClassVocabulary
 
-from .evaluation_sets import EvaluationSet
+from .evaluation_sets import MISSING_SEGMENT_POLICIES, EvaluationSet, MissingSegmentPolicy
 from .metric_names import (
     MACRO_METRIC_TO_PER_CLASS,
     MANUAL_REVIEW_PROPORTION_METRIC,
@@ -36,6 +36,7 @@ from .predictions import (
     PredictionFormatError,
     Predictions,
     add_invalid_attributes,
+    add_invalid_segments,
     align_classes,
     select_segments,
     to_class_indices,
@@ -130,6 +131,9 @@ class EvaluationResult:
         missing_attributes: The evaluated attributes that the predictions lack, scored as
             invalid attribute predictions (`MissingAttributePolicy` 'invalid'). `num_invalid`
             counts them too.
+        missing_segment_ids: The segments of the evaluation set that the predictions lack, in
+            the order of the set, scored as invalid attribute predictions
+            (`MissingSegmentPolicy` 'invalid'). `num_invalid` counts them too.
     """
 
     model: ModelInfo
@@ -141,6 +145,7 @@ class EvaluationResult:
     metrics: MetricValues[float]
     intervals: MetricValues | None = None
     missing_attributes: tuple[str, ...] = ()
+    missing_segment_ids: tuple[str, ...] = ()
 
     @property
     def attributes(self) -> tuple[str, ...]:
@@ -153,6 +158,7 @@ def align_to_evaluation_set(
     attributes: T.Sequence[str],
     *,
     missing_attribute_policy: MissingAttributePolicy = "error",
+    missing_segment_policy: MissingSegmentPolicy = "error",
 ) -> Predictions:
     """Selects and orders the predictions to match the labels of `evaluation_set`: its segments
     in its order, `attributes`, and the classes of each attribute in the order of its
@@ -163,13 +169,15 @@ def align_to_evaluation_set(
 
     Args:
         missing_attribute_policy: See `MissingAttributePolicy`.
+        missing_segment_policy: See `MissingSegmentPolicy`.
 
     Raises:
         ValueError: For attributes that are not in the dataset, or an unknown
-            `missing_attribute_policy`.
+            `missing_attribute_policy` or `missing_segment_policy`.
         PredictionFormatError: If the release or split differ, an attribute is not predicted
             and `missing_attribute_policy='error'`, the predicted iRAP codes of an attribute
-            differ from the dataset's, or a segment of the evaluation set has no prediction.
+            differ from the dataset's, or a segment of the evaluation set has no prediction and
+            `missing_segment_policy='error'`.
     """
     header = predictions.header
     if (header.dataset, header.split) != (evaluation_set.dataset, evaluation_set.split):
@@ -179,11 +187,16 @@ def align_to_evaluation_set(
     if missing_attribute_policy not in MISSING_ATTRIBUTE_POLICIES:
         raise ValueError(f"missing_attribute_policy must be one of {MISSING_ATTRIBUTE_POLICIES},"
                          f" got {missing_attribute_policy!r}.")
+    if missing_segment_policy not in MISSING_SEGMENT_POLICIES:
+        raise ValueError(f"missing_segment_policy must be one of {MISSING_SEGMENT_POLICIES},"
+                         f" got {missing_segment_policy!r}.")
     _check_attributes_in_vocabulary(attributes, evaluation_set.vocabulary)
     attribute_to_irap_codes = evaluation_set.vocabulary.restrict_to_attributes(
         attributes).attribute_to_irap_codes
     if missing_attribute_policy == "invalid":
         predictions = add_invalid_attributes(predictions, attribute_to_irap_codes)
+    if missing_segment_policy == "invalid":
+        predictions = add_invalid_segments(predictions, evaluation_set.segment_ids)
     return select_segments(align_classes(predictions, attribute_to_irap_codes),
                            evaluation_set.segment_ids)
 
@@ -195,6 +208,7 @@ def evaluate_predictions(
     attributes: T.Sequence[str] | None = None,
     null_policy: NullPolicy = "first_class",
     missing_attribute_policy: MissingAttributePolicy = "error",
+    missing_segment_policy: MissingSegmentPolicy = "error",
     metric_names: T.Sequence[str] | None = None,
 ) -> EvaluationResult:
     """Scores predictions on every segment of an evaluation set.
@@ -207,15 +221,15 @@ def evaluate_predictions(
             defaults.
         null_policy: See `NullPolicy`.
         missing_attribute_policy: See `MissingAttributePolicy`.
+        missing_segment_policy: See `MissingSegmentPolicy`.
         metric_names: None means `get_default_metric_names` of the output kind of the
             predictions.
 
     Raises:
         ValueError: For probabilistic metrics of hard predictions, per-class metric names, if
             there is no attribute to score, if `null_policy='exclude'` would leave an attribute
-            without scored segments, since its attribute predictions are invalid on every labeled
-            segment or, with `missing_attribute_policy='invalid'`, it is not predicted, and as
-            `align_to_evaluation_set` does.
+            without scored segments, since its attribute predictions are invalid or missing on
+            every labeled segment, and as `align_to_evaluation_set` does.
         PredictionFormatError: See `align_to_evaluation_set`.
     """
     if null_policy not in NULL_POLICIES:
@@ -231,8 +245,12 @@ def evaluate_predictions(
         raise ValueError("There is no attribute to score.")
     missing_attributes = (tuple(a for a in attributes if a not in predictions.attributes)
                           if missing_attribute_policy == "invalid" else ())
+    predicted = set(predictions.segment_ids)
+    missing_segment_ids = (tuple(s for s in evaluation_set.segment_ids if s not in predicted)
+                           if missing_segment_policy == "invalid" else ())
     aligned = align_to_evaluation_set(predictions, evaluation_set, attributes,
-                                      missing_attribute_policy=missing_attribute_policy)
+                                      missing_attribute_policy=missing_attribute_policy,
+                                      missing_segment_policy=missing_segment_policy)
     num_invalid = {attr: int((~aligned.is_valid[attr]
                               & (evaluation_set.class_indices[attr] != IGNORE_LABEL_INDEX)).sum())
                    for attr in attributes}
@@ -267,7 +285,7 @@ def evaluate_predictions(
         evaluation_set=evaluation_set, null_policy=null_policy,
         statistics=statistics, num_invalid=num_invalid,
         metrics=_compute_result_metrics(statistics, metric_names),
-        missing_attributes=missing_attributes)
+        missing_attributes=missing_attributes, missing_segment_ids=missing_segment_ids)
 
 
 def _compute_result_metrics(statistics: T.Mapping[str, ClassificationStatistics],

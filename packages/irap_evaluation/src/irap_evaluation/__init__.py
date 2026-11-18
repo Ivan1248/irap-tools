@@ -49,10 +49,13 @@ from .evaluation import (
 )
 from .evaluation_sets import (
     FULL_SET_NAME,
+    MISSING_SEGMENT_POLICIES,
     MODEL_COMPATIBLE_SET_NAME,
     REFERENCE_SET_NAME,
     SHARED_EVALUATION_SET_NAMES,
     EvaluationSet,
+    EvaluationSetSelection,
+    MissingSegmentPolicy,
     get_evaluation_set,
     get_full_set,
     get_model_compatible_set,
@@ -122,6 +125,7 @@ from .predictions import (
     check_class_codes,
     check_split_names,
     explain_split_use,
+    format_examples,
     format_model_label,
     get_common_dataset_and_split,
     select_segments,

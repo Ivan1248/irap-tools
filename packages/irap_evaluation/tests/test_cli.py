@@ -221,6 +221,28 @@ def test_missing_attributes(metadata_dir, metadata, tmp_path, capsys):
     assert report["missing_attributes"] == ["Lane width"]
 
 
+def test_missing_segments(metadata_dir, metadata, reference_set, tmp_path, capsys):
+    missing = reference_set.segment_ids[0]
+    path = tmp_path / "old.predictions.parquet"
+    write_predictions(path, make_predictions(
+        metadata.vocabulary, [s for s in metadata.splits[SPLIT] if s != missing], name="old",
+        seed=0))
+
+    def evaluate(policy):
+        out = tmp_path / policy
+        exit_code = main(["evaluate", str(metadata_dir), str(path), "--out", str(out),
+                          "--missing-segment-policy", policy])
+        return exit_code, out
+
+    assert evaluate("error")[0] == 1
+    assert "of the model-compatible set" in capsys.readouterr().err
+    exit_code, out = evaluate("invalid")
+    assert exit_code == 0
+    assert "segments without predictions, scored as invalid: 1." in capsys.readouterr().out
+    report = json.loads((out / "old" / "metrics_vietnam_val_reference.json").read_text())
+    assert report["missing_segment_ids"] == [missing]
+
+
 @pytest.mark.parametrize("names, message", [
     (["m", "m"], "each needs a seed"),
     (["conv seq", "conv_seq"], "output directories"),
@@ -274,7 +296,8 @@ def test_a_model_with_the_reference_offsets_is_not_scored_on_its_model_compatibl
                                              name="ref", seed=0, context_offsets=offsets))
     out = tmp_path / "results"
     assert main(["evaluate", str(metadata_dir), str(path), "--out", str(out)]) == 0
-    assert "model-compatible set is left out" in capsys.readouterr().out
+    assert ("the model-compatible set are those on the reference set"
+            in capsys.readouterr().out)
     assert (sorted(p.name for p in (out / "ref").iterdir())
             == ["metrics_vietnam_val_full.json", "metrics_vietnam_val_reference.json"])
 

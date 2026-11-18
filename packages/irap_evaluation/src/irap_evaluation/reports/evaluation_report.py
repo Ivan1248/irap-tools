@@ -263,6 +263,7 @@ def to_json_dict(result: EvaluationResult) -> dict[str, T.Any]:
         "num_sequences": len(evaluation_set.sequence_ids),
         "attributes": list(result.attributes),
         "missing_attributes": list(result.missing_attributes),
+        "missing_segment_ids": list(result.missing_segment_ids),
         "num_invalid": dict(result.num_invalid),
         "metrics": dc.asdict(result.metrics),
         "intervals": None if result.intervals is None else dc.asdict(result.intervals),
