@@ -35,7 +35,7 @@ REGISTER_ENDPOINT_PATH = "/api/register"
 SIGN_OUT_ENDPOINT_PATH = "/api/sign-out"
 UPLOAD_PATH = "/api/uploads"
 PREDICTIONS_DOWNLOAD_PATH = "/api/submissions/{submission_id}/predictions.parquet"
-#: The files of a model (`ModelArchive.write_model_predictions_zip`).
+#: The prediction files of a model (`ModelArchive.write_model_predictions_zip`).
 MODEL_PREDICTIONS_DOWNLOAD_PATH = "/api/models/{model_id}/predictions.zip"
 SCORES_DOWNLOAD_PATH = "/api/submissions/{submission_id}/scores/{evaluation_set}.json"
 #: A coding table that a Model page prepared, which can be downloaded once.

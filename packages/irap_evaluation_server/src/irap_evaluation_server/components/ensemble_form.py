@@ -272,10 +272,10 @@ class EnsembleForm:
                 ui.label("The ensemble predicts the weighted mean of the members' distributions."
                          " A hard prediction counts as one-hot, so an ensemble of hard predictions"
                          " is a weighted vote. An attribute prediction is invalid only if it is"
-                         " invalid in every member. The ensemble gets a file for each split that"
-                         " every member has. If its model exists, these files replace all of the"
-                         " model's files, which are deleted permanently. It counts as trained on"
-                         " the training splits of all members.").classes("muted")
+                         " invalid in every member. The ensemble gets a prediction file for each"
+                         " split that every member has. If its model exists, these files replace"
+                         " all of the model's files, which are deleted permanently. It counts as"
+                         " trained on the training splits of all members.").classes("muted")
                 ui.label("Members and weights").classes("subsection-title")
                 self._show_members()
                 self._plan_label = ui.label(_NO_MEMBERS_TEXT).classes("muted")

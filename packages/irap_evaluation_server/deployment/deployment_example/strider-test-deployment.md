@@ -71,5 +71,10 @@ sudo pacman -S --needed caddy
 
 ## Update and shutdown
 
-- Update: `git pull`, rebuild the image, stop the app with Ctrl-C and run `podman run` again.
+- Update: `git pull`, rebuild the image, stop the app with Ctrl-C and run `podman run` again, or run:
+```
+git pull && \
+    podman build -t irap-eval-server -f packages/irap_evaluation_server/deployment/Containerfile . && \
+    podman run --rm -it --init -p 127.0.0.1:8600:8600 -v ~/data/irap-eval:/irap-eval -v /mnt/sdb1/datasets:/datasets:ro irap-eval-server /irap-eval/server.toml
+```
 - Shutdown: Ctrl-C in tmux, then `sudo systemctl stop caddy`.

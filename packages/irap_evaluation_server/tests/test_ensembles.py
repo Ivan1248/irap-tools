@@ -121,7 +121,7 @@ def test_an_ensemble_replaces_all_files_of_its_model(archive, two_split_contexts
     # c has no file of OTHER_SPLIT, so the ensemble of a and c has only SPLIT.
     update = _prepare(archive, two_split_contexts, submissions, "ac")
     assert (list(update.replaced), list(update.replaced_other_splits)) == ([SPLIT], [OTHER_SPLIT])
-    assert any(f"Permanently deletes the {OTHER_SPLIT} file #{second.id}" in c
+    assert any(f"Permanently deletes the {OTHER_SPLIT} prediction file #{second.id}" in c
                for c in update.confirmations)
     [third] = archive.apply_model_update(update, submitter="Bo")
     assert archive.list_submissions() == [third, *archive.list_submissions()[1:]]

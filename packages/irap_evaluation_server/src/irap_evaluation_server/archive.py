@@ -453,7 +453,7 @@ class ModelUpdate:
         """The changes that the user confirms before the update is applied: replaced files, which
         are deleted, and a description or a method display name that replaces another one."""
         def describe(submission: Submission) -> str:
-            return (f"file #{submission.id} of {self.label}, uploaded"
+            return (f"prediction file #{submission.id} of {self.label}, uploaded"
                     f" {submission.uploaded_at:%Y-%m-%d %H:%M} UTC by {submission.submitter},"
                     f" with its scores")
 

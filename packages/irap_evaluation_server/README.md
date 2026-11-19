@@ -5,16 +5,16 @@ A web app that stores model predictions, scores them, and compares, analyses and
 | Page | Path | Content |
 |---|---|---|
 | Scores | `/scores` (start page) | The methods of a dataset split, ranked by an attribute average or by a per-attribute metric, with intervals and differences from a reference method. |
-| Models | `/models` | The models of each dataset by method, with their files, a filter, the upload form and the [ensemble](#ensembles) form. |
-| Model | `/models/<id>` | A model's files, scores and coding-table export, and its actions for writers. |
+| Models | `/models` | The models of each dataset by method, with their prediction files, a filter, the upload form and the [ensemble](#ensembles) form. |
+| Model | `/models/<id>` | A model's prediction files, scores and coding-table export, and its actions for writers. |
 | Method | `/methods?dataset=<dataset>&method=<method>` | A method's models, the scores of their mean and of each model, its display name and description, and the actions of its models. Method names in the tables link to it. |
 | Analysis | `/analysis` | A model's predictions for one attribute, optionally compared with a second model: confusion matrix, class analysis, review curve, map, segment details, and candidate labeling errors with label reviews. |
-| Methodology | `/methodology` | How the files are scored and how to read the score tables. The notes below the tables link to its sections. |
+| Methodology | `/methodology` | How prediction files are scored and how to read the score tables. The notes below the tables link to its sections. |
 | Action log | `/actions` | All changes, with the name of the user. Writers only. |
 | Accounts | `/accounts` | The accounts and their permissions. Admins only, in the Admin menu. |
 | Shown metrics | `/shown-metrics` | The attribute averages that the pages show. Admins only, in the Admin menu. |
 
-Anyone who can open the app can view it and download files. Changes need a signed-in [account](#accounts) with write permission.
+Anyone who can open the app can view it and download prediction files, scores and coding tables. Changes need a signed-in [account](#accounts) with write permission.
 
 ## Installation and start
 
@@ -54,8 +54,8 @@ The image paths in the metadata (`segment_id_to_data_paths_rel.json`) are relati
 
 The data directory holds:
 
-- `archive.sqlite3`: the index of models and files, and the action log,
-- `submissions/<id>/predictions.parquet`: the stored files, removed when they are [deleted](#deletion) (if a file is open, e.g. on Windows, at a later deletion),
+- `archive.sqlite3`: the index of models and prediction files, and the action log,
+- `submissions/<id>/predictions.parquet`: the stored prediction files, removed when they are [deleted](#deletion) (if a file is open, e.g. on Windows, at a later deletion),
 - `scores.sqlite3`: the [scores](#scoring). The server computes them again if the file is missing, so backups can leave it out.
 - `uploads/`: uploaded files that are not stored yet, removed at start, and at the start of another upload if they are older than 24 h,
 - `vendor/`: the map libraries and MathJax,
@@ -66,7 +66,7 @@ The data directory holds:
 
 Keep the data directory and its backups private.
 
-Each database has a schema version. At start, the server migrates a database of an older version after copying it to a backup next to it, e.g. `archive.v1.2026-10-12T150000Z.backup.sqlite3`. It refuses a database of a newer version, or one whose tables differ from those of its version. A score cache of another version is created again, and all files are scored again. This takes a few minutes, during which the Scores page lists the files that are being scored.
+Each database has a schema version. At start, the server migrates a database of an older version after copying it to a backup next to it, e.g. `archive.v1.2026-10-12T150000Z.backup.sqlite3`. It refuses a database of a newer version, or one whose tables differ from those of its version. A score cache of another version is created again, and all prediction files are scored again. This takes a few minutes, during which the Scores page lists the files that are being scored.
 
 ## Accounts
 
@@ -75,7 +75,7 @@ Users register and sign in with the links in the top bar. Each account has one p
 | Permission | Can |
 |---|---|
 | view | View and download, like visitors without an account. |
-| write | Also upload, replace and delete files, delete models and methods, edit descriptions and method display names, create ensembles, review labels, and see the action log. |
+| write | Also upload, replace and delete prediction files, delete models and methods, edit descriptions and method display names, create ensembles, review labels, and see the action log. |
 | admin | Also change the permissions of accounts and remove them on the Accounts page, choose the [shown metrics](#hidden-metrics), and see the per-class scores of [protected splits](#protected-splits). |
 
 The first account to register is an admin, and later accounts get view permission. The app refuses to remove the last admin or to take away its admin permission.
@@ -91,7 +91,7 @@ The app does not limit registrations or sign-in attempts, so use long passwords,
 
 ### Protected splits
 
-The splits of a dataset that are not in its `analysis_splits`, e.g. test, are protected: their labels are not shown in detail. Their files can be stored, and everyone sees their per-attribute and averaged scores and the number of labeled segments of each attribute (Example count, `metrics.per_attribute.n` in the scores JSON). But they are not on the Analysis page, and only admins see:
+The splits of a dataset that are not in its `analysis_splits`, e.g. test, are protected: their labels are not shown in detail. Their prediction files can be stored, and everyone sees their per-attribute and averaged scores and the number of labeled segments of each attribute (Example count, `metrics.per_attribute.n` in the scores JSON). But they are not on the Analysis page, and only admins see:
 
 - their per-class scores, confusion matrices and review curves, which are left out (`"classes": null`) of the scores JSON that others download,
 - the Class count, Minority-class example count and Smallest-class example count columns in the per-attribute view of the Scores page.
@@ -100,7 +100,7 @@ This does not keep the labels secret from writers, since the scores of chosen pr
 
 ## Public deployment
 
-On a server with a public DNS name, the app listens only on `127.0.0.1`, and [Caddy](https://caddyserver.com) serves it over HTTPS. The files are in [`deployment/`](deployment/). The steps are for Arch Linux.
+On a server with a public DNS name, the app listens only on `127.0.0.1`, and [Caddy](https://caddyserver.com) serves it over HTTPS. The deployment files are in [`deployment/`](deployment/). The steps are for Arch Linux.
 
 1. Install the packages, create a system user, and install the app in a virtual environment:
 
@@ -204,17 +204,17 @@ A `.zip` archive uploads the files of one model on several splits at once. Every
 
 ### Deletion
 
-Deletion is permanent and needs a confirmation. The Model page deletes a file, or a whole model with all its files. The Method page deletes a whole method with all its models. Uploads and ensembles delete the files that they replace. A deleted file is removed with its scores and can only be uploaded again.
+Deletion is permanent and needs a confirmation. The Model page deletes a prediction file, or a whole model with all its files. The Method page deletes a whole method with all its models. Uploads and ensembles delete the files that they replace. A deleted file is removed with its scores and can only be uploaded again.
 
 - The last file of a model is deleted only with the model, so every model has a file.
 - Deleting the last model of a method also removes the method's display name.
 - The action log keeps the actions on deleted models and files, and their ids are not reused.
 
-To keep a copy, download the files of a model, e.g. an ensemble, as one `.zip` archive from the Model page (`/api/models/<id>/predictions.zip`). It can be uploaded again.
+To keep a copy, download the prediction files of a model, e.g. an ensemble, as one `.zip` archive from the Model page (`/api/models/<id>/predictions.zip`). It can be uploaded again.
 
 ## Scoring
 
-A background thread scores each new file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes and segments that a file does not predict count as invalid predictions (`--missing-attribute-policy invalid`, `--missing-segment-policy invalid`), so all models are scored on the same attributes and segments.
+A background thread scores each new prediction file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes and segments that a file does not predict count as invalid predictions (`--missing-attribute-policy invalid`, `--missing-segment-policy invalid`), so all models are scored on the same attributes and segments.
 
 `scores.sqlite3` stores the attribute averages and per-attribute values, and their values in each bootstrap resample of road sequences (`irap_evaluation.resample_model_metrics`), as float32: about 1.9 MB per file and evaluation set on Vietnam. All files on an evaluation set share the resamples. So the pages compute means over models, intervals and paired comparisons of methods from the stored values, also over any subset of attributes, as `irap-eval evaluate` and `irap-eval compare` compute them (see [confidence intervals](../irap_evaluation/docs/evaluation.md#confidence-intervals)).
 
@@ -222,7 +222,7 @@ Resampling takes about 1.1 s per file and evaluation set on Vietnam val and 1.5 
 
 Stored scores are out of date when the scoring settings or the evaluation sets change, e.g. after a metadata update. To also catch changes of the scoring code, the settings fingerprint includes the scores and resampled values of random predictions on a small synthetic set (2 attributes, 3 classes, 24 segments), computed at start. A change of `irap_evaluation` or NumPy that changes these values, e.g. of the random generator, makes all scores out of date. A change that affects only cases outside the set, e.g. attributes with more classes, does not. After such a change, increase `scoring.SCORE_CACHE_VERSION`, or delete `scores.sqlite3` while the server is stopped.
 
-At start, the server scores again the files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one without context offsets that lacks segments of a new metadata build, is marked as failed, with the reason.
+At start, the server scores again the prediction files whose scores are out of date or failed with an unexpected error. A file that `irap_evaluation` refuses, e.g. one without context offsets that lacks segments of a new metadata build, is marked as failed, with the reason.
 
 ## Scores
 
@@ -265,7 +265,7 @@ The Analysis page shows the predictions of a model (A) for one attribute on an e
 - **Map:** segments coloured by outcome, or, with B, by which of A and B is correct. The listed segments are highlighted.
 - **Segment details:** a click on a segment shows its context images (at A's context offsets, from `dataset_dir`), and, below the map, the classes of the attribute with its label and the distributions predicted by A and B. The arrows before the segment ID step to the previous and next segment of its road sequence in the evaluation set. The List buttons step through the labeling errors in their panel, also after the selected label was reviewed and hidden, and through the segments of the selected cell in the other panels, also those that are not listed.
 
-The page keeps the 8 most recently used files in memory. Reading and aligning a file takes about 0.06 s on Vietnam val and 0.3 s on train.
+The page keeps the 8 most recently used prediction files in memory. Reading and aligning a file takes about 0.06 s on Vietnam val and 0.3 s on train.
 
 ### Label reviews
 
@@ -284,14 +284,14 @@ The reviewed labels of a split can be downloaded as a hard prediction file of th
 The "Create an ensemble" form of the Models page creates the weighted mean of the distributions of stored models of a dataset, as `irap-eval ensemble` does (`irap_evaluation.ensemble_predictions`). A hard prediction counts as a one-hot distribution. The members are the models selected with the checkboxes of the tables, also those that the filter hides. The form lists them with their weights.
 
 - The ensemble is a model with the given method name, display name and seed (0 in a new form). A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
-- It gets a file for each split on which every member has a file. These replace all files of an existing model of that name, so that all its files are of the same members.
+- It gets a prediction file for each split on which every member has one. These replace all files of an existing model of that name, so that all its files are of the same members.
 - Its training splits are the union of its members', and its early stopping splits are its members' early stopping splits that are not among its training splits (`irap_evaluation.make_ensemble_model_info`).
 - Members that predict different segments or attributes are refused by default. The form can instead combine the segments and attributes that every member predicts, or all that any member predicts, where one that a member does not predict counts as invalid (`irap_evaluation.MemberCombination`). Members with different context offsets predict different segments. With all attributes, an attribute that only one member predicts is that member's prediction.
 - Its files are checked, confirmed and scored like uploads. The action log records the members, weights and combinations of segments and attributes. If a member's file changes before the ensemble is stored, the ensemble is refused and can be created again.
 
 ## Coding tables
 
-The Model page downloads the files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the shown method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
+The Model page downloads the prediction files of the chosen splits as one iRAP coding table (`.xlsx` or `.csv`), as `irap-eval export-coding-table` does, with a coder name (default: the shown method name) and a coding date. An `.xlsx` table of probabilistic predictions has the probability of each exported code on a second sheet.
 
 Tables are made one at a time in a separate process (NiceGUI's `run.cpu_bound`, started with "spawn"). An `.xlsx` table of large splits takes tens of seconds, which in a thread delays the server's other pages until browsers lose the connection. The file is written to `<data_dir>/uploads` and sent once over HTTP. File names are cut to 160 bytes, since Excel does not open a file whose path is longer than 218 characters.
 
@@ -302,7 +302,7 @@ irap_evaluation_server/
 ├─ config.py                ServerConfig, DatasetConfig, load_server_config
 ├─ datasets.py              DatasetContext: the metadata of a dataset and its evaluation sets
 ├─ database.py              Connections to the SQLite databases and the migrations of their schemas
-├─ archive.py               ModelArchive: models, their files, the SQLite index and action log
+├─ archive.py               ModelArchive: models, their prediction files, the SQLite index and action log
 ├─ accounts.py              AccountStore: the accounts, their permissions and password hashes
 ├─ display_settings.py      The hidden metrics, which admins choose
 ├─ uploads.py               The checks of uploaded files and .zip archives, and their planned updates
@@ -320,7 +320,7 @@ irap_evaluation_server/
 ├─ label_reviews.py         LabelReviewStore: corrections of labels, and their export as a prediction file
 ├─ vendor_libraries.py      The download of the libraries of the map and of MathJax
 ├─ ensembles.py             Ensembles of stored models
-├─ coding_table_export.py   The coding table of the files of a model
+├─ coding_table_export.py   The coding table of the prediction files of a model
 ├─ components/              Parts of the pages, e.g. the page frame, form controls, tables and the map
 ├─ pages/                   One module per page
 └─ server.py                The irap-eval-server command

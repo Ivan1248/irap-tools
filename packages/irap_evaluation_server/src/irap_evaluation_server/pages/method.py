@@ -1,4 +1,4 @@
-"""The Method page: a method's details, models, and the scores of its seeds and their mean on a
+"""The Method page: a method's details, models, and the scores of its models and their mean on a
 split. Its display name, which all its models share, is edited here, and a Markdown description
 that is given to all its models, whose first line the tables show."""
 
@@ -202,9 +202,10 @@ class _MethodPage:
             display_name_text = ("" if group.method_display_name is None
                                  else ", and its display name")
             changes = [f"Permanently deletes the method {group.method_name} on {self.dataset}:"
-                       f" its {len(group.models)} models ({seeds}) with all their files and their"
-                       f" scores{display_name_text}. To keep a copy, first download the files"
-                       f" (.zip) of each model on its Model page, which can be uploaded again."]
+                       f" its {len(group.models)} models ({seeds}) with all their prediction files"
+                       f" and their scores{display_name_text}. To keep a copy, first download the"
+                       f" prediction files (.zip) of each model on its Model page, which can be"
+                       f" uploaded again."]
             if await confirm_changes(f"Delete method {group.shown_method_name}", changes,
                                      "Delete"):
                 await self.run_change(lambda actor: self.archive.delete_method(

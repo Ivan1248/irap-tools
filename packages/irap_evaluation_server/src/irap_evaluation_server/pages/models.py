@@ -493,8 +493,8 @@ def register_models_pages(archive: ModelArchive,
                                              ).classes("model-selection")
                         create_native_button("Unselect shown", lambda: select_shown(False)
                                              ).classes("model-selection")
-                ui.label("A method name opens the Method page with the scores of all its seeds."
-                         " A ✓ opens the Model page with the scores of the split's file."
+                ui.label("A method name opens the Method page with the scores of all its models."
+                         " A ✓ opens the Model page with the scores of the split's prediction file."
                          " Hover over it for the file details. Below it: whether the model used"
                          " the split for training or early stopping.").classes("muted")
                 show_tables()

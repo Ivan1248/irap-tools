@@ -72,7 +72,8 @@ def test_reupload_replaces_the_split(archive, dataset_contexts):
     assert planned.update.model == first.model
     assert planned.update.replaced == {SPLIT: first}
     [confirmation] = planned.update.confirmations
-    assert f"Replaces and permanently deletes the {SPLIT} file #{first.id} of m" in confirmation
+    assert (f"Replaces and permanently deletes the {SPLIT} prediction file #{first.id} of m"
+            in confirmation)
     # The dry run of the plan keeps the file.
     assert archive.get_submission(first.id) == first
     assert archive.get_predictions_path(first.id).exists()

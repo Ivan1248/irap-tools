@@ -93,8 +93,8 @@ def _make_evaluation_sets_markdown(dataset_names: T.Sequence[str]) -> str:
 A model predicts the attributes of a segment from the images of the segment and of other segments
 of the same road. Its **context offsets** are the positions of these segments in the road relative
 to the predicted segment, e.g. 0 for the segment itself and −1 for the previous segment. An
-**evaluation set** is a subset of the labeled segments of a split. The predictions of a file are
-scored on up to three evaluation sets:
+**evaluation set** is a subset of the labeled segments of a split. A prediction file is scored on
+up to three evaluation sets:
 
 - **Reference set**: the segments for which every offset of a fixed window ({windows}) points to
   a segment of the same road with an image. It is the same for all models, so their metric values
@@ -246,7 +246,7 @@ with linear interpolation. A `*` after it means that some resamples are left out
 is undefined in them, e.g. the MCC when all drawn labels of an attribute are of one class. Hover
 over it for their number.
 
-**The number of seeds.** With one model, the interval covers only the variation from the roads: it
+**The number of models.** With one model, the interval covers only the variation from the roads: it
 cannot show how much models with other seeds would differ, so it understates the uncertainty about
 the method's target. With $M$ models, the term $\frac{{s}}{{\sqrt{{M}}}}\, t$ alone gives an interval
 with the half-width $t_{{M-1}}({upper})\, s / \sqrt{{M}}$, where $t_{{M-1}}({upper})$ is the ${upper}$

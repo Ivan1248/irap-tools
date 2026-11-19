@@ -370,7 +370,7 @@ def _make_method_notes_html(rows: T.Sequence[MethodScores], confidence: float,
                 f" worse than the best.")
     else:
         bold = f"No bold, {_make_different_sets_reason_html()}."
-    lines = [(f"Values: means over the seeds of each method. Below each: its"
+    lines = [(f"Values: means over the models of each method. Below each: its"
               f" {_make_interval_link_html(confidence)}. {_make_shading_note(axis)} {bold}")]
     if any(_is_single_model(r) for r in rows):
         lines.append(_SINGLE_MODEL_NOTE)
@@ -790,7 +790,7 @@ def make_method_scores_html(method_scores: MethodScores, method_resamples: RowRe
         attribute_table = _make_attribute_scores_table_html(
             method_scores, method_resamples, confidence, shown_metrics.attribute_table_names,
             attribute_sort)
-        tables_html += f'<div><div class="muted">Mean over the seeds</div>{attribute_table}</div>'
+        tables_html += f'<div><div class="muted">Mean over the models</div>{attribute_table}</div>'
     return f'<div class="score-tables">{tables_html}</div>'
 
 

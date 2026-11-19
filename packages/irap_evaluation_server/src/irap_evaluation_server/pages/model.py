@@ -1,5 +1,6 @@
-"""The Model page: a model's details, files, scores, coding-table export and actions, and the
-endpoints for downloading the files of a model and the scores of a submission."""
+"""The Model page: a model's details, prediction files, scores, coding-table export and actions,
+and the endpoints for downloading the prediction files of a model and the scores of a submission.
+"""
 
 import asyncio
 import dataclasses as dc
@@ -266,9 +267,9 @@ class _ModelPage:
 
         async def on_delete_model_clicked() -> None:
             label = self.snapshot.model.label
-            changes = [f"Permanently deletes the model {label} with all its files and their"
-                       f" scores. To keep a copy, first download the files (.zip) under Files,"
-                       f" which can be uploaded again."]
+            changes = [f"Permanently deletes the model {label} with all its prediction files and"
+                       f" their scores. To keep a copy, first download the files as a .zip"
+                       f" archive in the Prediction files section. It can be uploaded again."]
             if await confirm_changes(f"Delete model {label}", changes, "Delete"):
                 await self.run_change(lambda actor: self.archive.delete_model(
                     self.model_id, actor=actor), status_label)
@@ -313,12 +314,12 @@ class _ModelPage:
             submissions, actions = self.snapshot.submissions, self.snapshot.actions
             # The last file is deleted with the model (`ModelArchive.delete_submission`).
             can_delete = self.can_write and len(submissions) > 1
-            ui.label("Files").classes("section-title")
-            ui.label("A model has one file per split. A new file of a split replaces the old one,"
-                     " which is deleted permanently. Deleting a file also removes it"
+            ui.label("Prediction files").classes("section-title")
+            ui.label("A model has one prediction file per split. A new file of a split replaces"
+                     " the old one, which is deleted permanently. Deleting a file also removes it"
                      " permanently. The last file is deleted with the model.").classes("muted")
-            ui.html(f'<a href="{get_model_download_path(self.model_id)}">Download the files'
-                    f" (.zip)</a>, which can be uploaded again as the files of this model.",
+            ui.html(f'<a href="{get_model_download_path(self.model_id)}">Download the prediction'
+                    f" files (.zip)</a>, which can be uploaded again as the files of this model.",
                     sanitize=False)
             ui.html(make_table_html(
                 ["Split", "#", "Segments", "Attributes", "Submitter", "Upload time", "", "Notes"],
@@ -337,10 +338,11 @@ class _ModelPage:
                 set_status(status_label, f"File #{submission_id} is not a file of this model.",
                            is_error=True)
                 return
-            changes = [f"Permanently deletes the {submission.split} file #{submission.id} of"
-                       f" {submission.label}, so that the model has no {submission.split} scores."
+            changes = [f"Permanently deletes the {submission.split} prediction file"
+                       f" #{submission.id} of {submission.label}, so that the model has no {submission.split} scores."
                        f" To keep a copy, download it first."]
-            if await confirm_changes(f"Delete file #{submission.id}", changes, "Delete"):
+            if await confirm_changes(f"Delete prediction file #{submission.id}", changes,
+                                     "Delete"):
                 await self.run_change(lambda actor: self.archive.delete_submission(
                     submission.id, actor=actor), status_label)
 
