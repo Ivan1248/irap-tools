@@ -30,6 +30,11 @@ def dataset_contexts(metadata_dir):
 
 
 @pytest.fixture
+def reference_set(dataset_contexts):
+    return dataset_contexts["vietnam"].get_reference_set(SPLIT)
+
+
+@pytest.fixture
 def two_split_contexts(metadata_dir):
     """The dataset with the split `OTHER_SPLIT`, which has the segments of `SPLIT`."""
     splits_path = metadata_dir / MetaFiles.SPLITS

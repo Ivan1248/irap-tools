@@ -1,9 +1,11 @@
 """HTML of the Analysis page: the tabs of its panels, the confusion matrix, the class table, the
-classes of all attributes, the review curve, the segments of a matrix cell or the missed segments
-of a class, and the details of a segment (see `prediction_analysis`).
+classes of all attributes, the review curve, the candidate labeling errors, the segments of a
+matrix cell or the missed segments of a class, and the details of a segment (see
+`prediction_analysis`).
 
-The matrix, the table of the classes of all attributes and the segment list are single HTML
-elements with `data-cell`, `data-class-row` and `data-segment` attributes for one delegated click
+The matrix, the tables of the classes of all attributes and of the labeling errors, the segment
+list and the classes of a segment are single HTML elements with `data-cell`, `data-class-row`,
+`data-label-error-row`, `data-segment` and `data-correction-code` attributes for one delegated click
 handler each, since hundreds of NiceGUI elements would be slow.
 """
 
@@ -13,12 +15,16 @@ import typing as T
 
 import irap_evaluation as ie
 import numpy as np
+from irap_data.metadata import ClassVocabulary
 
 from ..class_analysis import ClassDiscrimination, ClassScores
+from ..label_errors import LabelErrorCandidate
+from ..label_reviews import LabelKey, LabelReview
 from ..prediction_analysis import SegmentDetail
 from .analysis_view import format_cell
 from .deck_map import OUTCOME_COLORS
 from .formatting import (
+    format_utc_time,
     make_header_cell_html,
     make_table_html,
     make_table_html_from_header,
@@ -358,6 +364,115 @@ def make_review_curve_html(model_curves: T.Sequence[ModelReviewCurve]) -> str:
             f"{_make_tooltip_strips_html(with_curve)}</svg>{notes}</div>")
 
 
+# Labeling errors ##################################################################################
+
+def _format_review_class(irap_code: int, irap_codes: T.Sequence[int],
+                         class_names: T.Sequence[str]) -> str:
+    """Formats the class of a correction, whose code is not a class of the attribute after a
+    metadata update that removed it."""
+    if irap_code in irap_codes:
+        return _format_class(irap_code, class_names[irap_codes.index(irap_code)])
+    return f"{irap_code} (not a class of the attribute)"
+
+
+def _describe_label_review(review: LabelReview, irap_codes: T.Sequence[int],
+                           class_names: T.Sequence[str],
+                           label_irap_code: int | None) -> tuple[str, str]:
+    """Describes a correction of a label as (short, long), e.g. ('→ 2', 'Class 2. Undivided, by Bo
+    on 2026-11-16 12:00 UTC: a median is visible.').
+
+    Args:
+        irap_codes, class_names: Of the attribute of the label.
+        label_irap_code: The current label, to mark a correction of an earlier one.
+    """
+    if review.correction == "class":
+        short = f"→ {review.irap_code}"
+        long = f"Class {_format_review_class(review.irap_code, irap_codes, class_names)}"
+    else:
+        short, long = "unclear", "Unclear"
+    long += f", by {review.reviewer} on {format_utc_time(review.created_at)}"
+    long += f": {review.comment}" if review.comment else "."
+    if review.is_outdated(label_irap_code):
+        short += " (old label)"
+        label = ("none" if review.label_irap_code is None
+                 else _format_review_class(review.label_irap_code, irap_codes, class_names))
+        long += f" The label was {label} when it was reviewed."
+    return short, long
+
+
+def make_label_error_table_html(candidates: T.Sequence[LabelErrorCandidate],
+                                segment_ids: T.Sequence[str], vocabulary: ClassVocabulary,
+                                reviews: T.Mapping[LabelKey, LabelReview],
+                                selected_rank: int | None) -> str:
+    """Makes a table of candidate labeling errors with the mean probability of the label, the
+    class that each model predicts with its probability, and the correction of the label if a
+    listed label has one.
+
+    The rows have a `data-label-error-row` attribute with the rank of the candidate, for a click
+    handler.
+
+    Args:
+        candidates: Of the models of the page (`label_errors.LabelErrorRanking.get_candidates`),
+            labeled with their roles, e.g. 'A', which name the columns of their predictions,
+            e.g. 'Pred. A'.
+        segment_ids, vocabulary: Of the evaluation set of the candidates.
+        reviews: The corrections of the dataset (`label_reviews.LabelReviewStore.get_reviews`).
+        selected_rank: The rank of the candidate whose row is marked, or None.
+    """
+    if not candidates:
+        return '<div class="muted">No labels are listed.</div>'
+    has_review_column = any((segment_ids[c.segment_index], c.attribute) in reviews
+                            for c in candidates)
+    rows = []
+    for candidate in candidates:
+        attribute = candidate.attribute
+        irap_codes, class_names = (vocabulary.get_irap_codes(attribute),
+                                   vocabulary.get_values(attribute))
+        label_code = irap_codes[candidate.label_index]
+        segment_id = segment_ids[candidate.segment_index]
+        model_cells = []
+        for prediction in candidate.model_predictions:
+            if prediction.probs is None:
+                model_cells.append('<td class="muted" title="Invalid prediction">inv.</td>')
+                continue
+            predicted = prediction.predicted_index
+            predicted_class = _format_class(irap_codes[predicted], class_names[predicted])
+            title = f"Model {prediction.label} predicts {predicted_class}."
+            model_cells.append(f'<td class="number"{make_title_attribute(title)}>'
+                               f"{irap_codes[predicted]}"
+                               f' <span class="muted">({prediction.probs[predicted]:.2f})</span>'
+                               f"</td>")
+        review_cell = "<td></td>" if has_review_column else ""
+        if (review := reviews.get((segment_id, attribute))) is not None:
+            short, long = _describe_label_review(review, irap_codes, class_names, label_code)
+            review_cell = f"<td{make_title_attribute(long)}>{html.escape(short)}</td>"
+        is_selected = candidate.rank == selected_rank
+        rows.append(
+            f'<tr data-label-error-row="{candidate.rank}"'
+            f'{" class=selected" if is_selected else ""}>'
+            f"<td><div>{html.escape(_format_class(label_code, class_names[candidate.label_index]))}"
+            f'</div><div class="muted">{html.escape(attribute)}</div></td>'
+            f"<td>{html.escape(segment_id)}</td>"
+            f'<td class="number">{candidate.mean_label_probability:.2f}</td>'
+            f'{"".join(model_cells)}{review_cell}</tr>')
+    model_headers = [
+        make_header_cell_html(f"Pred. {p.label}", is_number=True,
+                              title=f"The class that model {p.label} predicts, and its"
+                                    f" probability.")
+        for p in candidates[0].model_predictions]
+    headers = [
+        make_header_cell_html("Label", title="The label of the segment, with its iRAP code, and"
+                                             " its attribute."),
+        make_header_cell_html("Segment"),
+        make_header_cell_html("p(label)", is_number=True,
+                              title="The mean probability of the label over the models with a"
+                                    " valid prediction."),
+        *model_headers]
+    if has_review_column:
+        headers.append(make_header_cell_html("Review", title="The correction of the label."))
+    return make_table_html_from_header("".join(headers), rows)
+
+
 def format_predicted_class(column: int, irap_codes: T.Sequence[int],
                            class_names: T.Sequence[str]) -> tuple[str, str]:
     """Formats a column of the confusion matrix, K for invalid predictions, for
@@ -393,9 +508,22 @@ def make_segment_list_html(segment_indices: T.Sequence[int], segment_ids: T.Sequ
     return "".join(buttons)
 
 
-def _make_probability_table_html(detail: SegmentDetail) -> str:
+def make_probability_table_html(detail: SegmentDetail, review: LabelReview | None, *,
+                                has_correction_column: bool) -> str:
+    """Makes a table of the classes of the attribute of a segment, with its label marked, and
+    the distribution that each model predicts.
+
+    Args:
+        review: The correction of the label, whose class is marked in the correction column, or
+            None.
+        has_correction_column: Whether each class has a button that gives it as the correction,
+            with a `data-correction-code` attribute with its iRAP code, for a click handler.
+    """
     header = "".join(f"<th>{make_truncated_name_html(p.label)}</th>"
                      for p in detail.model_predictions)
+    if has_correction_column:
+        header += "<th>Correction</th>"
+    reviewed_code = None if review is None else review.irap_code
     rows = []
     for k, (code, name) in enumerate(zip(detail.irap_codes, detail.class_names, strict=True)):
         cells = []
@@ -408,6 +536,11 @@ def _make_probability_table_html(detail: SegmentDetail) -> str:
             cells.append(f'<td class="bar-cell"><div class="{bar_class}"'
                          f' style="width: {probability * 100:.1f}%"></div>'
                          f"<span>{probability:.2f}</span></td>")
+        if has_correction_column:
+            title = f"Give {_format_class(code, name)} as the class of the segment."
+            cells.append(f'<td><button type="button" data-correction-code="{code}"'
+                         f'{" class=selected" if code == reviewed_code else ""}'
+                         f"{make_title_attribute(title)}>{code}</button></td>")
         label_class = ' class="label"' if k == detail.label_index else ""
         rows.append(f"<tr><td{label_class}>{html.escape(_format_class(code, name))}</td>"
                     f'{"".join(cells)}</tr>')
@@ -433,16 +566,25 @@ def make_context_images_html(detail: SegmentDetail,
     return f'<div class="context-images">{"".join(figures)}</div>'
 
 
-def make_segment_facts_html(detail: SegmentDetail) -> str:
-    """Makes the predicted distributions of a segment, and below them its id, road position and
-    location. The table shows the label, so the text below only says when there is none."""
+def make_segment_info_html(detail: SegmentDetail, review: LabelReview | None) -> str:
+    """Makes the correction of the label of a segment, if it has one, and the road position and
+    location of the segment. The table of the classes (`make_probability_table_html`) shows the
+    label, so the text only says when there is none.
+
+    Args:
+        review: The correction of the label, or None.
+    """
     road = ("no road sequence" if detail.road_id is None
             else f"road {detail.road_id}, position {detail.position}")
     location = ("no location" if detail.coordinates is None
                 else f"{detail.coordinates[0]:.5f}, {detail.coordinates[1]:.5f}")
-    parts = [detail.segment_id, road, location]
+    parts = [road, location]
     if detail.label_index is None:
         parts.append("no label")
-    info = html.escape(" · ".join(parts))
-    return (f'<div class="segment-facts">{_make_probability_table_html(detail)}'
-            f'<div class="muted">{info}</div></div>')
+    info_html = f'<div class="muted">{html.escape(" · ".join(parts))}</div>'
+    if review is None:
+        return info_html
+    label_code = None if detail.label_index is None else detail.irap_codes[detail.label_index]
+    _, review_text = _describe_label_review(review, detail.irap_codes, detail.class_names,
+                                            label_code)
+    return f"<div>Reviewed: {html.escape(review_text)}</div>{info_html}"

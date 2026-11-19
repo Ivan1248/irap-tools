@@ -1,7 +1,9 @@
 """The Analysis page: the outcomes of a model, or of two compared models, for one attribute on an
 evaluation set of an analysis split (`config.DatasetConfig.analysis_splits`), with the confusion
-matrix, the classes of all attributes (`class_analysis`) or the review curve, the map and the
-details of a segment (see `prediction_analysis`), and the endpoint of the segment images."""
+matrix, the classes of all attributes (`class_analysis`), the review curve or the candidate
+labeling errors (`label_errors`), the map and the details of a segment (see
+`prediction_analysis`) with the review of its label (`label_reviews`), and the endpoints of the
+segment images and of the label reviews of a split."""
 
 import asyncio
 import dataclasses as dc
@@ -16,6 +18,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
+from ..accounts import can_write
+from ..archive import PREDICTIONS_SUFFIX
 from ..class_analysis import (
     ClassDiscrimination,
     ClassScores,
@@ -33,8 +37,9 @@ from ..components.analysis_html import (
     make_confusion_matrix_html,
     make_context_images_html,
     make_panel_tabs_html,
+    make_probability_table_html,
     make_review_curve_html,
-    make_segment_facts_html,
+    make_segment_info_html,
     make_segment_list_html,
 )
 from ..components.analysis_view import (
@@ -48,6 +53,7 @@ from ..components.analysis_view import (
 )
 from ..components.attribute_filter import AttributeFilter, AttributeSubset
 from ..components.deck_map import DeckMap, make_map_legend_html
+from ..components.downloads import PARQUET_MEDIA_TYPE, make_prepared_download_response
 from ..components.formatting import (
     EVALUATION_SET_LABELS,
     make_data_click_js_handler,
@@ -56,18 +62,44 @@ from ..components.formatting import (
     make_model_link_html,
     make_split_options,
 )
-from ..components.native_controls import create_native_grouped_select, create_native_select
+from ..components.label_error_panel import LabelErrorPanel
+from ..components.native_controls import (
+    create_native_button,
+    create_native_grouped_select,
+    create_native_input,
+    create_native_select,
+    create_native_step_buttons,
+    set_native_button_enabled,
+)
 from ..components.page_frame import create_page_frame, show_view_error
 from ..components.routes import (
     ANALYSIS_PATH,
     ATTRIBUTE_PARAMETER,
+    LABEL_REVIEWS_DOWNLOAD_PATH,
     SEGMENT_IMAGE_PATH,
+    get_label_reviews_download_path,
     get_methodology_path,
     get_segment_image_path,
 )
 from ..components.row_sorting import SORT_CLICK_JS_HANDLER
 from ..components.score_tables import format_optional_metric_value
+from ..database import get_utc_now
 from ..datasets import DatasetContext
+from ..label_errors import (
+    LabelErrorRanking,
+    find_adjacent_rank,
+    find_listed_position,
+    rank_label_errors,
+)
+from ..label_reviews import (
+    LABEL_REVIEW_METHOD_NAME,
+    LabelCorrection,
+    LabelReview,
+    LabelReviewStore,
+    list_reviewed_labels,
+    make_review_predictions,
+    review_label,
+)
 from ..method_ranking import (
     DEFAULT_SORT_METRIC,
     collect_scored_attributes,
@@ -84,6 +116,7 @@ from ..prediction_analysis import (
     MapPoints,
     compute_attribute_outcomes,
     compute_map_points,
+    find_adjacent_road_segment,
     get_predicted_columns,
     get_segment_detail,
     select_cell_segments,
@@ -174,7 +207,8 @@ def _load_model(predictions_cache: AlignedPredictionsCache, store: ScoreStore,
 
 def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
                            worker: ScoringWorker, predictions_cache: AlignedPredictionsCache,
-                           map_error: str | None, sessions: AccountSessions) -> None:
+                           label_reviews: LabelReviewStore, map_error: str | None,
+                           sessions: AccountSessions) -> None:
     """
     Args:
         map_error: Why the map libraries are missing (`vendor_libraries.ensure_library_files`), or
@@ -188,6 +222,25 @@ def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
             raise HTTPException(status_code=404, detail=f"No image of segment {segment_id!r}.")
         return FileResponse(path)
 
+    @app.get(LABEL_REVIEWS_DOWNLOAD_PATH)
+    def download_label_reviews(dataset: str, split: str) -> FileResponse:
+        context = dataset_contexts.get(dataset)
+        # The labels of a protected split are not shown in detail.
+        if context is None or context.config.is_protected_split(split):
+            raise HTTPException(status_code=404,
+                                detail=f"{dataset}/{split} is not an analysis split.")
+        full_set = context.get_shared_evaluation_sets(split)[ie.FULL_SET_NAME]
+        try:
+            predictions = make_review_predictions(label_reviews.get_reviews(dataset),
+                                                  full_set, get_utc_now())
+        except LookupError as e:  # No label of the split is reviewed.
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return make_prepared_download_response(
+            worker.archive.make_download_path(PREDICTIONS_SUFFIX),
+            lambda path: ie.write_predictions(path, predictions),
+            file_name=ie.make_prediction_file_name(LABEL_REVIEW_METHOD_NAME, None, split),
+            media_type=PARQUET_MEDIA_TYPE)
+
     @ui.page(ANALYSIS_PATH, title="Analysis · iRAP evaluation")
     async def analysis_page(request: Request) -> None:
         with create_page_frame(ANALYSIS_PATH, sessions.get_account(), fills_window=True):
@@ -197,7 +250,8 @@ def register_analysis_page(dataset_contexts: T.Mapping[str, DatasetContext],
                 with _create_side_panel_without_map():
                     show_view_error(str(e), ANALYSIS_PATH)
                 return
-            await _create_analysis(dataset_contexts, worker, predictions_cache, map_error, view,
+            await _create_analysis(dataset_contexts, worker, predictions_cache, label_reviews,
+                                   sessions, map_error, view,
                                    request.query_params.getlist(ATTRIBUTE_PARAMETER))
 
 
@@ -332,6 +386,7 @@ def _describe_attribute_scores(role_models: T.Sequence[tuple[str, ScoredModel]],
 
 async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
                            worker: ScoringWorker, predictions_cache: AlignedPredictionsCache,
+                           label_reviews: LabelReviewStore, sessions: AccountSessions,
                            map_error: str | None, view: AnalysisView,
                            attribute_query: T.Sequence[str]) -> None:
     """Loads the models of the view, resolves the view (`resolve_view`), and creates the page."""
@@ -395,20 +450,36 @@ async def _create_analysis(dataset_contexts: T.Mapping[str, DatasetContext],
     if client.is_deleted:  # The user has left the page while the files were read.
         return
     loading_label.delete()
-    _AnalysisPage(context, worker, predictions_cache, resolved.view, models, points, model_a,
-                  model_b).create(list_analysis_datasets(dataset_contexts), set_to_num_segments,
-                                  map_error, attribute_query)
+    _AnalysisPage(context, worker, predictions_cache, label_reviews, sessions, resolved.view,
+                  models, points, model_a, model_b).create(
+        list_analysis_datasets(dataset_contexts), set_to_num_segments, map_error, attribute_query)
+
+
+@dc.dataclass(frozen=True)
+class _SteppedList:
+    """A list that the List buttons of the segment details step through.
+
+    Attributes:
+        ranks: (M,) ascending ranks of its items.
+        selected_rank: The rank of the selected item, which need not be among them, or None.
+        get_label: Returns (attribute, segment index) of the item of a rank.
+    """
+
+    ranks: np.ndarray
+    selected_rank: int | None
+    get_label: T.Callable[[int], tuple[str, int]]
 
 
 class _AnalysisPage:
     """The controls, matrix, map and details of the page, and their updates."""
 
     def __init__(self, context: DatasetContext, worker: ScoringWorker,
-                 predictions_cache: AlignedPredictionsCache, view: AnalysisView,
-                 models: T.Sequence[ScoredModel], points: MapPoints, model_a: _LoadedModel,
-                 model_b: _LoadedModel | None):
+                 predictions_cache: AlignedPredictionsCache, label_reviews: LabelReviewStore,
+                 sessions: AccountSessions, view: AnalysisView, models: T.Sequence[ScoredModel],
+                 points: MapPoints, model_a: _LoadedModel, model_b: _LoadedModel | None):
         """
         Args:
+            sessions: Whose signed-in account reviews labels if it can write.
             view: A resolved view (`resolve_view`).
             models: The scored models of the split on the evaluation set.
             points: The map points of the evaluation set (`compute_map_points`).
@@ -432,6 +503,27 @@ class _AnalysisPage:
         self.outcomes: AttributeOutcomes | None = None
         #: The segments of the selected cell (`select_cell_segments`), None without a cell.
         self.cell_segments: np.ndarray | None = None
+        self.label_reviews = label_reviews
+        self.sessions = sessions
+        self.can_review = can_write(sessions.get_account())
+        self._read_label_reviews()
+        #: The comment of the next correction, as typed.
+        self.correction_comment = ""
+        #: The ranking of the candidate labeling errors and what it is of
+        #: (`_get_label_error_ranking`), None before their panel is shown.
+        self.label_error_ranking: LabelErrorRanking | None = None
+        self.label_error_ranking_key: tuple | None = None
+        #: The ascending ranks of the listed candidates of the ranking: all, or those whose
+        #: labels are not reviewed.
+        self.listed_label_error_ranks = np.empty(0, dtype=np.int64)
+
+    def _read_label_reviews(self) -> None:
+        """Reads the corrections of the dataset, when the page is created, when the Labeling
+        errors panel is shown, and after a correction of this page. Reading takes milliseconds,
+        so it is done on the event loop."""
+        self.reviews = self.label_reviews.get_reviews(self.context.name)
+        #: (segment index, attribute) of the reviewed labels of the set (`list_reviewed_labels`).
+        self.reviewed_labels = list_reviewed_labels(self.reviews, self.evaluation_set)
 
     def _list_role_models(self) -> list[tuple[str, _LoadedModel]]:
         """Lists the shown models with their roles, 'A' and 'B'."""
@@ -497,7 +589,7 @@ class _AnalysisPage:
             with ui.element("div").on("click", lambda e: self._on_class_sort_changed(e.args),
                                       js_handler=SORT_CLICK_JS_HANDLER):
                 self.class_analysis_html = ui.html("", sanitize=False).classes(
-                    "class-analysis").on(
+                    "selectable-rows").on(
                     "click", lambda e: self._on_class_clicked(int(e.args)),
                     js_handler=make_data_click_js_handler("data-class-row"))
             _create_discrimination_note()
@@ -506,16 +598,34 @@ class _AnalysisPage:
                      " segments, starting with the least confident predictions, and the manual"
                      " review proportion.").classes("muted")
             self.review_curve_html = ui.html("", sanitize=False)
+        with self.panels["label_errors"]:
+            self.label_error_panel = LabelErrorPanel(
+                is_all_models_disagreement_required=self.view.is_all_models_disagreement_required,
+                is_reviewed_label_hidden=self.view.is_reviewed_label_hidden,
+                on_all_models_disagreement_changed=lambda v: self._on_label_error_choice_changed(
+                    is_all_models_disagreement_required=v),
+                on_reviewed_label_hiding_changed=lambda v: self._on_label_error_choice_changed(
+                    is_reviewed_label_hidden=v),
+                on_candidate_clicked=self._on_label_error_clicked)
+            split = self.view.split
+            ui.html(make_link_html(
+                get_label_reviews_download_path(self.context.name, split),
+                f"Download the reviewed labels of {split} as a prediction file"), sanitize=False)
+            if not self.can_review:
+                ui.label("Sign in with an account that can write to review labels.").classes(
+                    "muted")
+        # The segments of a cell, which the candidate labeling errors take the place of.
+        with ui.element("div").classes("analysis-panel") as self.cell_segments_section:
+            ui.label("Segments").classes("section-title")
+            self.segment_status = ui.label().classes("muted")
+            self.segment_list_html = ui.html("", sanitize=False).classes("segment-list").on(
+                "click", lambda e: self._select_segment(int(e.args)),
+                js_handler=make_data_click_js_handler("data-segment"))
         self._update_panel()
-        ui.label("Segments").classes("section-title")
-        self.segment_status = ui.label().classes("muted")
-        self.segment_list_html = ui.html("", sanitize=False).classes("segment-list").on(
-            "click", lambda e: self._select_segment(int(e.args)),
-            js_handler=make_data_click_js_handler("data-segment"))
 
     def _create_map_panel(self, map_error: str | None) -> None:
-        """Creates the map and its legend, and the facts of the selected segment below them."""
-        with ui.splitter(horizontal=True, reverse=True, value=280, limits=(120, 700)).props(
+        """Creates the map and its legend, and the details of the selected segment below them."""
+        with ui.splitter(horizontal=True, reverse=True, value=340, limits=(120, 700)).props(
                 "unit=px").classes("w-full h-full") as splitter:
             with splitter.before, ui.element("div").classes("map-container"):
                 self.deck_map = None
@@ -526,8 +636,32 @@ class _AnalysisPage:
                     self.deck_map = DeckMap([segment_ids[i] for i in self.points.segment_indices],
                                             self.points.coordinates, self._on_point_picked)
                 self.legend_html = ui.html("", sanitize=False)
-            with splitter.after:
-                self.facts_html = ui.html("", sanitize=False).classes("w-full h-full")
+            with splitter.after, ui.element("div").classes("segment-facts"):
+                self._create_segment_facts()
+
+    def _create_segment_facts(self) -> None:
+        """Creates the buttons that step to another segment, with the ID of the selected segment
+        after those of its road, the classes of the attribute with the distributions that the
+        models predict for the segment, the controls of a correction of its label for an account
+        that can write, and its facts."""
+        with ui.element("div").classes("form-row items-center"):
+            self.road_step_buttons = create_native_step_buttons(self._step_on_road, (
+                "The previous segment of the road sequence in the evaluation set.",
+                "The next segment of the road sequence in the evaluation set."))
+            self.segment_id_label = ui.label()
+            self.segment_id_label.props["title"] = "Segment ID"
+            with ui.element("div").classes("form-row items-center") as self.list_steps:
+                ui.label("List").props["title"] = (
+                    "The previous and the next of the listed labeling errors, or of the"
+                    " segments of the selected cell.")
+                self.list_step_buttons = create_native_step_buttons(self._step_in_list)
+                self.list_position_label = ui.label().classes("muted")
+        self.probabilities_html = ui.html("", sanitize=False).on(
+            "click", lambda e: self._add_label_review("class", int(e.args)),
+            js_handler=make_data_click_js_handler("data-correction-code"))
+        self.show_correction_controls = ui.refreshable(self._show_correction_controls)
+        self.show_correction_controls()
+        self.segment_info_html = ui.html("", sanitize=False)
 
     # Controls #####################################################################################
 
@@ -607,6 +741,7 @@ class _AnalysisPage:
                     self.model_a.attribute_to_discrimination[attribute]))
             self._update_cell()
         self._update_review_curve()
+        self._update_label_errors()
         self._update_detail()
 
     def _update_panel(self) -> None:
@@ -614,6 +749,7 @@ class _AnalysisPage:
         self.panel_tabs_html.set_content(make_panel_tabs_html(ANALYSIS_PANELS, self.view.panel))
         for panel, element in self.panels.items():
             element.set_visibility(panel == self.view.panel)
+        self.cell_segments_section.set_visibility(self.view.panel != "label_errors")
 
     def _update_class_analysis(self) -> None:
         """Shows the classes of the selected attributes of model A, with the class of the
@@ -643,8 +779,166 @@ class _AnalysisPage:
             for role, model in self._list_role_models()
             if (class_report := model.class_reports.get(attribute)) is not None]))
 
+    def _get_label_error_ranking(self) -> LabelErrorRanking:
+        """Returns the ranking of the candidate labeling errors of the shown models over the
+        selected attributes, which is computed again when they or its choice have changed."""
+        role_models = self._list_role_models()
+        attributes = tuple(self._list_attribute_options())
+        require_all_models = self.view.is_all_models_disagreement_required
+        key = (tuple((m.aligned.submission.id, m.aligned.submission.file_sha256)
+                     for _, m in role_models), attributes, require_all_models)
+        if key != self.label_error_ranking_key:
+            # With one model, any and all models are the same.
+            self.label_error_ranking = rank_label_errors(
+                [(role, m.aligned) for role, m in role_models], attributes,
+                require_all_models=require_all_models)
+            self.label_error_ranking_key = key
+        return self.label_error_ranking
+
+    def _find_selected_label_error_rank(self) -> int | None:
+        """Returns the rank of the label of the selected segment for the attribute in the
+        ranking of the candidate labeling errors, None if it is not a candidate."""
+        selected = self._get_selected_segment()
+        if selected is None:
+            return None
+        ranks = self.label_error_ranking.find_ranks([(selected, self.view.attribute_name)])
+        return int(ranks[0]) if len(ranks) else None
+
+    def _update_label_errors(self) -> None:
+        """Lists the candidate labeling errors, without the reviewed labels if they are hidden,
+        with the selected label marked, if their panel is shown."""
+        if self.view.panel != "label_errors":
+            return
+        ranking = self._get_label_error_ranking()
+        is_listed = np.ones(len(ranking), dtype=bool)
+        if self.view.is_reviewed_label_hidden:
+            is_listed[ranking.find_ranks(self.reviewed_labels)] = False
+        self.listed_label_error_ranks = np.flatnonzero(is_listed)
+        self.label_error_panel.show(
+            ranking, self.listed_label_error_ranks, self._find_selected_label_error_rank(),
+            self.reviews)
+        self._update_steps()
+
+    def _get_selected_review(self) -> LabelReview | None:
+        """Returns the correction of the label of the selected segment for the attribute."""
+        return self.reviews.get((self.view.segment_id, self.view.attribute_name))
+
+    def _show_correction_controls(self) -> None:
+        """Creates the comment of a correction of the label of the selected segment for the
+        attribute, and the buttons of the corrections without a class, for an account that can
+        write. They are created again with the details of a segment, so that the comment is
+        empty."""
+        self.correction_comment = ""
+        if not self.can_review or self._get_selected_segment() is None:
+            return
+
+        def set_comment(text: str) -> None:
+            self.correction_comment = text
+
+        with ui.element("div").classes("form-row items-end"):
+            create_native_input("Comment of the correction", "", set_comment, size=28)
+            create_native_button("Unclear", lambda: self._add_label_review("unclear", None))
+            if self._get_selected_review() is not None:
+                create_native_button("Withdraw", self._withdraw_label_review)
+
+    def _add_label_review(self, correction: LabelCorrection, irap_code: int | None) -> None:
+        """Stores a correction by the signed-in account of the label of the selected segment for
+        the attribute, with the typed comment, and shows it. The user is notified if it cannot
+        be stored.
+
+        The correction is stored on the event loop, since that takes milliseconds."""
+        selected = self._get_selected_segment()
+        if selected is None:  # E.g. from a crafted event.
+            return
+        try:
+            review_label(self.label_reviews, self.evaluation_set, selected,
+                         self.view.attribute_name, correction, irap_code, self.correction_comment,
+                         self.sessions.require_writer_name())
+        except ValueError as e:
+            ui.notify(str(e), type="negative")
+            return
+        self._reload_label_reviews()
+
+    def _withdraw_label_review(self) -> None:
+        """Withdraws the correction of the label of the selected segment for the attribute, and
+        shows that. The user is notified if the signed-in account cannot write."""
+        try:
+            self.sessions.require_writer_name()
+        except ValueError as e:
+            ui.notify(str(e), type="negative")
+            return
+        self.label_reviews.remove_review(self.context.name, self.view.segment_id,
+                                         self.view.attribute_name)
+        self._reload_label_reviews()
+
+    def _reload_label_reviews(self) -> None:
+        """Reads the corrections of the dataset, and shows them."""
+        self._read_label_reviews()
+        self._update_label_errors()
+        self._update_detail()
+
     def _get_selected_segment(self) -> int | None:
         return self.segment_id_to_index.get(self.view.segment_id)
+
+    def _find_road_step(self, is_forward: bool) -> int | None:
+        """Returns the nearest segment of the set after the selected one in its road sequence,
+        or before it, None if there is none."""
+        segment_id = find_adjacent_road_segment(self.context.metadata, self.view.segment_id,
+                                                self.segment_id_to_index, is_forward=is_forward)
+        return None if segment_id is None else self.segment_id_to_index[segment_id]
+
+    def _get_stepped_list(self) -> _SteppedList | None:
+        """Returns the list that the List buttons step through: the listed candidate labeling
+        errors in their panel, where a rank is that of a candidate, and the segments of the
+        selected cell in the other panels, where it is an index into them. Returns None if there
+        is no list."""
+        if self.view.panel == "label_errors":
+            ranking = self.label_error_ranking
+            if ranking is None:  # Before the panel is shown.
+                return None
+
+            def get_candidate_label(rank: int) -> tuple[str, int]:
+                [candidate] = ranking.get_candidates([rank])
+                return candidate.attribute, candidate.segment_index
+
+            return _SteppedList(self.listed_label_error_ranks,
+                                self._find_selected_label_error_rank(), get_candidate_label)
+        cell_segments = self.cell_segments
+        if cell_segments is None:
+            return None
+        selected = self._get_selected_segment()
+        positions = [] if selected is None else np.flatnonzero(cell_segments == selected)
+        attribute = self.view.attribute_name
+        return _SteppedList(np.arange(len(cell_segments)),
+                            int(positions[0]) if len(positions) else None,
+                            lambda position: (attribute, int(cell_segments[position])))
+
+    def _find_list_step(self, is_forward: bool) -> tuple[str, int] | None:
+        """Returns (attribute, segment index) of the item after the selected one in the list that
+        the List buttons step through (`_get_stepped_list`), or before it, None if there is
+        none."""
+        if (stepped_list := self._get_stepped_list()) is None:
+            return None
+        rank = find_adjacent_rank(stepped_list.ranks, stepped_list.selected_rank,
+                                  is_forward=is_forward)
+        return None if rank is None else stepped_list.get_label(rank)
+
+    def _update_steps(self) -> None:
+        """Enables the buttons that step to another segment if there is one, and shows the
+        position of the selected item in the list that the List buttons step through."""
+        for is_forward, button in self.road_step_buttons.items():
+            set_native_button_enabled(button, self._find_road_step(is_forward) is not None)
+        stepped_list = self._get_stepped_list()
+        self.list_steps.set_visibility(stepped_list is not None)
+        if stepped_list is None:
+            return
+        ranks, rank = stepped_list.ranks, stepped_list.selected_rank
+        for is_forward, button in self.list_step_buttons.items():
+            set_native_button_enabled(
+                button, find_adjacent_rank(ranks, rank, is_forward=is_forward) is not None)
+        position = find_listed_position(ranks, rank)
+        self.list_position_label.set_text(
+            f"{'–' if position is None else position + 1} of {len(ranks)}")
 
     def _update_cell(self) -> None:
         """Shows the selected cell: in the matrix, its segments, and their points on the map."""
@@ -679,12 +973,15 @@ class _AnalysisPage:
                       else segment_to_point[self.cell_segments])
             self.deck_map.set_highlighted(None if points is None else points[points >= 0])
         self._update_class_analysis()
+        self._update_steps()
         self._update_url()
 
     def _update_segment(self) -> None:
-        """Shows the selected segment: in the segment list, on the map, and its details."""
+        """Shows the selected segment: in the segment list, on the map, among the labeling
+        errors, and its details."""
         self._update_segment_list()
         self._update_map_selected()
+        self._update_label_errors()
         self._update_detail()
         self._update_url()
 
@@ -715,20 +1012,31 @@ class _AnalysisPage:
             predicted_classes))
 
     def _update_detail(self) -> None:
+        """Shows the details of the selected segment: its context images, the distributions that
+        the models predict for the attribute, the correction of its label with the controls of a
+        new one, and its facts."""
         selected = self._get_selected_segment()
         if selected is None:
             self.images_html.set_content("")
-            self.facts_html.set_content(
-                '<div class="muted p-2">Select a segment on the map or in the list.</div>')
-            return
-        detail = get_segment_detail(
-            self.context.metadata, [(f"Model {role}", m.aligned)
-                                    for role, m in self._list_role_models()],
-            selected, self.view.attribute_name)
-        dataset = self.context.name
-        self.images_html.set_content(make_context_images_html(
-            detail, lambda s: get_segment_image_path(dataset, s)))
-        self.facts_html.set_content(make_segment_facts_html(detail))
+            self.probabilities_html.set_content("")
+            self.segment_id_label.set_text("")
+            self.segment_info_html.set_content(
+                '<div class="muted">Select a segment on the map or in a list.</div>')
+        else:
+            detail = get_segment_detail(
+                self.context.metadata, [(f"Model {role}", m.aligned)
+                                        for role, m in self._list_role_models()],
+                selected, self.view.attribute_name)
+            review = self._get_selected_review()
+            dataset = self.context.name
+            self.images_html.set_content(make_context_images_html(
+                detail, lambda s: get_segment_image_path(dataset, s)))
+            self.probabilities_html.set_content(make_probability_table_html(
+                detail, review, has_correction_column=self.can_review))
+            self.segment_id_label.set_text(detail.segment_id)
+            self.segment_info_html.set_content(make_segment_info_html(detail, review))
+        self.show_correction_controls.refresh()
+        self._update_steps()
 
     # Event handlers ###############################################################################
 
@@ -738,6 +1046,11 @@ class _AnalysisPage:
         self.view = dc.replace(self.view, panel=panel)
         self._update_panel()
         self._update_class_analysis()
+        if panel == "label_errors":
+            # Also the corrections that other reviewers have given since they were read.
+            self._reload_label_reviews()
+        else:
+            self._update_steps()
         self._update_url()
 
     def _on_class_sort_changed(self, class_sort: str) -> None:
@@ -763,6 +1076,45 @@ class _AnalysisPage:
         self.show_attribute_picker.refresh()
         self._update_outcomes()
 
+    def _on_label_error_clicked(self, rank: int) -> None:
+        """Shows the attribute and the segment of a candidate labeling error of the ranking."""
+        ranking = self.label_error_ranking
+        if ranking is None or not 0 <= rank < len(ranking):  # E.g. from a crafted event.
+            return
+        [candidate] = ranking.get_candidates([rank])
+        self._show_label(candidate.attribute, candidate.segment_index)
+
+    def _show_label(self, attribute: str, segment_index: int) -> None:
+        """Selects a segment of the set, and shows an attribute if it is not the shown one, which
+        clears the cell.
+
+        Args:
+            attribute: An option of the Attribute select.
+        """
+        if attribute == self.view.attribute_name:
+            self._select_segment(segment_index)
+            return
+        self.view = dc.replace(self.view, attribute_name=attribute, cell=None,
+                               segment_id=self.evaluation_set.segment_ids[segment_index])
+        self.show_attribute_picker.refresh()
+        self._update_outcomes()
+        self._update_map_selected()
+
+    def _step_on_road(self, is_forward: bool) -> None:
+        if (segment_index := self._find_road_step(is_forward)) is not None:
+            self._select_segment(segment_index)
+
+    def _step_in_list(self, is_forward: bool) -> None:
+        if (step := self._find_list_step(is_forward)) is not None:
+            self._show_label(*step)
+
+    def _on_label_error_choice_changed(self, **changes: bool) -> None:
+        """Lists the candidate labeling errors of changed choices of `AnalysisView`, e.g.
+        `is_reviewed_label_hidden`."""
+        self.view = dc.replace(self.view, **changes)
+        self._update_label_errors()
+        self._update_url()
+
     def _on_cell_clicked(self, text: str) -> None:
         cell = parse_cell(text)
         self.view = dc.replace(self.view, cell=None if cell == self.view.cell else cell)
@@ -787,8 +1139,10 @@ class _AnalysisPage:
         if attributes and self.view.attribute_name not in attributes:
             self.view = dc.replace(self.view, attribute_name=attributes[0], cell=None)
             self._update_outcomes()
-        else:  # Only the averages over the subset, which the selects show, and the classes change.
+        else:  # Only the averages over the subset, which the selects show, the classes and the
+            # labeling errors change.
             self._update_class_analysis()
+            self._update_label_errors()
             self._update_url()
 
     def _find_model(self, model_id_text: str) -> ScoredModel:

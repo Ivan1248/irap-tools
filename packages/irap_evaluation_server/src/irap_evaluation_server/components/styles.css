@@ -150,15 +150,16 @@ td > .truncated-line { inline-size: 0; min-inline-size: 100%; }
 .panel-tabs button.selected { color: var(--text); border-bottom-color: var(--text); }
 /* A panel lays out its parts like the side panel. */
 .analysis-panel { display: flex; flex-direction: column; gap: 10px; }
-/* The classes of all attributes (`analysis_html.make_class_analysis_html`) scroll in their own
-   box, so that the segments of a clicked class stay in view below it. The header stays at the
-   top of the box. */
-.class-analysis { max-height: 45vh; overflow-y: auto; font-size: 11px; }
-.class-analysis .data-table { width: 100%; }
-.class-analysis thead th { position: sticky; top: 0; background: var(--background); }
-.class-analysis tbody tr { cursor: pointer; }
-.class-analysis tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.class-analysis tbody tr.selected { outline: 2px solid var(--text); outline-offset: -2px; }
+/* A table whose rows are clicked, of the classes of all attributes
+   (`analysis_html.make_class_analysis_html`) or of the labeling errors
+   (`make_label_error_table_html`), scrolls in its own box, so that what is below it, e.g. the
+   segments of a clicked class, stays in view. The header stays at the top of the box. */
+.selectable-rows { max-height: 45vh; overflow-y: auto; font-size: 11px; }
+.selectable-rows .data-table { width: 100%; }
+.selectable-rows thead th { position: sticky; top: 0; background: var(--background); }
+.selectable-rows tbody tr { cursor: pointer; }
+.selectable-rows tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.selectable-rows tbody tr.selected { outline: 2px solid var(--text); outline-offset: -2px; }
 /* The class table is to the right of the confusion matrix if both fit there at their full widths,
    and below it otherwise. Both have the font size of the matrix's counts at their full size. */
 .matrix-and-class-table { display: flex; flex-wrap: wrap; align-items: flex-start;
@@ -250,6 +251,13 @@ td > .truncated-line { inline-size: 0; min-inline-size: 100%; }
 .probabilities .bar { position: absolute; inset: 2px auto 2px 0; background: #a9c7ee; }
 .probabilities .bar.predicted { background: #5593e0; }
 .probabilities .bar-cell span { position: relative; }
+/* The buttons that give a class as the correction of the label
+   (`analysis_html.make_probability_table_html`). That of the stored correction is marked. */
+.probabilities button { border: 1px solid var(--border); background: var(--panel);
+                        border-radius: 3px; padding: 0 6px; min-width: 28px; cursor: pointer;
+                        font-variant-numeric: tabular-nums; }
+.probabilities button:hover { border-color: var(--accent); }
+.probabilities button.selected { background: var(--text); color: white; }
 
 /* Markdown (`ui.markdown`), of the Methodology page and of descriptions: the sizes of a text
    instead of NiceGUI's large headings, and the links of the other pages instead of NiceGUI's. */

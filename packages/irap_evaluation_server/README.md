@@ -8,7 +8,7 @@ A web app that keeps an archive of model predictions, scores them, and compares,
 | Models | `/models` | The models of each dataset by method, with the file of each split, a filter, the upload form, and the form that creates an ensemble of the models selected in the tables. |
 | Model | `/models/<id>` | A model's files, its scores, the coding-table export and its actions (collapsed, for accounts with write permission). |
 | Method | `/methods?dataset=<dataset>&method=<method>` | A method's models, the scores of their mean and of each model on a split, its display name and description, and the actions of its models. Method names in the tables link to it. |
-| Analysis | `/analysis` | A model's confusion matrix and review curve for one attribute, a map of its outcomes, and segment details, optionally compared with a second model. |
+| Analysis | `/analysis` | A model's confusion matrix and review curve for one attribute, a map of its outcomes, and segment details, optionally compared with a second model, and the candidate labeling errors with reviews of their labels. |
 | Methodology | `/methodology` | How the files are scored, and how to read the values, intervals, highlights and differences of the score tables. The short notes below the tables link to its sections. |
 | Action log | `/actions` | All changes, with the name of the user. Only for accounts with write permission. |
 | Accounts | `/accounts` | The accounts, whose permissions admins change. Only for admins, in the Admin menu. |
@@ -63,9 +63,10 @@ The data directory holds:
 - `vendor/`: the map libraries and MathJax,
 - `accounts.sqlite3`: the [accounts](#accounts),
 - `display_settings.sqlite3`: the [hidden metrics](#hidden-metrics),
+- `label_reviews.sqlite3`: the [label reviews](#analysis),
 - `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie. Keep them, and backups of the data directory, private. Deleting the key signs out all users.
 
-The databases have a schema version. At start, the server migrates an archive, accounts or display settings database of an older version, after copying it to a backup next to it, e.g. `archive.v1.2026-10-12T150000Z.backup.sqlite3`. It refuses a database of a newer version, or one whose tables differ from those of its version. A score cache of another version is created again, and all files are scored again, which takes a few minutes, during which the Scores page lists the files that are being scored.
+The databases have a schema version. At start, the server migrates an archive, accounts, display settings or label review database of an older version, after copying it to a backup next to it, e.g. `archive.v1.2026-10-12T150000Z.backup.sqlite3`. It refuses a database of a newer version, or one whose tables differ from those of its version. A score cache of another version is created again, and all files are scored again, which takes a few minutes, during which the Scores page lists the files that are being scored.
 
 ## Accounts
 
@@ -233,15 +234,17 @@ On the Shown metrics page, admins hide attribute averages from the pages, all bu
 
 ## Analysis
 
-The Analysis page shows the predictions of a model (A) for one attribute on an evaluation set of an analysis split. Tabs switch between the confusion matrix with its class table, the class analysis and the review curve, and the URL keeps the choice:
+The Analysis page shows the predictions of a model (A) for one attribute on an evaluation set of an analysis split. Tabs switch between the confusion matrix with its class table, the class analysis, the review curve and the labeling errors, and the URL keeps the choice:
 
 - **Confusion matrix:** labels (rows) × predictions of A (columns), with a column of invalid predictions. Scores count an invalid prediction as the first class (`null_policy="first_class"`), i.e. they add the invalid column to the first.
 - **Class table:** the support, precision, recall and F1 of each class, and how well A tells the class from the other classes of the attribute, one vs. rest: the AUROC of its predicted probability and the informedness J = TPR − FPR of its predicted classes (`class_analysis.compute_class_discrimination`). By chance they are 0.5 and 0 at any class size, unlike F1, which a predictor that ignores the image already gets between p and 2p / (1 + p) for a class of proportion p. A high AUROC with a J near 0 is a class that A ranks well but rarely predicts.
 - **Class analysis:** the classes with labeled segments of all selected attributes that A predicts (`class_analysis`), for finding the classes that are hard for A: their support, F1, AUROC and J, the number of their segments that are predicted as another class (Missed), and the class that most of these are predicted as. By default, the classes with the lowest AUROC are first, and a click on a column header sorts by that column. A click on a class shows its attribute and selects its missed segments, as a click on its row label in the confusion matrix does.
 - **Review curve:** mF1 and accuracy of A, and of B, after a reviewer has corrected a proportion of the segments, starting with the least confident predictions, with the point where mF1 reaches 0.9 (the manual review proportion `MRP90`). A tooltip shows the scores at each 5 % of the segments. Models of hard predictions have no curve.
-- **Segments of a cell:** a click on a cell of the matrix lists its segments, most confident first, so that confident errors come first. A click on a row label of the matrix, or on a class of the class analysis, lists the missed segments of the class with their predicted classes, from the most confident errors to the invalid predictions.
+- **Labeling errors:** the labels of all selected attributes that the shown models disagree with (`label_errors`): a model disagrees if its prediction is valid and is another class. With B, by default only the labels that both models disagree with are listed. The least probable labels come first, by the mean probability of the label over the models with a valid prediction, the self-confidence of confident learning. For hard predictions, this is the proportion of the models that predict the label. The probability of a label is not fully comparable between attributes with different numbers of classes. All of them are listed, in pages of 100, and the page follows the selected label. A click on a row shows its attribute and segment. The URL keeps the two choices of the list.
+- **Segments of a cell:** a click on a cell of the matrix lists its segments, most confident first, so that confident errors come first. A click on a row label of the matrix, or on a class of the class analysis, lists the missed segments of the class with their predicted classes, from the most confident errors to the invalid predictions. The labeling errors take the place of this list in their panel.
 - **Map:** segments coloured by outcome, or, with a second model (B), by which of A and B is correct. The listed segments are highlighted.
-- **Segment details:** a click on a segment shows its context images (at A's context offsets, from `dataset_dir`), its label, and the distributions predicted by A and B.
+- **Segment details:** a click on a segment shows its context images (at A's context offsets, from `dataset_dir`) and, below the map, the classes of the attribute with its label and the distributions predicted by A and B. The arrows before the segment ID step to the previous and the next segment of its road sequence that is in the evaluation set. The List buttons step through the labeling errors in their panel, also after the label of the selected one was reviewed and hidden, and through the segments of the selected cell in the other panels, also those that are not listed.
+- **Label reviews:** for an account that can write, each class of the segment details has a button that gives it as the correction of the label of the selected segment for the attribute (`label_reviews`), also the class of the label. A correction can also say that the class is unclear, and it can have a comment. A later correction replaces the stored one, and a correction can be withdrawn. A page shows the corrections of other reviewers as they were when it was loaded, when its Labeling errors panel was shown, or when it stored a correction. The reviewed labels are hidden from the labeling errors by default. A correction of a label that has changed since, e.g. after a metadata update, is marked as one of the old label and counts as unreviewed. The corrections do not change the labels that files are scored with. The reviewed labels of the split can be downloaded as a hard prediction file of the method `label-review`: the segments and attributes with corrections, with the class of a correction, and null for unclear and unreviewed labels. The unclear ones are listed in `details["label_review"]["unclear"]` of the header's model, and corrections whose attribute or class is no longer in the vocabulary are left out and listed in `details["label_review"]["skipped"]`.
 
 The page keeps the 8 most recently used files in memory. Reading and aligning a file takes about 0.06 s on Vietnam val and 0.3 s on train.
 
@@ -279,6 +282,8 @@ irap_evaluation_server/
 ├─ method_comparison.py     Comparisons with a reference method
 ├─ methodology.py           The text of the Methodology page, with the values of the settings
 ├─ prediction_analysis.py   Outcomes of segments, confusion matrices, segment details
+├─ label_errors.py          Candidate labeling errors, ranked by the models' mean probability of the label
+├─ label_reviews.py         LabelReviewStore: corrections of labels, and their export as a prediction file
 ├─ vendor_libraries.py      The download of the libraries of the map and of MathJax
 ├─ ensembles.py             Ensembles of stored models
 ├─ coding_table_export.py   The coding table of the files of a model
@@ -293,7 +298,7 @@ The logic modules (all but `components`, `pages` and `server`) do not import Nic
 uv run --project packages/irap_evaluation_server --extra test python -m pytest packages/irap_evaluation_server/tests
 ```
 
-A data directory is in production since 2026-10-12, so a change of a database schema needs a new schema version and a migration from the previous one: `SCHEMA_VERSION` and `_MIGRATIONS` in `archive.py`, `accounts.py` and `display_settings.py` (see `database.initialize_schema`). A change of the score cache tables needs only a new `scoring.SCORE_CACHE_VERSION`. The server refuses tables that differ from those of their version, so a forgotten version shows at the next start.
+A data directory is in production since 2026-10-12, so a change of a database schema needs a new schema version and a migration from the previous one: `SCHEMA_VERSION` and `_MIGRATIONS` in `archive.py`, `accounts.py`, `display_settings.py` and `label_reviews.py` (see `database.initialize_schema`). A change of the score cache tables needs only a new `scoring.SCORE_CACHE_VERSION`. The server refuses tables that differ from those of their version, so a forgotten version shows at the next start.
 
 [`scripts/add_synthetic_predictions.py`](scripts/add_synthetic_predictions.py) fills an archive with synthetic Vietnam predictions and those of an ensemble, e.g. to try the pages:
 

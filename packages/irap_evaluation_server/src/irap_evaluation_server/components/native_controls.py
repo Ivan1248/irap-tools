@@ -210,6 +210,32 @@ def create_native_button(text: str, on_click: T.Callable[[], T.Any]) -> ui.eleme
     return button
 
 
+def set_native_button_enabled(button: ui.element, is_enabled: bool) -> None:
+    """Enables or disables a button of `create_native_button`. The element is rendered again only
+    if that changes."""
+    is_disabled = not is_enabled
+    if button.props.get("disabled", False) != is_disabled:
+        button.props["disabled"] = is_disabled
+        button.update()
+
+
+def create_native_step_buttons(on_step: T.Callable[[bool], T.Any],
+                               titles: tuple[str, str] | None = None) -> dict[bool, ui.element]:
+    """Creates the buttons '‹' and '›' that step backward and forward, as is_forward -> button.
+
+    Args:
+        on_step: Called with whether the clicked button steps forward.
+        titles: The tooltips of the backward and the forward button, or None.
+    """
+    buttons = {}
+    for is_forward, text in ((False, "‹"), (True, "›")):
+        buttons[is_forward] = create_native_button(
+            text, lambda is_forward=is_forward: on_step(is_forward))
+        if titles is not None:
+            buttons[is_forward].props["title"] = titles[is_forward]
+    return buttons
+
+
 def set_status(label: ui.label, text: str, is_error: bool = False,
                is_busy: bool = False) -> None:
     """Shows the status of a form in `label`, e.g. the result of a click, with a spinner if

@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from irap_data.metadata import IGNORE_LABEL_INDEX
 from run_helpers import add_model, make_model
-from synthetic_vietnam import SPLIT
 
 from irap_evaluation_server.vendor_libraries import LibraryFile, ensure_library_files
 from irap_evaluation_server.prediction_analysis import (
@@ -15,15 +14,11 @@ from irap_evaluation_server.prediction_analysis import (
     AlignedPredictionsCache,
     align_predictions,
     compute_attribute_outcomes,
+    find_adjacent_road_segment,
     get_context_segment_ids,
     select_cell_segments,
 )
 from irap_evaluation_server.scoring import SCORING_SETTINGS, score_submission
-
-
-@pytest.fixture
-def reference_set(dataset_contexts):
-    return dataset_contexts["vietnam"].get_reference_set(SPLIT)
 
 
 def _invalidate_every_third(predictions: ie.Predictions, attribute: str) -> ie.Predictions:
@@ -166,6 +161,22 @@ def test_context_segments_outside_the_road_are_none(dataset_contexts):
     assert get_context_segment_ids(metadata, sequence[1], (0, -1, -4)) == [
         sequence[1], sequence[0], None]
     assert get_context_segment_ids(metadata, sequence[-1], (1,)) == [None]
+
+
+def test_adjacent_road_segment_is_the_nearest_of_the_given_ones(dataset_contexts):
+    metadata = dataset_contexts["vietnam"].metadata
+    sequence = metadata.road_id_to_segment_id_sequence["road0"]
+    segment_ids = {sequence[0], sequence[2], sequence[5]}
+
+    def find(segment_id, is_forward):
+        return find_adjacent_road_segment(metadata, segment_id, segment_ids,
+                                          is_forward=is_forward)
+
+    assert (find(sequence[2], True), find(sequence[2], False)) == (sequence[5], sequence[0])
+    # From a segment that is not among the given ones, and at the ends.
+    assert (find(sequence[3], True), find(sequence[3], False)) == (sequence[5], sequence[2])
+    assert find(sequence[5], True) is None and find(sequence[0], False) is None
+    assert find("in no road sequence", True) is None
 
 
 def test_ensure_library_files_checks_the_hashes(tmp_path):

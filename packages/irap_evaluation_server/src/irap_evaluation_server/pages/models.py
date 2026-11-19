@@ -14,6 +14,7 @@ from ..accounts import can_write
 from ..archive import ModelArchive, Submission, get_download_file_name
 from ..components.account_sessions import AccountSessions
 from ..components.confirmation_dialog import confirm_changes
+from ..components.downloads import PARQUET_MEDIA_TYPE
 from ..components.ensemble_form import EnsembleForm
 from ..components.formatting import make_code_spans_html
 from ..components.models_table import (
@@ -26,6 +27,7 @@ from ..components.native_controls import (
     create_native_button,
     create_native_input,
     create_native_select,
+    set_native_button_enabled,
     set_native_input_placeholder,
     set_status,
 )
@@ -144,8 +146,7 @@ def _create_upload_form(archive: ModelArchive,
             set_native_input_placeholder(display_name_input, placeholder)
 
     def update_add_button() -> None:
-        add_button.props["disabled"] = form.is_uploading or form.is_checking
-        add_button.update()
+        set_native_button_enabled(add_button, not (form.is_uploading or form.is_checking))
 
     async def on_upload_status_changed(status: dict) -> None:
         if status["status"] == "uploading":
@@ -373,7 +374,7 @@ def register_models_pages(archive: ModelArchive,
             raise HTTPException(status_code=404, detail=str(e)) from e
         return FileResponse(archive.get_predictions_path(submission_id),
                             filename=get_download_file_name(submission),
-                            media_type="application/vnd.apache.parquet")
+                            media_type=PARQUET_MEDIA_TYPE)
 
     @ui.page("/")
     def index_page() -> RedirectResponse:

@@ -41,6 +41,9 @@ SCORES_DOWNLOAD_PATH = "/api/submissions/{submission_id}/scores/{evaluation_set}
 #: A coding table that a Model page prepared, which can be downloaded once.
 CODING_TABLE_DOWNLOAD_PATH = "/api/coding-tables/{token}"
 SEGMENT_IMAGE_PATH = "/api/datasets/{dataset}/images/{segment_id}"
+#: The corrections of the labels of an analysis split as a prediction file
+#: (`label_reviews.make_review_predictions`).
+LABEL_REVIEWS_DOWNLOAD_PATH = "/api/datasets/{dataset}/label-reviews/{split}.predictions.parquet"
 #: The static files of the libraries (`vendor_libraries`).
 VENDOR_PATH = "/vendor"
 
@@ -116,6 +119,11 @@ def get_library_path(file: LibraryFile) -> str:
 def get_segment_image_path(dataset: str, segment_id: str) -> str:
     return SEGMENT_IMAGE_PATH.format(dataset=urllib.parse.quote(dataset, safe=""),
                                      segment_id=urllib.parse.quote(segment_id, safe=""))
+
+
+def get_label_reviews_download_path(dataset: str, split: str) -> str:
+    return LABEL_REVIEWS_DOWNLOAD_PATH.format(dataset=urllib.parse.quote(dataset, safe=""),
+                                              split=urllib.parse.quote(split, safe=""))
 
 
 def get_download_path(submission_id: int) -> str:

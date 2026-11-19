@@ -43,6 +43,7 @@ from ..components.changes import (
     run_refreshes,
 )
 from ..components.confirmation_dialog import confirm_changes
+from ..components.downloads import make_prepared_download_response
 from ..components.formatting import (
     format_context_offsets,
     format_evaluation_set_title,
@@ -537,16 +538,15 @@ def register_model_page(archive: ModelArchive,
             model = archive.get_model(model_id)
         except LookupError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
-        # Removed after it is sent, or by `remove_uploads` if the download is cut off.
-        path = archive.make_download_path(ARCHIVE_SUFFIX)
-        try:
+
+        def write_zip(path: Path) -> None:
             with path.open("wb") as file:
                 archive.write_model_predictions_zip(model_id, file)
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
-        return FileResponse(path, filename=make_label_file_name(model.label, ".predictions.zip"),
-                            media_type="application/zip", background=BackgroundTask(path.unlink))
+
+        return make_prepared_download_response(
+            archive.make_download_path(ARCHIVE_SUFFIX), write_zip,
+            file_name=make_label_file_name(model.label, ".predictions.zip"),
+            media_type="application/zip")
 
     @app.get(SCORES_DOWNLOAD_PATH)
     def download_scores(submission_id: int, evaluation_set: str) -> JSONResponse:

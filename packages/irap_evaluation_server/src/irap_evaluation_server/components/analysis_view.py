@@ -15,7 +15,7 @@ from .view_queries import parse_dataset, parse_evaluation_set, select_default_sp
 
 #: The panels of the Analysis page, of which one is shown: its key in the URL -> its title.
 ANALYSIS_PANELS = {"matrix": "Confusion matrix", "classes": "Class analysis",
-                   "curve": "Review curve"}
+                   "curve": "Review curve", "label_errors": "Labeling errors"}
 DEFAULT_ANALYSIS_PANEL = "matrix"
 #: The row sort (`row_sorting`) of the classes of the Class analysis panel
 #: (`analysis_html.make_class_analysis_html`) by default: the classes that the model tells
@@ -39,6 +39,11 @@ class AnalysisView:
         segment_id: The selected segment, or ''.
         panel: The shown panel, a key of `ANALYSIS_PANELS`.
         class_sort: The row sort of the classes of the Class analysis panel.
+        is_all_models_disagreement_required: Whether a candidate labeling error of the Labeling
+            errors panel needs the disagreement of both models, if there are two, and not of
+            any.
+        is_reviewed_label_hidden: Whether the Labeling errors panel leaves out the candidates
+            whose labels are reviewed.
     """
 
     dataset: str
@@ -51,6 +56,8 @@ class AnalysisView:
     segment_id: str = ""
     panel: str = DEFAULT_ANALYSIS_PANEL
     class_sort: str = DEFAULT_CLASS_SORT
+    is_all_models_disagreement_required: bool = True
+    is_reviewed_label_hidden: bool = True
 
     def to_path(self, attributes: T.Sequence[str] = ()) -> str:
         """Makes the URL path of the view, without its default values.
@@ -68,6 +75,8 @@ class AnalysisView:
             "segment": self.segment_id,
             "panel": "" if self.panel == DEFAULT_ANALYSIS_PANEL else self.panel,
             "class_sort": "" if self.class_sort == DEFAULT_CLASS_SORT else self.class_sort,
+            "disagree": "" if self.is_all_models_disagreement_required else _ANY_MODEL_TEXT,
+            "reviewed": "" if self.is_reviewed_label_hidden else _REVIEWED_SHOWN_TEXT,
             ATTRIBUTE_PARAMETER: attributes})
 
     @classmethod
@@ -79,7 +88,7 @@ class AnalysisView:
         Raises:
             ValueError: For an unknown dataset, evaluation set or panel, a dataset without
                 analysis splits, a split that is not an analysis split, or a malformed model
-                number or cell.
+                number, cell or choice of the labeling errors.
         """
         dataset = parse_dataset(query, dataset_contexts,
                                 default=next(iter(list_analysis_datasets(dataset_contexts)), None))
@@ -99,7 +108,29 @@ class AnalysisView:
                    compare_id=_parse_model_id(query.get("compare", ""), "compared model"),
                    attribute_name=query.get("attr", ""), cell=parse_cell(query.get("cell", "")),
                    segment_id=query.get("segment", ""), panel=panel,
-                   class_sort=query.get("class_sort") or DEFAULT_CLASS_SORT)
+                   class_sort=query.get("class_sort") or DEFAULT_CLASS_SORT,
+                   is_all_models_disagreement_required=not _parse_flag(query, "disagree",
+                                                                       _ANY_MODEL_TEXT),
+                   is_reviewed_label_hidden=not _parse_flag(query, "reviewed",
+                                                            _REVIEWED_SHOWN_TEXT))
+
+
+#: The values of the query parameters of `AnalysisView.is_all_models_disagreement_required` and
+#: `is_reviewed_label_hidden` that are not the default.
+_ANY_MODEL_TEXT = "any"
+_REVIEWED_SHOWN_TEXT = "shown"
+
+
+def _parse_flag(query: T.Mapping[str, str], name: str, set_text: str) -> bool:
+    """Returns whether the query parameter `name` is `set_text`, and not missing or empty.
+
+    Raises:
+        ValueError: If it is another text.
+    """
+    text = query.get(name, "")
+    if text not in ("", set_text):
+        raise ValueError(f"The parameter {name!r} is {set_text!r} or left out, got {text!r}.")
+    return bool(text)
 
 
 def _parse_model_id(text: str, name: str) -> int | None:

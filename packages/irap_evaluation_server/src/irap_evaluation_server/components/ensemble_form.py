@@ -20,6 +20,7 @@ from .native_controls import (
     create_native_checkbox,
     create_native_input,
     create_native_select,
+    set_native_button_enabled,
     set_native_input_placeholder,
     set_status,
 )
@@ -212,8 +213,7 @@ class EnsembleForm:
                 ui.label(", ".join(summary.list_splits(split_names))).classes("muted")
 
     def _set_creating(self, is_creating: bool) -> None:
-        self._create_button.props["disabled"] = is_creating
-        self._create_button.update()
+        set_native_button_enabled(self._create_button, not is_creating)
 
     async def _on_create_clicked(self) -> None:
         client = ui.context.client

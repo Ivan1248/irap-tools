@@ -253,6 +253,20 @@ def get_context_segment_ids(metadata: IRAPMetadata, segment_id: str,
             for o in context_offsets]
 
 
+def find_adjacent_road_segment(metadata: IRAPMetadata, segment_id: str,
+                               segment_ids: T.Container[str], *,
+                               is_forward: bool) -> str | None:
+    """Finds the nearest segment after a segment in its road sequence, or before it, that is
+    among `segment_ids`, e.g. those of an evaluation set. Returns None if there is none, or the
+    segment is in no road sequence."""
+    if segment_id not in metadata.sequence_index:
+        return None
+    road_id, position = metadata.sequence_index[segment_id]
+    sequence = metadata.road_id_to_segment_id_sequence[road_id]
+    others = sequence[position + 1:] if is_forward else reversed(sequence[:position])
+    return next((s for s in others if s in segment_ids), None)
+
+
 @dc.dataclass(frozen=True)
 class ModelPrediction:
     """
@@ -268,6 +282,20 @@ class ModelPrediction:
     @property
     def predicted_index(self) -> int | None:
         return None if self.probs is None else int(self.probs.argmax())
+
+
+def get_model_predictions(labeled_aligned_seq: T.Sequence[tuple[str, AlignedPredictions]],
+                          attribute: str, segment_index: int) -> tuple[ModelPrediction, ...]:
+    """Returns the predictions of models for an attribute of a segment of their evaluation set.
+
+    Args:
+        labeled_aligned_seq: (`ModelPrediction.label`, predictions) of the models.
+        segment_index: Into the segments of the set.
+    """
+    return tuple(
+        ModelPrediction(label, aligned.predictions.probs[attribute][segment_index]
+                        if aligned.predictions.is_valid[attribute][segment_index] else None)
+        for label, aligned in labeled_aligned_seq)
 
 
 @dc.dataclass(frozen=True)
@@ -316,10 +344,6 @@ def get_segment_detail(metadata: IRAPMetadata,
         class_names=evaluation_set.vocabulary.get_values(attribute),
         irap_codes=evaluation_set.vocabulary.get_irap_codes(attribute),
         label_index=None if label_index == IGNORE_LABEL_INDEX else label_index,
-        model_predictions=tuple(
-            ModelPrediction(label,
-                            aligned.predictions.probs[attribute][segment_index]
-                            if aligned.predictions.is_valid[attribute][segment_index] else None)
-            for label, aligned in labeled_aligned_seq),
+        model_predictions=get_model_predictions(labeled_aligned_seq, attribute, segment_index),
         context_segment_ids=tuple(zip(offsets, get_context_segment_ids(metadata, segment_id,
                                                                        offsets))))

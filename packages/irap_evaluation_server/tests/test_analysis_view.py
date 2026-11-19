@@ -26,10 +26,13 @@ def _resolve(view, models, dataset_contexts, attributes=()):
                         functools.partial(get_model_evaluation_set, dataset_contexts["vietnam"]))
 
 
-def test_path_and_query_round_trip(dataset_contexts):
+@pytest.mark.parametrize("panel", ["classes", "label_errors"])
+def test_path_and_query_round_trip(dataset_contexts, panel):
     view = AnalysisView("vietnam", SPLIT, ie.MODEL_COMPATIBLE_SET_NAME, model_id=3,
                         compare_id=4, attribute_name="Lane width", cell=(1, 3),
-                        segment_id="0004", panel="classes", class_sort="-f1")
+                        segment_id="0004", panel=panel, class_sort="-f1",
+                        is_all_models_disagreement_required=False,
+                        is_reviewed_label_hidden=False)
     path = view.to_path(["Lane width", "Curvature"])
     query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
     assert query["attribute"] == ["Lane width", "Curvature"]
@@ -44,7 +47,9 @@ def test_path_and_query_round_trip(dataset_contexts):
                            ({"set": "x"}, "Unknown evaluation set"),
                            ({"model": "x"}, "model number"), ({"cell": "1"}, "two indices"),
                            ({"cell": "1,x"}, "two indices"),
-                           ({"panel": "x"}, "Unknown panel")]:
+                           ({"panel": "x"}, "Unknown panel"),
+                           ({"disagree": "x"}, "'disagree' is 'any'"),
+                           ({"reviewed": "x"}, "'reviewed' is 'shown'")]:
         with pytest.raises(ValueError, match=message):
             AnalysisView.from_query(query, dataset_contexts)
 

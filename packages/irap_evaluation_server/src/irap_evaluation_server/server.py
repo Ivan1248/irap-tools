@@ -16,6 +16,7 @@ from .archive import ModelArchive
 from .config import load_server_config
 from .datasets import load_dataset_contexts
 from .display_settings import DisplaySettingsStore
+from .label_reviews import LabelReviewStore
 from .prediction_analysis import AlignedPredictionsCache
 from .scoring import ScoreStore
 from .scoring_worker import ScoringWorker
@@ -127,8 +128,8 @@ def main(argv: list[str] | None = None) -> None:
     register_shown_metrics_page(display_settings, sessions)
     register_scores_page(dataset_contexts, scoring_worker, sessions, display_settings)
     register_analysis_page(dataset_contexts, scoring_worker,
-                           AlignedPredictionsCache(archive, scoring_worker.settings), map_error,
-                           sessions)
+                           AlignedPredictionsCache(archive, scoring_worker.settings),
+                           LabelReviewStore(config.data_dir), map_error, sessions)
     register_models_pages(archive, dataset_contexts, scoring_worker, sessions)
     register_model_page(archive, dataset_contexts, scoring_worker, sessions, display_settings)
     register_method_page(archive, dataset_contexts, scoring_worker, sessions, display_settings)
