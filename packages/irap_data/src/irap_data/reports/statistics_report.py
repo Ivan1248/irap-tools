@@ -163,9 +163,6 @@ def _compose_header(statistics: DatasetStatistics, selection: SelectionKind, des
         + ("kept without a label for the attribute." if preset.allow_missing_attributes
            else "left out."),
     ]
-    if preset.use_ncontext_filter and selection != "labeled":
-        items.append("The segments are restricted to the precomputed N-context subsets"
-                     " (`seg_to_res`).")
     return [rd.Heading(f"Dataset statistics of {statistics.dataset}: {description}", 1),
             rd.BulletList(tuple(items))]
 

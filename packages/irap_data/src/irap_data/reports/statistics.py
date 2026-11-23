@@ -395,7 +395,7 @@ class DatasetStatistics:
 
     def get_context_offsets(self, selection: SelectionKind) -> tuple[int, ...] | None:
         """The context offsets that `selection` requires a complete window for, if any."""
-        return {"labeled": None, "with_context": self.preset.reference_context_offsets,
+        return {"labeled": None, "with_context": tuple(self.preset.reference_context_offsets),
                 "model": self.model_context_offsets}[selection]
 
     @property

@@ -87,7 +87,7 @@ def test_missing_segments_are_scored_as_invalid(archive, dataset_contexts, store
 
 def test_model_compatible_sets_include_models_whose_set_is_a_shared_one(archive,
                                                                        dataset_contexts, worker):
-    reference_offsets = get_dataset_preset("vietnam").reference_context_offsets
+    reference_offsets = tuple(get_dataset_preset("vietnam").reference_context_offsets)
     submissions = [add_model(archive, dataset_contexts,
                              with_context_offsets(make_model(dataset_contexts, name), offsets))
                    for name, offsets in (("m", (0, -1)), ("r", reference_offsets))]

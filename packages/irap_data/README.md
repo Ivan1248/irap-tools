@@ -27,7 +27,7 @@ A metadata directory contains `splits.json`, `segment_id_to_data_paths_rel.json`
 ```python
 from irap_data import make_bh_data, make_vietnam_data
 
-splits = make_bh_data(context_offsets=(0, -1, -4))  # directories from $IRAP_HOME
+splits = make_bh_data(context_offsets=(0, -1, -4), use_ncontext_filter=False)  # from $IRAP_HOME
 train = splits["train"]
 print(len(train), train.info.class_counts)
 
@@ -62,7 +62,7 @@ ds = InferenceImageDataset.from_folder(
 
 `irap_data.metadata.select_split_segments` selects the segments of a split for the datasets and the statistics. It keeps a segment if it has an image, labels, and a complete context window: every context offset falls inside its road sequence and has an image.
 
-- **BH N-context filter.** `make_bh_data()` also restricts each labeled split to the segments in its `seg_to_res/<split>.pickle` whose 10 preceding and 10 following segments on the road are in the same file (`load_ncontext_segment_ids`). The selected segments are thus the same for any context offsets with `max(abs(context_offsets)) ≤ 10`. `use_ncontext_filter=False` disables the filter. iRAP-Vietnam has no such filter.
+- **BH N-context filter.** `make_bh_data` requires `use_ncontext_filter`. With `True`, it restricts each labeled split, as the original code does, to the segments in its `seg_to_res/<split>.pickle` whose 10 preceding and 10 following segments on the road are in the same file (`load_ncontext_segment_ids`). The selected segments are then the same for any context offsets with `max(abs(context_offsets)) ≤ 10`. Recent work does not use the filter, and `DATASET_PRESETS`, the evaluation sets and `IRAP_DATASET_FACTORIES` do not apply it. iRAP-Vietnam has no `seg_to_res` files.
 - **Reference set.** The reference set of a split is the segments with a complete context window for the `reference_context_offsets` of the release in `DATASET_PRESETS` (`select_preset_split_segments` with `context_offsets=None`). All models whose context offsets lie within this window can be scored on it.
 - **Unlabeled splits.** `splits.json` can contain `unlabeled_train`, `unlabeled_val` and `unlabeled_test` (unlabeled segments from the same sequences or areas as the labeled split) and `unlabeled_unlocated` (segments with an unknown relationship to the other splits). The datasets return them with all targets `-1`. The context-window check applies to them, the N-context filter does not.
 - **Segments in no road sequence.** A segment that is in no road sequence has no context window. `select_split_segments` warns about such segments, as they point to incomplete metadata.

@@ -47,13 +47,9 @@ def _format_percent(fraction: float) -> str:
     return f"{fraction * 100:g}%"
 
 
-def _format_offset_window(offsets: T.Sequence[int]) -> str:
-    """Formats context offsets as a range, e.g. '−4 to 0', or as a list if they have gaps."""
-    if list(offsets) == list(range(min(offsets), max(offsets) + 1)):
-        text = f"{min(offsets)} to {max(offsets)}"
-    else:
-        text = ", ".join(map(str, offsets))
-    return text.replace("-", "−")
+def _format_context_window(offsets: range) -> str:
+    """Formats contiguous context offsets, e.g. '−4 to 0'."""
+    return f"{offsets.start} to {offsets.stop - 1}".replace("-", "−")
 
 
 def _get_interval_probabilities(confidence: float) -> tuple[float, float]:
@@ -87,7 +83,7 @@ _METHODS_MARKDOWN = r"""
 
 def _make_evaluation_sets_markdown(dataset_names: T.Sequence[str]) -> str:
     windows = "; ".join(
-        f"{n}: {_format_offset_window(get_dataset_preset(n).reference_context_offsets)}"
+        f"{n}: {_format_context_window(get_dataset_preset(n).reference_context_offsets)}"
         for n in dataset_names)
     return f"""
 A model predicts the attributes of a segment from the images of the segment and of other segments

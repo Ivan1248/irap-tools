@@ -1,3 +1,4 @@
+import functools
 from pathlib import Path
 import typing as T
 import warnings
@@ -275,7 +276,7 @@ def make_bh_data(
     *,
     dataset_dir: str | Path | None = None,
     metadata_dir: str | Path | None = None,
-    use_ncontext_filter: bool = DATASET_PRESETS["bh"].use_ncontext_filter,
+    use_ncontext_filter: bool,
     allow_missing_attributes: bool = DATASET_PRESETS["bh"].allow_missing_attributes,
     **kwargs,
 ):
@@ -284,6 +285,11 @@ def make_bh_data(
     Convenience wrapper around `make_irap_data` with default directories resolved
     from `IRAP_HOME` (`IRAP_BIH` and `IRAP_BIH_METADATA`) and the defaults of
     `DATASET_PRESETS["bh"]`.
+
+    Args:
+        use_ncontext_filter: Whether the labeled splits are restricted to the N-context subsets
+            of the original code (see `load_ncontext_segment_ids`), as in Kačan et al. It has no
+            default, so that the variant is part of every call, e.g. of experiment names.
     """
     dataset_dir, metadata_dir = resolve_irap_paths(
         dataset_dir=dataset_dir, metadata_dir=metadata_dir
@@ -312,7 +318,6 @@ def make_vietnam_data(
     *,
     dataset_dir: str | Path | None = None,
     metadata_dir: str | Path | None = None,
-    use_ncontext_filter: bool = DATASET_PRESETS["vietnam"].use_ncontext_filter,
     allow_missing_attributes: bool = DATASET_PRESETS[
         "vietnam"
     ].allow_missing_attributes,
@@ -328,7 +333,6 @@ def make_vietnam_data(
         dataset_dir: Dataset root directory. If None, resolved from environment.
         metadata_dir: None or `dataset_dir`, as iRAP-Vietnam keeps its metadata in the dataset
             directory. It is a parameter for the common interface of `IRAP_DATASET_FACTORIES`.
-        use_ncontext_filter: Whether to apply N-context filtering.
         allow_missing_attributes: Whether to retain segments with missing attribute codes
             by assigning `IGNORE_LABEL_INDEX`.
         **kwargs: Additional keyword arguments forwarded to `make_irap_data`.
@@ -346,7 +350,6 @@ def make_vietnam_data(
     data = make_irap_data(
         dataset_dir=dataset_dir,
         metadata_dir=dataset_dir,
-        use_ncontext_filter=use_ncontext_filter,
         allow_missing_attributes=allow_missing_attributes,
         dataset_name="vietnam",
         **kwargs,
@@ -362,9 +365,10 @@ def make_vietnam_data(
 
 
 # Registry of iRAP release presets. Single source of truth for the dataset-name
-# strings used by CLI tools (vlm_inference, agent_classify, ...).
+# strings used by CLI tools (vlm_inference, agent_classify, ...). Like `DATASET_PRESETS`, they do
+# not apply the N-context filter.
 IRAP_DATASET_FACTORIES = {
-    "bh": make_bh_data,
+    "bh": functools.partial(make_bh_data, use_ncontext_filter=False),
     "vietnam": make_vietnam_data,
 }
 

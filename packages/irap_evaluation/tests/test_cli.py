@@ -290,7 +290,7 @@ def test_a_model_that_cannot_be_scored_on_any_set_is_an_error(metadata_dir, meta
 
 def test_a_model_with_the_reference_offsets_is_not_scored_on_its_model_compatible_set(
         metadata_dir, metadata, tmp_path, capsys):
-    offsets = get_dataset_preset("vietnam").reference_context_offsets
+    offsets = tuple(get_dataset_preset("vietnam").reference_context_offsets)
     path = tmp_path / "ref.predictions.parquet"
     write_predictions(path, make_predictions(metadata.vocabulary, list(metadata.splits[SPLIT]),
                                              name="ref", seed=0, context_offsets=offsets))

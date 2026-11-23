@@ -40,28 +40,31 @@ class DatasetPreset:
     Attributes:
         allow_missing_attributes: Whether a segment with a missing or unknown attribute code is
             kept, with `IGNORE_LABEL_INDEX` for that attribute, rather than dropped.
-        use_ncontext_filter: Whether labeled splits are restricted to the precomputed N-context
-            subsets (see `load_ncontext_segment_ids`).
-        reference_context_offsets: Context offsets that define the reference evaluation set: the
-            segments whose context window with these offsets is complete. A model whose context
-            offsets lie within this window can predict every reference segment, so all such
-            models are scored on the same segments.
+        reference_context_offsets: The contiguous context offsets that define the reference
+            evaluation set: the segments whose context window with these offsets is complete. A
+            model whose context offsets lie within this window can predict every reference
+            segment, so all such models are scored on the same segments.
     """
 
     allow_missing_attributes: bool
-    use_ncontext_filter: bool
-    reference_context_offsets: tuple[int, ...]
+    reference_context_offsets: range
+
+    def __post_init__(self):
+        if self.reference_context_offsets.step != 1 or 0 not in self.reference_context_offsets:
+            raise ValueError(f"The reference context offsets {self.reference_context_offsets}"
+                             f" must have step 1 and contain 0.")
 
 
-#: Presets by release name, the same names as `irap_dataset.IRAP_DATASET_FACTORIES`.
+#: Presets by release name, the same names as `irap_dataset.IRAP_DATASET_FACTORIES`. They do not
+#: apply the N-context filter of iRAP-BH (`load_ncontext_segment_ids`), so neither do the
+#: evaluation sets.
 DATASET_PRESETS: dict[str, DatasetPreset] = {
-    # The N-context subsets already require 10 labeled neighbours on each side.
-    "bh": DatasetPreset(allow_missing_attributes=False, use_ncontext_filter=True,
-                        reference_context_offsets=tuple(range(-10, 11))),
+    # The window that the N-context filter requires (10 segments on each side).
+    "bh": DatasetPreset(allow_missing_attributes=False, reference_context_offsets=range(-10, 11)),
     # Vietnam road sequences are short (median 29 segments in the 2026-07-31 metadata), so the
     # window holds only the past context that the default model offsets (0, -1, -4) need.
-    "vietnam": DatasetPreset(allow_missing_attributes=True, use_ncontext_filter=False,
-                             reference_context_offsets=tuple(range(-4, 1))),
+    "vietnam": DatasetPreset(allow_missing_attributes=True,
+                             reference_context_offsets=range(-4, 1)),
 }
 
 
@@ -350,7 +353,7 @@ class IRAPMetadata:
     @functools.cached_property
     def ncontext_segment_ids(self) -> set[str]:
         """The N-context subset in the `seg_to_res` subdirectory (see
-        `load_ncontext_segment_ids`), for the releases with `use_ncontext_filter`."""
+        `load_ncontext_segment_ids`)."""
         return load_ncontext_segment_ids(self.metadata_dir / MetaFiles.NCONTEXT_SUBDIR,
                                          self.road_id_to_segment_id_sequence)
 
@@ -813,11 +816,8 @@ def select_preset_split_segments(
             the release (see `DatasetPreset`).
     """
     preset = get_dataset_preset(dataset_name)
-    use_ncontext_filter = preset.use_ncontext_filter and not is_unlabeled_split(split)
     return select_split_segments(
         metadata, split,
         context_offsets=(preset.reference_context_offsets if context_offsets is None
                          else context_offsets),
-        allow_missing_attributes=preset.allow_missing_attributes,
-        ncontext_segment_id_subset=(metadata.ncontext_segment_ids if use_ncontext_filter
-                                    else None))
+        allow_missing_attributes=preset.allow_missing_attributes)

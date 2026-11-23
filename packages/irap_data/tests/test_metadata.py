@@ -98,6 +98,16 @@ def test_context_stays_on_the_road_and_needs_images(metadata):
                        "T1": ("T1", "T0")}
 
 
+def test_context_follows_the_road_order_not_the_segment_ids():
+    # As in iRAP-BH, the IDs are not consecutive along road r0 and continue on road r1.
+    road_id_to_segment_id_sequence = {"r0": ["3", "4", "1", "2"], "r1": ["5", "6"]}
+    context = compute_segment_context_ids(
+        road_id_to_segment_id_sequence, ["1", "5"], context_offsets=(0, -1),
+        available_segment_ids={"1", "2", "3", "4", "5", "6"})
+    # Segment 5 starts its road. Its predecessor by ID, 4, is on r0.
+    assert context == {"1": ("1", "4")}
+
+
 def test_select_split_segments(metadata):
     selection = select_split_segments(metadata, "val", context_offsets=(0, -1),
                                       allow_missing_attributes=True)

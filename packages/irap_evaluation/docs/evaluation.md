@@ -32,7 +32,8 @@ For context offsets $o_1, \ldots, o_m$, the evaluation set of a split holds its 
 1. **Image**: the segment has an entry in `segment_id_to_data_paths_rel.json`.
 2. **Labels**: each iRAP code is mapped to its class index. A code is missing if it is absent, None, `'None'`, negative, or not a class of the attribute. Vietnam leaves the attribute unlabeled for that segment. BH drops the segment if any attribute is missing. Any other value, e.g. a float, is an error.
 3. **Context**: for a segment at position $p$ of a sequence of length $L$, every $p + o_j$ lies in $[0, L)$, and the segment there has an image. Context segments need no label.
-4. **N-context (BH only)**: the segment and the 10 segments on each side of it in its sequence are all in the same `seg_to_res/<split>.pickle` (train, val or test).
+
+The N-context filter of BH (`use_ncontext_filter`) is not applied.
 
 A file is scored on up to three sets:
 
