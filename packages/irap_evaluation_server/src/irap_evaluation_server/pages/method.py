@@ -215,15 +215,14 @@ class _MethodPage:
             show_details()
             # Not refreshed with the details, so that a refresh does not undo an edit.
             if self.can_write:
-                create_native_text_form(create_native_input,
-                                        "Display name (for all models of the method)",
+                create_native_text_form(create_native_input, "Display name",
                                         self.snapshot.group.method_display_name or "",
                                         "Save display name", on_display_name_saved,
                                         placeholder="none", size=40)
                 create_native_text_form(
                     create_native_textarea,
-                    "Description (Markdown, for all models of the method; the tables show its"
-                    " first line)", self.snapshot.group.description, "Save description",
+                    "Description (Markdown, for all models; the tables show its first line)",
+                    self.snapshot.group.description, "Save description",
                     on_description_saved, placeholder="none")
             status_label = ui.label().classes("muted")
         self.refreshes.append(show_details.refresh)
@@ -237,8 +236,8 @@ class _MethodPage:
 
         with ui.element("section").classes("panel"):
             ui.label("Models").classes("section-title")
-            ui.label("A ✓ opens the Model page with the scores of the split's file.").classes(
-                "muted")
+            ui.label("A ✓ opens the Model page with the scores of the split's prediction"
+                     " file.").classes("muted")
             show_models()
         self.refreshes.append(show_models.refresh)
 
@@ -300,7 +299,7 @@ class _MethodPage:
             ui.html(make_action_table_html(self.snapshot.actions, model_id_to_model),
                     sanitize=False)
 
-        with create_collapsible_panel("Action log of its models"):
+        with create_collapsible_panel("Action log"):
             show_actions()
         self.refreshes.append(show_actions.refresh)
 

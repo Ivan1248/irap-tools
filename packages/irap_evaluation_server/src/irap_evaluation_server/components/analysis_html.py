@@ -537,7 +537,7 @@ def make_probability_table_html(detail: SegmentDetail, review: LabelReview | Non
                          f' style="width: {probability * 100:.1f}%"></div>'
                          f"<span>{probability:.2f}</span></td>")
         if has_correction_column:
-            title = f"Give {_format_class(code, name)} as the class of the segment."
+            title = f"Store {_format_class(code, name)} as the correct class of the segment."
             cells.append(f'<td><button type="button" data-correction-code="{code}"'
                          f'{" class=selected" if code == reviewed_code else ""}'
                          f"{make_title_attribute(title)}>{code}</button></td>")

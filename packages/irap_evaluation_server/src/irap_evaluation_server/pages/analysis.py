@@ -583,8 +583,8 @@ class _AnalysisPage:
             ui.label(_CLASS_TABLE_NOTES[self.worker.settings.null_policy]).classes("muted")
             _create_discrimination_note()
         with self.panels["classes"]:
-            ui.label("Model A's scores on each class that has labels, of the attributes that it"
-                     " predicts. Click a class to list its missed segments.").classes("muted")
+            ui.label("Model A's scores on each labeled class of the attributes that it predicts."
+                     " Click a class to list its missed segments.").classes("muted")
             # A click on a header sorts the classes, and a click on a row selects its class.
             with ui.element("div").on("click", lambda e: self._on_class_sort_changed(e.args),
                                       js_handler=SORT_CLICK_JS_HANDLER):
@@ -594,9 +594,9 @@ class _AnalysisPage:
                     js_handler=make_data_click_js_handler("data-class-row"))
             _create_discrimination_note()
         with self.panels["curve"]:
-            ui.label("The scores after a reviewer has corrected the given proportion of the"
-                     " segments, starting with the least confident predictions, and the manual"
-                     " review proportion.").classes("muted")
+            ui.label("The scores after a reviewer has corrected a proportion of the segments,"
+                     " the least confident predictions first. A dot marks the manual review"
+                     " proportion.").classes("muted")
             self.review_curve_html = ui.html("", sanitize=False)
         with self.panels["label_errors"]:
             self.label_error_panel = LabelErrorPanel(
@@ -612,8 +612,8 @@ class _AnalysisPage:
                 get_label_reviews_download_path(self.context.name, split),
                 f"Download the reviewed labels of {split} as a prediction file"), sanitize=False)
             if not self.can_review:
-                ui.label("Sign in with an account that can write to review labels.").classes(
-                    "muted")
+                ui.label("To review labels, sign in with an account with write permission."
+                         ).classes("muted")
         # The segments of a cell, which the candidate labeling errors take the place of.
         with ui.element("div").classes("analysis-panel") as self.cell_segments_section:
             ui.label("Segments").classes("section-title")
@@ -836,7 +836,7 @@ class _AnalysisPage:
             self.correction_comment = text
 
         with ui.element("div").classes("form-row items-end"):
-            create_native_input("Comment of the correction", "", set_comment, size=28)
+            create_native_input("Correction comment", "", set_comment, size=28)
             create_native_button("Unclear", lambda: self._add_label_review("unclear", None))
             if self._get_selected_review() is not None:
                 create_native_button("Withdraw", self._withdraw_label_review)

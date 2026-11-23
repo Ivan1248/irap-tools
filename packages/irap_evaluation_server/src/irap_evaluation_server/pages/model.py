@@ -316,8 +316,8 @@ class _ModelPage:
             can_delete = self.can_write and len(submissions) > 1
             ui.label("Prediction files").classes("section-title")
             ui.label("A model has one prediction file per split. A new file of a split replaces"
-                     " the old one, which is deleted permanently. Deleting a file also removes it"
-                     " permanently. The last file is deleted with the model.").classes("muted")
+                     " the old one. Replaced and deleted files are removed permanently. The last"
+                     " file can only be deleted with the model.").classes("muted")
             ui.html(f'<a href="{get_model_download_path(self.model_id)}">Download the prediction'
                     f" files (.zip)</a>, which can be uploaded again as the files of this model.",
                     sanitize=False)
@@ -438,7 +438,7 @@ class _ModelPage:
                 " the iRAP coding-table layout, ordered by road and position. Invalid"
                 " predictions and columns without a predicted attribute are blank. A `.xlsx`"
                 " file of probabilistic predictions has the probability of each predicted code"
-                " on a second sheet. Preparing a `.xlsx` file can take tens of seconds, a"
+                " on a second sheet. Preparing a `.xlsx` file can take tens of seconds; a"
                 " `.csv` file is much faster."), sanitize=False).classes("muted")
             if not splits:
                 ui.label("The model has no files.").classes("muted")
