@@ -101,8 +101,9 @@ For each attribute and each road sequence $g$, the segments with a label for the
   $$s^{(g)}_{\mathrm{NLL},i} = \sum_{t:\,y_t=i} -\ln q_{t,y_t}, \qquad s^{(g)}_{\mathrm{Brier},i} = \sum_{t:\,y_t=i} \sum_k \left(q_{t,k} - [k = y_t]\right)^2,$$
   where $y_t$ is the label of segment $t$ and $q_t$ is its predicted distribution.
 - For `probs` files, the confidence histogram $H^{(g)}$: for each class $k$ and confidence bin $b$, the numbers of segments in the bin that are predicted correctly as $k$, that have the label $k$ and another predicted class, and that are predicted as $k$ with another label. The confidence of a segment is the predicted probability of its predicted class, $q_{t,\hat y_t}$. The 50 bins are in the order of the confidence, and their edges are quantiles of the confidences of the attribute's labeled segments, so each bin has about 2 % of them. Equal confidences are in one bin.
+- For `probs` files, the calibration sums $Z^{(g)}$: for each of 15 equal-width confidence bins $b$, $(b/15, (b+1)/15]$ (bin 0 also holds 0), $c_b - z_b$, where $c_b$ is the number of segments in the bin whose predicted class is the label, and $z_b$ the sum of their confidences.
 
-The metrics of any set of sequences are computed from the summed statistics $C = \sum_g C^{(g)}$, $s = \sum_g s^{(g)}$ and $H = \sum_g H^{(g)}$. `EvaluationResult.statistics` keeps the per-sequence statistics, from which `compute_grouped_metrics` recomputes any metric without the predictions.
+The metrics of any set of sequences are computed from the summed statistics $C = \sum_g C^{(g)}$, $s = \sum_g s^{(g)}$, $H = \sum_g H^{(g)}$ and $Z = \sum_g Z^{(g)}$. `EvaluationResult.statistics` keeps the per-sequence statistics, from which `compute_grouped_metrics` recomputes any metric without the predictions.
 
 ## Metrics
 
@@ -114,20 +115,25 @@ The metrics of an attribute are computed from $C$, with, for each class $k$:
 
 | Name | Definition |
 |---|---|
+| `supp` | the support $a_k$ |
 | `P`, `R` | $P_k = \mathrm{TP}_k / \hat a_k$, $\;R_k = \mathrm{TP}_k / a_k$ (0 if the denominator is 0) |
 | `F1` | $F_k = 2 P_k R_k / (P_k + R_k)$ (0 if $P_k + R_k = 0$) |
 | `IoU` | $\mathrm{TP}_k / (a_k + \hat a_k - \mathrm{TP}_k)$ (0 if the denominator is 0) |
 | `mP`, `mR`, `mF1`, `mIoU` | the mean over the classes $\mathcal{K} = \{k : a_k > 0 \text{ or } \hat a_k > 0\}$ |
+| `minP`, …, `maxIoU` | the minimum or maximum over $\mathcal{K}$ |
 | `A` | $\sum_k \mathrm{TP}_k / n$ |
 | `n` | $n$ |
+| `nc` | the number of classes, $\lvert\mathcal{K}\rvert$ |
 | `MCC` | $\dfrac{n \sum_k \mathrm{TP}_k - \sum_k \hat a_k a_k}{\sqrt{(n^2 - \sum_k \hat a_k^2)(n^2 - \sum_k a_k^2)}}$ (NaN if all labels or all predictions are one class) |
 | `kappa` | $\dfrac{n \sum_k \mathrm{TP}_k - \sum_k \hat a_k a_k}{n^2 - \sum_k \hat a_k a_k}$ |
 | `NLL`, `Brier` | $\sum_k s_k / n$ |
 | `cNLL`, `cBrier` | $s_k / a_k$ per class (NaN if $a_k = 0$) |
 | `mNLL`, `mBrier` | the mean of `cNLL`, `cBrier` over the classes with $a_k > 0$ |
+| `minNLL`, …, `maxBrier` | the minimum or maximum of `cNLL`, `cBrier` over the classes with $a_k > 0$ |
+| `ECE` | the expected calibration error $\sum_b \lvert c_b - z_b \rvert / n$ over the 15 bins of $Z$ (Guo et al., 2017) |
 | `MRP90` | the manual review proportion for `mF1` $\ge 0.9$, see [Manual review proportion](#manual-review-proportion) |
 
-A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but never labeled, has $F_k = 0$. Other undefined values (0/0) are NaN. `NLL` is infinite if a valid attribute prediction gives its label probability 0. The metrics of predicted distributions (`NLL` to `mBrier`, and `MRP90`) are not defined for `hard` files, and requesting them is an error.
+A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but never labeled, has $F_k = 0$. Other undefined values (0/0) are NaN. `NLL` is infinite if a valid attribute prediction gives its label probability 0. The metrics of predicted distributions (`NLL` to `MRP90` in the table) are not defined for `hard` files, and requesting them is an error.
 
 ### Manual review proportion
 
@@ -140,7 +146,12 @@ A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but n
 - The simulation assumes that the reviewer codes as the labels do. It says how well the confidences find the segments that lower `mF1`, not how a reviewer would decide.
 - The idea is that of selective classification, where predictions with a low confidence are deferred to a person, and its risk–coverage curves: `MRP90` is about 1 − coverage at the target. Unlike the selective risk, which is computed on the kept predictions only, `mF1` here is computed over all segments, with the reviewed ones corrected.
 
-**Support threshold.** The suffix `_suppN` restricts a mean over classes to $\mathcal{K}_N = \{k : a_k \ge N\}$, e.g. `mF1_supp10`. `nc_suppN` is $|\mathcal{K}_N|$.
+**Class selection.** Two suffixes, in this order, restrict the classes of a mean, minimum or maximum over classes and of `nc`:
+
+- The support threshold `_suppN`, $N \ge 1$, keeps the classes with $a_k \ge N$, e.g. `mF1_supp10`.
+- The class condition `_{<metric><op><number>}` keeps the classes that meet one condition on a per-class metric: `supp`, `P`, `R`, `F1`, `IoU`, `cNLL` or `cBrier`, with `<`, `<=`, `=`, `>=` or `>`. For example, `nc_{R>0}` is the number of classes that are predicted correctly at least once, and `mF1_{supp<10}` the mean F1 over the classes with fewer than 10 labeled segments. `_{supp>=10}` is the same as `_supp10`. `=` compares exactly, which suits 0 and 1, the values of the undefined `P`, `R`, `F1` and `IoU`.
+
+A class is selected if it is in the classes of the metric without suffixes ($\mathcal{K}$, or the classes with $a_k > 0$ if the metric or its condition is of predicted distributions) and meets both restrictions. A class that is predicted but never labeled has $R_k = 0$, so `minR` is 0 and `nc_{R=0}` counts it if there is one. `minR_supp1` and `nc_supp1_{R=0}` only cover the labeled classes. Shells and URLs treat `>`, `<` and `{}` specially, so names with a condition have to be quoted there.
 
 **Attribute average.** The prefix `a` averages a metric over the scored attributes where it is not NaN, e.g. `amF1`. Infinite values are included. Each attribute counts equally, so `aNLL` is the mean of the per-attribute NLLs. Per-class metrics are not averaged.
 
@@ -155,7 +166,7 @@ The iRAP protocol (`get_irap_metric_names`) reports the following. Its main metr
 
 By default (`get_default_metric_names`), `evaluate_predictions` (and so `irap-eval evaluate`) also computes, for `probs` files, the manual review proportion `aMRP90` and `MRP90`, which is not part of the protocol, and the per-attribute values of the averages that the protocol lacks: `mP`, `mR` and, for `probs` files, `mNLL_suppN`.
 
-Results keep only the attribute averages and per-attribute metrics. `compute_class_metrics(result)` computes the per-class metrics (`P`, `R`, `F1`, `IoU`, `cNLL`, `cBrier`), support and confusion matrix of each attribute from its statistics, and `compute_review_curves(result)` the review curve of each attribute.
+Results keep only the attribute averages and per-attribute metrics. `compute_class_metrics(result)` computes the per-class metrics (`supp`, `P`, `R`, `F1`, `IoU`, `cNLL`, `cBrier`) and the confusion matrix of each attribute from its statistics, and `compute_review_curves(result)` the review curve of each attribute.
 
 ## Methods
 
@@ -171,7 +182,7 @@ The intervals cover two sources of variation (`--bootstrap B`, `--seed`, default
 `compute_bootstrap_intervals(models)` computes them as follows:
 
 1. Each of the $B$ resamples draws the $G$ sequences of the set $G$ times with replacement. This gives multiplicities $w \sim \mathrm{Multinomial}(G; 1/G, \ldots, 1/G)$. The draws depend only on the seed, $B$ and $G$, so all models on an evaluation set share the resamples.
-2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$, $\sum_g w_g s^{(g)}$ and $\sum_g w_g H^{(g)}$, giving $m^*_i$ (`resample_model_metrics`). The confidence bins are those of the whole set in every resample. A sequence with weight 0 adds nothing, also if its NLL sum is infinite. Averages over a subset of the attributes can be computed from the resampled per-attribute values (`select_metric_attributes`), as from the values themselves.
+2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$, $\sum_g w_g s^{(g)}$, $\sum_g w_g H^{(g)}$ and $\sum_g w_g Z^{(g)}$, giving $m^*_i$ (`resample_model_metrics`). The confidence bins are those of the whole set in every resample. A sequence with weight 0 adds nothing, also if its NLL sum is infinite. Averages over a subset of the attributes can be computed from the resampled per-attribute values (`select_metric_attributes`), as from the values themselves.
 3. The resampled value of the method is
    $$v^* = \bar m^* + \frac{\mathrm{sd}(m^*_1, \ldots, m^*_M)}{\sqrt M}\, t^*, \qquad t^* \sim t_{M-1},$$
    with the sample standard deviation and one Student-t draw per resample, shared by the metrics of the method (`combine_model_resamples`). This is the posterior of the mean of normally distributed model values under the prior $p(\mu, \sigma) \propto 1/\sigma$. The t draws depend on the seed and the method name, so they are independent of the resamples and of the draws of other methods. With one model, $v^* = m^*_1$, and the interval covers only the road sequences. If $\bar m^*$ is infinite, $v^*$ is $\bar m^*$.

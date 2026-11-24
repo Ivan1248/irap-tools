@@ -80,6 +80,8 @@ from .metric_names import (
     IRAP_MAIN_METRIC,
     MANUAL_REVIEW_PROPORTION_METRIC,
     MANUAL_REVIEW_TARGET_MF1,
+    NUM_CALIBRATION_BINS,
+    ClassCondition,
     ParsedMetricName,
     add_per_attribute_metric_names,
     describe_attribute_average,

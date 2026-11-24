@@ -10,8 +10,8 @@ from irap_data.metadata import IGNORE_LABEL_INDEX, ClassVocabulary
 
 from .evaluation_sets import MISSING_SEGMENT_POLICIES, EvaluationSet, MissingSegmentPolicy
 from .metric_names import (
-    MACRO_METRIC_TO_PER_CLASS,
     MANUAL_REVIEW_PROPORTION_METRIC,
+    PER_CLASS_METRICS,
     PROBABILISTIC_METRICS,
     add_per_attribute_metric_names,
     get_attribute_average_name,
@@ -123,7 +123,7 @@ class EvaluationResult:
             sequence of `evaluation_set.sequence_ids`, from which any metric can be recomputed,
             e.g. for a bootstrap resample. Its keys are the evaluated attributes (`attributes`).
         num_invalid: Attribute -> number of labeled segments with an invalid prediction.
-        metrics: The scores. The values of `n` and `nc_suppN` are ints, the others floats. For
+        metrics: The scores. The values of `n` and `nc` are ints, the others floats. For
             per-class metrics, see `compute_class_metrics`.
         intervals: `bootstrap.BootstrapInterval`s of the metrics of this model alone, which cover
             the sampling of road sequences but not of models (see
@@ -325,15 +325,14 @@ class ClassMetrics:
     Attributes:
         irap_codes: (K,) the iRAP code of each class.
         values: (K,) the class values, e.g. 'Wide (>= 3.25m)'.
-        support: (K,) int64 number of labeled segments per class.
         confusion_matrix: (K, K) int64 counts, rows = ground truth, columns = prediction.
-        metrics: Name -> (K,) float64 values, e.g. 'P', 'R', 'F1' (see
-            `metric_names.PER_CLASS_METRICS`).
+        metrics: Name -> (K,) values, e.g. 'supp', 'P', 'R', 'F1' (see
+            `metric_names.PER_CLASS_METRICS`). 'supp', the number of labeled segments of each
+            class, is int64, the others float64.
     """
 
     irap_codes: tuple[int, ...]
     values: tuple[str, ...]
-    support: np.ndarray
     confusion_matrix: np.ndarray
     metrics: T.Mapping[str, np.ndarray]
 
@@ -343,7 +342,7 @@ def compute_class_metrics(result: EvaluationResult,
     """Attribute -> the per-class metrics of `result`, from its statistics.
 
     Args:
-        metric_names: Per-class metric names. None means 'P', 'R', 'F1' and 'IoU', and also
+        metric_names: Per-class metric names. None means 'supp', 'P', 'R', 'F1' and 'IoU', and also
             'cNLL' and 'cBrier' for 'probs' predictions.
 
     Raises:
@@ -351,7 +350,7 @@ def compute_class_metrics(result: EvaluationResult,
             predictions.
     """
     if metric_names is None:
-        metric_names = [n for n in MACRO_METRIC_TO_PER_CLASS.values()
+        metric_names = [n for n in PER_CLASS_METRICS
                         if result.output_kind == "probs" or n not in PROBABILISTIC_METRICS]
     if not_per_class := [n for n in metric_names if not is_per_class_metric(n)]:
         raise ValueError(f"Not per-class metrics: {not_per_class}.")
@@ -361,7 +360,7 @@ def compute_class_metrics(result: EvaluationResult,
         statistics = sum_statistics(result.statistics[attr])
         return ClassMetrics(
             irap_codes=vocabulary.get_irap_codes(attr), values=vocabulary.get_values(attr),
-            support=statistics.support, confusion_matrix=statistics.confusion_matrix,
+            confusion_matrix=statistics.confusion_matrix,
             metrics=compute_classification_metrics(statistics, metric_names))
 
     return {attr: compute(attr) for attr in result.attributes}

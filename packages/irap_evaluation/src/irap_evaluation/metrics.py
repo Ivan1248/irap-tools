@@ -7,7 +7,7 @@ float32 and this module computes all of them in float64.
 Statistics and metrics can carry leading batch dimensions, e.g. one entry per road sequence or
 per bootstrap resample, so that many evaluations are computed in one vectorized call.
 
-`metric_names` defines the `[a]<base>[_suppN]` form of metric names.
+`metric_names` defines the form of metric names.
 """
 
 import dataclasses as dc
@@ -19,14 +19,18 @@ import numpy as np
 from irap_data.metadata import IGNORE_LABEL_INDEX
 
 from .metric_names import (
+    CLASS_AGGREGATE_METRICS,
+    CLASS_COUNT_METRICS,
+    CLASS_SELECTION_METRICS,
     DISTRIBUTION_METRICS,
     IRAP_IGNORE_MISSING_CLASSES,
-    MACRO_METRIC_TO_PER_CLASS,
     MANUAL_REVIEW_PROPORTION_METRIC,
     MANUAL_REVIEW_TARGET_MF1,
+    NUM_CALIBRATION_BINS,
     PER_CLASS_METRICS,
     PROBABILISTIC_METRICS,
-    SUPPORT_ONLY_METRICS,
+    ClassAggregation,
+    ComparisonOperator,
     ParsedMetricName,
     parse_metric_name,
 )
@@ -108,18 +112,25 @@ class ClassificationStatistics:
             confidences that the statistics were computed from
             (`compute_classification_statistics`), so histograms of different calls have
             different bins. See `compute_review_curve`.
+        calibration_gap_sums: (..., B) float64 sums of `1[predicted == target] - confidence` per
+            confidence bin, or None for hard predictions. The B = `NUM_CALIBRATION_BINS` bins have
+            equal widths, bin b holds the confidences in (b / B, (b + 1) / B], and bin 0 also 0.
+            The expected calibration error `ECE` is the sum of their absolute values, divided by
+            the number of examples.
     """
 
     confusion_matrix: np.ndarray
     nll_sums: np.ndarray | None = None
     brier_sums: np.ndarray | None = None
     confidence_histogram: np.ndarray | None = None
+    calibration_gap_sums: np.ndarray | None = None
 
     def __post_init__(self):
-        of_distributions = (self.nll_sums, self.brier_sums, self.confidence_histogram)
+        of_distributions = (self.nll_sums, self.brier_sums, self.confidence_histogram,
+                            self.calibration_gap_sums)
         if len({s is None for s in of_distributions}) != 1:
-            raise ValueError("nll_sums, brier_sums and confidence_histogram must all be given or"
-                             " all be None.")
+            raise ValueError("nll_sums, brier_sums, confidence_histogram and calibration_gap_sums"
+                             " must all be given or all be None.")
 
     @property
     def has_probabilities(self) -> bool:
@@ -150,6 +161,17 @@ def _assign_confidence_bins(confidences: np.ndarray) -> np.ndarray:
     edges = np.quantile(confidences, np.arange(1, NUM_CONFIDENCE_BINS) / NUM_CONFIDENCE_BINS,
                         method="lower")
     return np.searchsorted(edges, confidences, side="left")
+
+
+def _assign_calibration_bins(confidences: np.ndarray) -> np.ndarray:
+    """Assigns each of (N,) confidences in [0, 1] to its equal-width bin of
+    `ClassificationStatistics.calibration_gap_sums`.
+
+    Returns:
+        (N,) int64 bin indices.
+    """
+    bins = np.ceil(confidences * NUM_CALIBRATION_BINS).astype(np.int64) - 1
+    return np.clip(bins, 0, NUM_CALIBRATION_BINS - 1)
 
 
 def compute_classification_statistics(
@@ -212,7 +234,8 @@ def compute_classification_statistics(
         sums = np.bincount(group_class, weights=values, minlength=num_groups * num_classes)
         return sums.reshape(*batch_shape, num_classes)
 
-    bins = _assign_confidence_bins(probs[example_indices, predicted_indices])
+    confidences = probs[example_indices, predicted_indices]
+    bins = _assign_confidence_bins(confidences)
     is_wrong = targets != predicted_indices
 
     def get_kind_class_bin_indices(kinds, classes):
@@ -227,10 +250,15 @@ def compute_classification_statistics(
             get_kind_class_bin_indices(ConfidenceKind.WRONGLY_PREDICTED,
                                        predicted_indices)[is_wrong]]),
         minlength=num_groups * len(ConfidenceKind) * num_classes * NUM_CONFIDENCE_BINS)
+
+    calibration_gap_sums = np.bincount(
+        group_indices * NUM_CALIBRATION_BINS + _assign_calibration_bins(confidences),
+        weights=~is_wrong - confidences, minlength=num_groups * NUM_CALIBRATION_BINS)
     return ClassificationStatistics(
         confusion_matrix, sum_per_group_class(nll), sum_per_group_class(brier),
         confidence_histogram.astype(np.int32).reshape(*batch_shape, len(ConfidenceKind),
-                                                      num_classes, NUM_CONFIDENCE_BINS))
+                                                      num_classes, NUM_CONFIDENCE_BINS),
+        calibration_gap_sums.reshape(*batch_shape, NUM_CALIBRATION_BINS))
 
 
 def sum_statistics(statistics: ClassificationStatistics,
@@ -271,7 +299,8 @@ def sum_statistics(statistics: ClassificationStatistics,
     return ClassificationStatistics(weighted_sum(statistics.confusion_matrix),
                                     weighted_sum(statistics.nll_sums),
                                     weighted_sum(statistics.brier_sums),
-                                    weighted_sum(statistics.confidence_histogram))
+                                    weighted_sum(statistics.confidence_histogram),
+                                    weighted_sum(statistics.calibration_gap_sums))
 
 
 # Metrics ##########################################################################################
@@ -291,6 +320,16 @@ def _compute_mean_over_defined(values: np.ndarray) -> np.ndarray:
     return _compute_masked_mean(values, ~np.isnan(values))
 
 
+def _aggregate_over_classes(values: np.ndarray, classes: np.ndarray,
+                            aggregation: ClassAggregation) -> np.ndarray:
+    """Aggregates (..., K) per-class values over the classes where the (..., K) bool `classes` is
+    True: (...,), NaN where there are none."""
+    if aggregation == "m":
+        return _compute_masked_mean(values, classes)
+    reduce, identity = (np.min, np.inf) if aggregation == "min" else (np.max, -np.inf)
+    return np.where(classes.any(-1), reduce(values, -1, where=classes, initial=identity), np.nan)
+
+
 def _compute_attribute_averages(
         average_names: T.Iterable[str],
         per_attribute: T.Mapping[str, T.Mapping[str, T.Any]]) -> dict[str, np.ndarray]:
@@ -305,30 +344,26 @@ def _compute_attribute_averages(
     return {name: compute_average(name) for name in average_names}
 
 
-def _select_averaged_classes(num_actual: np.ndarray, false_positives: np.ndarray,
-                             ignore_missing_classes: bool) -> np.ndarray:
-    """Selects the classes that a mean over classes covers: (..., K) bool. With
-    `ignore_missing_classes`, a class that is neither in the ground truth nor predicted is left
-    out."""
-    return (num_actual + false_positives > 0) if ignore_missing_classes \
+def _select_considered_classes(num_actual: np.ndarray, num_predicted: np.ndarray,
+                               ignore_missing_classes: bool) -> np.ndarray:
+    """Selects the classes that aggregations over classes and class counts select from, before
+    their restrictions: (..., K) bool. With `ignore_missing_classes`, a class that is neither in
+    the ground truth nor predicted is left out."""
+    return (num_actual + num_predicted > 0) if ignore_missing_classes \
         else np.ones_like(num_actual, dtype=bool)
 
 
-def _compute_confusion_matrix_metrics(confusion_matrix: np.ndarray,
-                                      ignore_missing_classes: bool) -> dict[str, np.ndarray]:
+def _compute_confusion_matrix_metrics(confusion_matrix: np.ndarray) -> dict[str, np.ndarray]:
     true_positives = np.diagonal(confusion_matrix, axis1=-2, axis2=-1)
     num_actual = confusion_matrix.sum(-1)
     num_predicted = confusion_matrix.sum(-2)
     false_positives = num_predicted - true_positives
     precision = np.nan_to_num(_divide(true_positives, num_predicted))
     recall = np.nan_to_num(_divide(true_positives, num_actual))
-    per_class = dict(
-        P=precision, R=recall,
+    metrics = dict(
+        supp=num_actual, P=precision, R=recall,
         F1=np.nan_to_num(_divide(2 * precision * recall, precision + recall)),
         IoU=np.nan_to_num(_divide(true_positives, num_actual + false_positives)))
-    mask = _select_averaged_classes(num_actual, false_positives, ignore_missing_classes)
-    metrics = {**per_class,
-               **{"m" + k: _compute_masked_mean(v, mask) for k, v in per_class.items()}}
 
     n = num_predicted.sum(-1)
     num_correct = true_positives.sum(-1)
@@ -347,15 +382,41 @@ def _compute_confusion_matrix_metrics(confusion_matrix: np.ndarray,
 
 
 def _compute_probabilistic_metrics(statistics: ClassificationStatistics) -> dict[str, np.ndarray]:
+    """Computes the per-class metrics, NaN for a class without examples, and the scalars of
+    predicted distributions."""
     support = statistics.support
     n = support.sum(-1)
-    class_nll = _divide(statistics.nll_sums, support)  # NaN for a class without examples
-    class_brier = _divide(statistics.brier_sums, support)
     return dict(NLL=_divide(statistics.nll_sums.sum(-1), n),
                 Brier=_divide(statistics.brier_sums.sum(-1), n),
-                cNLL=class_nll, cBrier=class_brier,
-                mNLL=_compute_mean_over_defined(class_nll),
-                mBrier=_compute_mean_over_defined(class_brier))
+                cNLL=_divide(statistics.nll_sums, support),
+                cBrier=_divide(statistics.brier_sums, support),
+                # sum_b |c_b - s_b| / n, where c_b is the number of correct predictions in the
+                # confidence bin b and s_b the sum of its confidences.
+                ECE=_divide(np.abs(statistics.calibration_gap_sums).sum(-1), n))
+
+
+_COMPARISONS: dict[ComparisonOperator, T.Callable[[np.ndarray, float], np.ndarray]] = {
+    "<": np.less, "<=": np.less_equal, "=": np.equal, ">=": np.greater_equal, ">": np.greater}
+
+
+def _select_classes(parsed: ParsedMetricName, considered_classes: np.ndarray,
+                    base_metrics: T.Mapping[str, np.ndarray]) -> np.ndarray:
+    """Selects the classes of an aggregation over classes or a class count
+    (`metric_names.CLASS_SELECTION_METRICS`): (..., K) bool.
+
+    Args:
+        considered_classes: (..., K) bool classes without restrictions
+            (`_select_considered_classes`).
+        base_metrics: Base metric name -> values, including the support `supp` and the per-class
+            metric of the class condition.
+    """
+    classes = considered_classes
+    if parsed.min_class_support is not None:
+        classes = classes & (base_metrics["supp"] >= parsed.min_class_support)
+    if (condition := parsed.class_condition) is not None:
+        classes = classes & _COMPARISONS[condition.operator](
+            base_metrics[condition.per_class_metric], condition.threshold)
+    return classes
 
 
 @dc.dataclass(frozen=True)
@@ -422,9 +483,10 @@ def compute_review_curve(
     true_positives = correct.sum(-1, keepdims=True) + _count_below_bin_boundaries(missed)
     false_positives = (wrongly_predicted.sum(-1, keepdims=True)
                        - _count_below_bin_boundaries(wrongly_predicted))
+    num_predicted = true_positives + false_positives
     # F1 = 2 TP / (2 TP + FN + FP), 0 for a class without true positives.
-    f1 = np.nan_to_num(_divide(2 * true_positives, true_positives + num_actual + false_positives))
-    is_averaged = _select_averaged_classes(num_actual, false_positives, ignore_missing_classes)
+    f1 = np.nan_to_num(_divide(2 * true_positives, num_actual + num_predicted))
+    is_averaged = _select_considered_classes(num_actual, num_predicted, ignore_missing_classes)
     num_examples = num_actual.sum(-2)
     return ReviewCurve(
         review_proportions=_divide(_count_below_bin_boundaries(num_per_bin.sum(-2)), num_examples),
@@ -483,27 +545,29 @@ def compute_classification_metrics(
     if averaged := [p.name for p in parsed if p.is_averaged]:
         raise ValueError(f"Attribute averages {averaged} need several attributes. See"
                          f" compute_multi_attribute_metrics.")
-    distribution_names = [p.name for p in parsed if p.base in DISTRIBUTION_METRICS]
+    distribution_names = [p.name for p in parsed
+                          if not DISTRIBUTION_METRICS.isdisjoint(p.required_base_metrics)]
     if distribution_names and not statistics.has_probabilities:
         raise ValueError(f"Metrics {distribution_names} need predicted distributions, but the"
                          f" predictions are hard.")
-    bases = {p.base for p in parsed}
-    base_metrics = _compute_confusion_matrix_metrics(statistics.confusion_matrix,
-                                                     ignore_missing_classes)
+    bases = {base for p in parsed for base in p.required_base_metrics}
+    base_metrics = _compute_confusion_matrix_metrics(statistics.confusion_matrix)
     if bases & PROBABILISTIC_METRICS:
         base_metrics.update(_compute_probabilistic_metrics(statistics))
     if MANUAL_REVIEW_PROPORTION_METRIC in bases:
         base_metrics[MANUAL_REVIEW_PROPORTION_METRIC] = compute_manual_review_proportion(
             compute_review_curve(statistics, ignore_missing_classes), MANUAL_REVIEW_TARGET_MF1)
-    support = statistics.support
+    considered_classes = _select_considered_classes(
+        statistics.support, statistics.confusion_matrix.sum(-2), ignore_missing_classes)
 
     def select(p: ParsedMetricName) -> np.ndarray:
-        if p.min_support is None:
+        if p.base not in CLASS_SELECTION_METRICS:
             return base_metrics[p.base]
-        is_supported = support >= p.min_support
-        if p.base in SUPPORT_ONLY_METRICS:
-            return is_supported.sum(-1)
-        return _compute_masked_mean(base_metrics[MACRO_METRIC_TO_PER_CLASS[p.base]], is_supported)
+        classes = _select_classes(p, considered_classes, base_metrics)
+        if p.base in CLASS_COUNT_METRICS:
+            return classes.sum(-1)
+        aggregation, per_class = CLASS_AGGREGATE_METRICS[p.base]
+        return _aggregate_over_classes(base_metrics[per_class], classes, aggregation)
 
     return {p.name: select(p) for p in parsed}
 
@@ -519,7 +583,7 @@ def compute_multi_attribute_metrics(
     Args:
         attribute_to_statistics: Statistics of each attribute, all with the same batch
             dimensions `...`.
-        metric_names: `[a]<base>[_suppN]` names.
+        metric_names: Metric names (`metric_names.parse_metric_name`).
 
     Returns:
         Arrays of shape `...`. An attribute average is the mean over the attributes where the

@@ -123,11 +123,9 @@ def to_average_table(long_table: pd.DataFrame, with_intervals: bool = False) -> 
 
 
 def to_class_table(class_metrics: ClassMetrics) -> pd.DataFrame:
-    """Class rows (indexed by iRAP code) with the class value, support and each metric."""
-    return pd.DataFrame(
-        {"value": class_metrics.values, "support": class_metrics.support,
-         **class_metrics.metrics},
-        index=pd.Index(class_metrics.irap_codes, name="irap_code"))
+    """Class rows (indexed by iRAP code) with the class value and each metric."""
+    return pd.DataFrame({"value": class_metrics.values, **class_metrics.metrics},
+                        index=pd.Index(class_metrics.irap_codes, name="irap_code"))
 
 
 def to_method_average_table(
@@ -233,7 +231,7 @@ def to_json_dict(result: EvaluationResult) -> dict[str, T.Any]:
 
     Undefined values (NaN, e.g. the MCC of an attribute with one class) are None."""
     evaluation_set = result.evaluation_set
-    attr_to_class_metrics = compute_class_metrics(result, ["P", "R", "F1"])
+    attr_to_class_metrics = compute_class_metrics(result, ["supp", "P", "R", "F1"])
     attr_to_review_curve = (compute_review_curves(result) if result.output_kind == "probs"
                             else dict.fromkeys(result.attributes))
 
@@ -242,7 +240,7 @@ def to_json_dict(result: EvaluationResult) -> dict[str, T.Any]:
         review_curve = attr_to_review_curve[attr]
         return {"irap_codes": list(class_metrics.irap_codes),
                 "values": list(class_metrics.values),
-                "support": class_metrics.support.tolist(),
+                "support": class_metrics.metrics["supp"].tolist(),
                 "precision": class_metrics.metrics["P"].tolist(),
                 "recall": class_metrics.metrics["R"].tolist(),
                 "f1": class_metrics.metrics["F1"].tolist(),

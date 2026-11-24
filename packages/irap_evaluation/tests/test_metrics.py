@@ -51,6 +51,61 @@ def test_support_restricted_metrics():
     assert np.isnan(metrics["mF1_supp9"])
 
 
+#: Recall [3/4, 3/6, 0, 0], precision [3/5, 3/4, 0, 0] and support [4, 6, 0, 0]. Class 2 is
+#: predicted but never labeled, and class 3 is neither labeled nor predicted.
+_CONFUSION_MATRIX_WITH_UNLABELED_CLASSES = np.array(
+    [[3, 1, 0, 0], [2, 3, 1, 0], [0, 0, 0, 0], [0, 0, 0, 0]])
+
+
+def _compute_statistics_with_unlabeled_class():
+    """Computes statistics of 3 classes with the class NLL [ln(2) / 2, -ln(0.75), NaN]."""
+    targets = np.array([0, 0, 1])
+    probs = np.array([[0.5, 0.5, 0], [1.0, 0.0, 0], [0.25, 0.75, 0]])
+    return compute_classification_statistics(targets, probs.argmax(1), 3, probs=probs)
+
+
+def test_minimum_and_maximum_over_classes():
+    # The recall of class 2 counts as 0 unless the support threshold leaves it out.
+    metrics = compute_classification_metrics(
+        ClassificationStatistics(_CONFUSION_MATRIX_WITH_UNLABELED_CLASSES),
+        ["R", "minR", "maxR", "minR_supp1", "minR_supp5", "maxR_supp5", "minR_supp7"])
+    np.testing.assert_allclose(metrics["R"], [3 / 4, 3 / 6, 0, 0])
+    assert metrics["minR"] == 0
+    assert metrics["maxR"] == pytest.approx(3 / 4)
+    assert metrics["minR_supp1"] == pytest.approx(3 / 6)
+    assert metrics["minR_supp5"] == metrics["maxR_supp5"] == pytest.approx(3 / 6)
+    assert np.isnan(metrics["minR_supp7"])
+
+
+def test_class_conditions():
+    confusion_matrix = _CONFUSION_MATRIX_WITH_UNLABELED_CLASSES
+    names = ["nc", "nc_{R>0}", "nc_{R=0}", "nc_supp1_{R=0}", "nc_{supp<5}", "mR_{supp<5}",
+             "minR_supp1_{P>0.5}", "minR_{supp>=5}"]
+    metrics = compute_classification_metrics(ClassificationStatistics(confusion_matrix), names)
+    assert [metrics[n] for n in names[:5]] == [3, 2, 1, 0, 2]  # Class 3 is never counted.
+    assert metrics["minR_{supp>=5}"] == pytest.approx(3 / 6)  # As minR_supp5.
+    assert metrics["mR_{supp<5}"] == pytest.approx((3 / 4 + 0) / 2)
+    assert metrics["minR_supp1_{P>0.5}"] == pytest.approx(3 / 6)
+    assert compute_classification_metrics(ClassificationStatistics(confusion_matrix), ["nc"],
+                                          ignore_missing_classes=False)["nc"] == 4
+
+
+def test_class_conditions_on_distribution_metrics_select_labeled_classes():
+    metrics = compute_classification_metrics(
+        _compute_statistics_with_unlabeled_class(),
+        ["nc_{cNLL<0.35}", "nc_{cNLL<0.3}", "mF1_{cNLL<0.3}"])
+    assert (metrics["nc_{cNLL<0.35}"], metrics["nc_{cNLL<0.3}"]) == (2, 1)
+    assert metrics["mF1_{cNLL<0.3}"] == pytest.approx(1)
+
+
+def test_minimum_and_maximum_of_class_nll_cover_labeled_classes():
+    metrics = compute_classification_metrics(_compute_statistics_with_unlabeled_class(),
+                                             ["cNLL", "minNLL", "maxNLL", "mNLL"])
+    assert metrics["minNLL"] == pytest.approx(-np.log(0.75))
+    assert metrics["maxNLL"] == pytest.approx(np.log(2) / 2)
+    assert metrics["mNLL"] == pytest.approx(np.nanmean(metrics["cNLL"]))
+
+
 def test_statistics_ignore_unlabeled_examples_and_sum_over_groups():
     rng = np.random.default_rng(0)
     targets = rng.integers(-1, 3, size=200)
@@ -63,6 +118,7 @@ def test_statistics_ignore_unlabeled_examples_and_sum_over_groups():
     np.testing.assert_array_equal(summed.confusion_matrix, whole.confusion_matrix)
     np.testing.assert_allclose(summed.nll_sums, whole.nll_sums)
     np.testing.assert_array_equal(summed.confidence_histogram, whole.confidence_histogram)
+    np.testing.assert_allclose(summed.calibration_gap_sums, whole.calibration_gap_sums)
     assert whole.confusion_matrix.sum() == (targets != IGNORE_LABEL_INDEX).sum()
     # Every labeled example is a correct or a missed example of its class.
     np.testing.assert_array_equal(
@@ -98,9 +154,30 @@ def test_probabilistic_metrics():
     assert metrics["Brier"] == pytest.approx(np.mean([0.5, 0, 2 * 0.25 ** 2]))
 
 
+def test_expected_calibration_error_by_hand():
+    # Bins of width 1/15: 0.5 and 0.52 share (7/15, 8/15], 0.9 is in (13/15, 14/15], and 1 in
+    # (14/15, 1]. The first bin has one correct prediction of two, the second none of one.
+    statistics = _compute_statistics_of_confidences([0, 1, 0, 1], [0, 0, 1, 1],
+                                                    [0.5, 0.52, 0.9, 1.0])
+    ece = compute_classification_metrics(statistics, ["ECE"])["ECE"]
+    assert ece == pytest.approx((abs(1 - (0.5 + 0.52)) + abs(0 - 0.9) + abs(1 - 1)) / 4)
+
+
+def test_expected_calibration_error_of_calibrated_confidences_is_small():
+    rng = np.random.default_rng(0)
+    probs = rng.dirichlet(np.ones(4), size=20000)
+    targets = (probs.cumsum(1) > rng.random((len(probs), 1))).argmax(1)  # Drawn from probs.
+    statistics = compute_classification_statistics(targets, probs.argmax(1), 4, probs=probs)
+    assert compute_classification_metrics(statistics, ["ECE"])["ECE"] < 0.02
+    overconfident = probs ** 3 / (probs ** 3).sum(1, keepdims=True)
+    statistics = compute_classification_statistics(targets, probs.argmax(1), 4,
+                                                   probs=overconfident)
+    assert compute_classification_metrics(statistics, ["ECE"])["ECE"] > 0.1
+
+
 def test_hard_statistics_refuse_metrics_of_distributions():
     stats = compute_classification_statistics(np.array([0, 1]), np.array([0, 0]), 2)
-    for name in ["NLL", MANUAL_REVIEW_PROPORTION_METRIC]:
+    for name in ["NLL", "ECE", MANUAL_REVIEW_PROPORTION_METRIC, "nc_{cNLL>1}"]:
         with pytest.raises(ValueError, match="hard"):
             compute_classification_metrics(stats, [name])
     with pytest.raises(ValueError, match="hard"):

@@ -147,13 +147,13 @@ def test_class_metrics(metadata, reference_set, predictions):
     result = evaluate_predictions(predictions, reference_set)
     lane_width = compute_class_metrics(result)["Lane width"]
     assert lane_width.irap_codes == metadata.vocabulary.get_irap_codes("Lane width")
-    assert list(lane_width.metrics) == ["P", "R", "F1", "IoU", "cNLL", "cBrier"]
+    assert list(lane_width.metrics) == ["supp", "P", "R", "F1", "IoU", "cNLL", "cBrier"]
     statistics = sum_statistics(result.statistics["Lane width"])
-    np.testing.assert_array_equal(lane_width.support, statistics.support)
+    np.testing.assert_array_equal(lane_width.metrics["supp"], statistics.support)
     np.testing.assert_allclose(lane_width.metrics["F1"],
                                compute_classification_metrics(statistics, ["F1"])["F1"])
     table = to_class_table(lane_width)
-    assert list(table.columns) == ["value", "support", "P", "R", "F1", "IoU", "cNLL", "cBrier"]
+    assert list(table.columns) == ["value", "supp", "P", "R", "F1", "IoU", "cNLL", "cBrier"]
     assert list(table.index) == list(lane_width.irap_codes)
     with pytest.raises(ValueError, match="Not per-class"):
         compute_class_metrics(result, ["mF1"])
