@@ -14,7 +14,6 @@ PATCH_ARCHIVES_TMP_SUBDIR = "patch_archives_tmp"
 
 RARS_SUBDIR_UNDER_RAW = "image_rars"
 ATTR_META_FILENAME = "attribute_metadata.json"
-CODING_TABLES_ZIP = "coding-tables.zip"
 CODING_TABLES_SUBDIR = "coding-tables"
 ROWS_PARQUET = "rows.parquet"
 PARSE_REPORT = "parse_report.json"
@@ -62,12 +61,8 @@ def attr_meta_path(data_dir: Path) -> Path:
     return raw_dir(data_dir) / ATTR_META_FILENAME
 
 
-def coding_tables_zip_path(data_dir: Path) -> Path:
-    return raw_dir(data_dir) / CODING_TABLES_ZIP
-
-
 def coding_tables_dir(data_dir: Path) -> Path:
-    return work_dir(data_dir) / CODING_TABLES_SUBDIR
+    return raw_dir(data_dir) / CODING_TABLES_SUBDIR
 
 
 def rows_path(data_dir: Path) -> Path:

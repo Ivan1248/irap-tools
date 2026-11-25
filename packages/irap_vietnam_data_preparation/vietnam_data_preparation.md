@@ -4,7 +4,7 @@ Version: 2026-10-07
 
 End-to-end procedure for turning the raw iRAP-Vietnam release (images on Seafile
 + iRAP coding tables – per-segment attribute annotations – in
-`coding-tables.zip`) into a dataset usable for training and evaluation through
+`coding-tables/`) into a dataset usable for training and evaluation through
 `irap_data` (`make_vietnam_data`).
 
 The goal is to mirror the **iRAP-BH** metadata layout closely enough that the
@@ -13,8 +13,8 @@ BH loader, `irap_data.IRAPDataset`, can load it without substantial changes.
 ## Decisions
 
 1. Dataset name: **`iRAP-Vietnam`** (data and metadata dir: `IRAP_Vietnam`).
-2. `coding-tables.zip` is downloaded manually from Google Drive for now;
-   automated download is out of scope.
+2. The coding tables are downloaded manually from Google Drive into
+   `_raw/coding-tables/` for now; automated download is out of scope.
 3. **Invariant: `distance[i+1] − distance[i] == 0.01 km × (seg_id[i+1] − seg_id[i])`**
    within ±2.5 m, across consecutive labeled segments of a section sorted by
    distance. Each unit of seg_id corresponds to 10 m along the road, so a 20 m
@@ -25,7 +25,7 @@ BH loader, `irap_data.IRAPDataset`, can load it without substantial changes.
    underlying coding table can be corrected. `IRAPDataset` resolves context by
    position within `road_id_to_segment_id_sequence.json`, so any well-formed
    sub-sequence is directly usable; no loader variant needed.
-4. The zip contains multiple XLS files; some have the data, some don't.
+4. `coding-tables/` contains multiple XLS files; some have the data, some don't.
    Skip files missing the required columns; one sheet per file.
 5. One section per file is expected; **warn** if a file mixes sections.
 6. On duplicate `seg_id` rows, keep the row with **the most non-empty
@@ -120,7 +120,7 @@ Module: `irap_vietnam_data_preparation/download_images.py`
 
 The share link is a required argument. The iRAP-Vietnam release contains 7 RAR archives
 (`split1.rar` … `split7.rar`, ~110 GB total) plus an `.xlsx` index and
-instructions. `coding-tables.zip` is downloaded **manually from Google
+instructions. The coding tables are downloaded **manually from Google
 Drive** (Decision 2); we don't automate that.
 
 ---
@@ -145,9 +145,9 @@ The video directory is usually the section name.
 
 ---
 
-## 4. Stage 3 – Build labels and metadata from `coding-tables.zip`
+## 4. Stage 3 – Build labels and metadata from `coding-tables/`
 
-The zip contains XLS(X?) files with one row per labeled
+The directory contains XLS(X?) files with one row per labeled
 segment. Each table has many columns; we use a fixed subset:
 
 | Source column                        | Use                                                          |
@@ -163,7 +163,7 @@ segment. Each table has many columns; we use a fixed subset:
 
 ### Step 3.1 – Collect labeled rows
 
-For each `.xls`/`.xlsx` in the unzipped `coding-tables/` directory:
+For each `.xls`/`.xlsx` in `_raw/coding-tables/` (recursively):
 
 1. Read the (single) sheet via `openpyxl` / `pandas.read_excel`.
 2. **Identify columns by header name**, not position. If any required column
@@ -171,7 +171,7 @@ For each `.xls`/`.xlsx` in the unzipped `coding-tables/` directory:
    Image Reference FPZ, Comments, or any expected attribute column), **error
    out** with a clear message naming the file and missing columns.
 3. **Skip files** whose headers don't include the labeling columns at all
-   (= files in the zip that aren't coding tables).
+   (= files in `coding-tables/` that aren't coding tables).
 4. Drop rows where any required field is missing or `Length != 0.02`.
 5. Parse `Image Reference FPZ` (e.g. `[seg. no. 1814508](...)`) → `seg_id`
    via the trailing integer in the markdown link.
@@ -326,10 +326,9 @@ All new modules go under
 
 CLI: each step takes the dataset root `<data_dir>` as its only positional
 argument, and reads and writes the paths of `layout.py` ("Directory layout"
-in [`README.md`](README.md)). The inputs are `_raw/coding-tables.zip`,
+in [`README.md`](README.md)). The inputs are `_raw/coding-tables/`,
 `_raw/attribute_metadata.json` and, from step 2 on, the images in `FRAMES/`.
-`parse_coding_tables.py` extracts the zip into `_work/coding-tables/` again
-on every run.
+The scripts read the coding tables in place, without copying them.
 
 The `Section` cell of every row is taken verbatim as the `road_id` (Step
 3.5). A mismatch with the video directory of the matched image is reported,

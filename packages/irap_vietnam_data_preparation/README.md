@@ -6,14 +6,14 @@ Scripts that turn the Vietnam panoramic images and Excel coding tables into a da
 
 - `unrar` (preferred) or `7z` on `PATH`.
 - Python packages: `pandas openpyxl xlrd pyarrow tqdm numpy`. The split editor also needs `streamlit>=1.52 plotly`, and the cross-annotator evaluation needs `scikit-learn`.
-- A dataset root directory, `<data_dir>`. Put `coding-tables.zip` (or an unzipped `coding-tables/` directory) and `attribute_metadata.json` from the [releases](https://github.com/Ivan1248/irap-tools/releases) in `<data_dir>/_raw/`.
+- A dataset root directory, `<data_dir>`. Put the `coding-tables/` directory (`coding-tables.zip` unzipped) and `attribute_metadata.json` from the [releases](https://github.com/Ivan1248/irap-tools/releases) in `<data_dir>/_raw/`.
 
 ## Directory layout
 
 ```
 <data_dir>/
   _raw/                                  # inputs
-    coding-tables.zip
+    coding-tables/                       # .xls/.xlsx files, searched recursively
     attribute_metadata.json
     image_rars/                          # step 1
   _work/                                 # intermediate files and reports, deletable

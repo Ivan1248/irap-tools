@@ -4,7 +4,7 @@ Usage:
     python parse_coding_tables.py <data_dir>
 
 Reads (under ``<data_dir>/_raw/``):
-    coding-tables.zip                # re-extracted into _work/coding-tables/
+    coding-tables/                   # .xls/.xlsx files, searched recursively
     attribute_metadata.json         # BH-compatible: attribute_to_idx +
                                      # attribute_value_to_irap_number
 
@@ -58,9 +58,7 @@ import difflib
 import json
 import math
 import re
-import shutil
 import sys
-import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -97,28 +95,6 @@ MAX_ANNOT_LOC_OFFSET_M = 5
 MISSING_ATTR_CODE = -1
 
 SEG_ID_RE = re.compile(r"seg\.?\s*no\.?\s*(\d+)", re.IGNORECASE)
-
-
-def resolve_coding_tables_dir(data_dir: Path) -> Path:
-    """Return a directory containing the coding tables.
-
-    Always removes any existing ``_work/coding-tables/`` directory and
-    re-extracts ``_raw/coding-tables.zip`` into a fresh one, then returns it.
-    """
-    unzipped = layout.coding_tables_dir(data_dir)
-    zip_path = layout.coding_tables_zip_path(data_dir)
-    if not zip_path.is_file():
-        raise FileNotFoundError(
-            f"'{zip_path}' not found."
-        )
-    if unzipped.is_dir():
-        print(f"Removing existing {unzipped}...")
-        shutil.rmtree(unzipped)
-    print(f"Unzipping {zip_path} -> {unzipped}...")
-    unzipped.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(unzipped)
-    return unzipped
 
 
 def load_attribute_metadata(path: Path) -> tuple[list[str], dict[str, set[int]]]:
@@ -782,20 +758,23 @@ def prepare_parse_inputs(data_dir: Path) -> ParseInputs:
     """Resolve attribute metadata, ignore/rename config, and the coding-table files.
 
     Loads ``attribute_metadata.json`` and the ``incompatible_attributes.json``
-    mapping, applies the ignored-attribute filter, and (re-)extracts the coding
-    tables. Raises :class:`ParseSetupError` (with a CLI exit code) if the raw
-    dir, metadata file, or any spreadsheet files are missing.
+    mapping, applies the ignored-attribute filter, and lists the coding-table
+    files. Raises :class:`ParseSetupError` (with a CLI exit code) if the raw
+    dir, metadata file, coding-tables dir, or any spreadsheet files are missing.
     """
     raw = layout.raw_dir(data_dir)
     if not raw.is_dir():
         raise ParseSetupError(
             f"{raw} not found. Expected a directory containing "
-            f"attribute_metadata.json and coding-tables[.zip].",
+            f"attribute_metadata.json and coding-tables/.",
             2,
         )
     attr_meta_path = layout.attr_meta_path(data_dir)
     if not attr_meta_path.is_file():
         raise ParseSetupError(f"{attr_meta_path} not found.", 2)
+    coding_tables_dir = layout.coding_tables_dir(data_dir)
+    if not coding_tables_dir.is_dir():
+        raise ParseSetupError(f"{coding_tables_dir} not found.", 2)
 
     attribute_names, valid_codes = load_attribute_metadata(attr_meta_path)
     ignored_attributes, name_mapping = load_incompatible_attributes(Path(__file__).parent)
@@ -811,7 +790,6 @@ def prepare_parse_inputs(data_dir: Path) -> ParseInputs:
     if name_mapping:
         print(f"Translating {len(name_mapping)} attribute name(s) to their "
               f"Vietnam table header per mapping file.")
-    coding_tables_dir = resolve_coding_tables_dir(data_dir)
     files = find_table_files(coding_tables_dir)
     if not files:
         raise ParseSetupError(

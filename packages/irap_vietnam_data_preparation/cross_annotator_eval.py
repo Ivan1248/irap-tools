@@ -4,7 +4,7 @@ Usage:
     python cross_annotator_eval.py <data_dir>
 
 Reads (under ``<data_dir>/_raw/``, exactly like parse_coding_tables.py):
-    coding-tables.zip                # re-extracted into _work/coding-tables/
+    coding-tables/                   # .xls/.xlsx files, searched recursively
     attribute_metadata.json          # attribute_to_idx + value->irap mapping
 
 Writes (into ``<data_dir>/_work/``):
