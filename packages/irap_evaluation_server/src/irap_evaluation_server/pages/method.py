@@ -254,9 +254,12 @@ class _MethodPage:
             lambda set_to_models, subset, split, attribute_sort: _make_set_score_tables_html(
                 self.worker, self.method_name, set_to_models, subset, shown_metrics,
                 ScoresScope(self.dataset, split, subset.to_query()), attribute_sort),
-            self._show_split_scores)
+            lambda shown: self._show_split_scores(shown, shown_metrics.aggregate_kinds))
 
-    def _show_split_scores(self, shown: ShownSplitScores) -> None:
+    def _show_split_scores(self, shown: ShownSplitScores, aggregate_kinds: str) -> None:
+        """Args:
+            aggregate_kinds: `ShownMetrics.aggregate_kinds` of the tables.
+        """
         worker = self.worker
         scorings = shown.scorings
         if not shown.set_to_models:
@@ -278,7 +281,8 @@ class _MethodPage:
                                   for m in shown.set_to_models[name]})
                 ui.label(format_evaluation_set_title(name, " / ".join(offsets))).classes(
                     "subsection-title")
-                ui.label(f"Averages over {shown.subset.label}").classes("muted")
+                ui.label(f"{aggregate_kinds.capitalize()} over {shown.subset.label}").classes(
+                    "muted")
                 ui.html(tables_html, sanitize=False).classes("w-full overflow-x-auto")
             num_models = max(len(m) for m in shown.set_to_models.values())
             ui.html(make_method_scores_note_html(worker.settings.confidence, num_models),

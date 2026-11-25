@@ -71,7 +71,7 @@ def _make_per_attribute_table_html(worker, dataset_contexts, evaluation_set, sho
     split_scorings = _load_split_scorings(worker, view)
     subset = AttributeSubset.from_query([], collect_scored_attributes(split_scorings.models))
     content = _compute_scores_content(
-        worker, dataset_contexts["vietnam"], ShownMetrics.from_hidden(()).average_names, view,
+        worker, dataset_contexts["vietnam"], ShownMetrics.from_choices({}), view,
         split_scorings, subset, shows_class_counts)
     return content.table.table_html
 

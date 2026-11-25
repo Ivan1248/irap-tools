@@ -204,7 +204,7 @@ def combine_method_resamples(method_name: str,
                              attributes: T.Sequence[str], metric_names: T.Collection[str],
                              seed: int) -> ie.MetricValues[np.ndarray]:
     """Computes the resampled values of a method over `attributes` from those of its models
-    (`scoring.ScoreStore.get_resamples`): their averages over the attributes
+    (`scoring.ScoreStore.get_resamples`): their aggregates over the attributes
     (`irap_evaluation.select_metric_attributes`), combined with the variation between the models
     (`irap_evaluation.combine_model_resamples`). The values are float32, like the stored ones.
 
@@ -221,7 +221,7 @@ def combine_method_resamples(method_name: str,
     """
     if unstored := [n for n in metric_names if n not in RESAMPLED_METRIC_NAMES]:
         raise ValueError(f"The resampled values of {unstored} are not stored.")
-    # The averages need their per-attribute values.
+    # The attribute aggregates need their per-attribute values.
     needed_names = ie.add_per_attribute_metric_names(list(metric_names))
     return metric_values_to_float32(ie.combine_model_resamples(
         [ie.select_metric_names(

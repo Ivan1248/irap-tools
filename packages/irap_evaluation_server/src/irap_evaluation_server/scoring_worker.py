@@ -36,7 +36,7 @@ from .scoring import (
 _logger = logging.getLogger(__name__)
 
 #: The number of resampled values of a model on an evaluation set (`ScoreStore.get_resamples`)
-#: that the worker keeps in memory, about 1.9 MB each on iRAP-Vietnam.
+#: that the worker keeps in memory, about 2.6 MB each on iRAP-Vietnam.
 NUM_CACHED_MODEL_RESAMPLES = 200
 #: The number of resampled values of a method over a subset of the attributes
 #: (`ScoringWorker.get_method_resamples`) that the worker keeps in memory, so that a page renders

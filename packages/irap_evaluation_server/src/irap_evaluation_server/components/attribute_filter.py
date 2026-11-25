@@ -1,4 +1,4 @@
-"""The attribute filter: which of the scored attributes the averages of a page cover.
+"""The attribute filter: which of the scored attributes the averages and totals of a page cover.
 
 The subset is in the URL as repeated `attribute` query parameters (`routes.ATTRIBUTE_PARAMETER`),
 and no parameter means all attributes.
@@ -23,7 +23,7 @@ class AttributeSubset:
     """
     Attributes:
         options: The scored attributes.
-        selected: The attributes that the averages cover, in the order of `options`.
+        selected: The attributes that the averages and totals cover, in the order of `options`.
         ignored: Attributes of the URL that are not options, e.g. of another dataset.
     """
 

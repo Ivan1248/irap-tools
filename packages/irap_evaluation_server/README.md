@@ -4,7 +4,7 @@ A web app that stores model predictions, scores them, and compares, analyses and
 
 | Page | Path | Content |
 |---|---|---|
-| Scores | `/scores` (start page) | The methods of a dataset split, ranked by an attribute average or by a per-attribute metric, with intervals and differences from a reference method. |
+| Scores | `/scores` (start page) | The methods of a dataset split, ranked by an attribute average or total or by a per-attribute metric, with intervals and differences from a reference method. |
 | Models | `/models` | The models of each dataset by method, with their prediction files, a filter, the upload form and the [ensemble](#ensembles) form. |
 | Model | `/models/<id>` | A model's prediction files, scores and coding-table export, and its actions for writers. |
 | Method | `/methods?dataset=<dataset>&method=<method>` | A method's models, the scores of their mean and of each model, its display name and description, and the actions of its models. Method names in the tables link to it. |
@@ -12,7 +12,7 @@ A web app that stores model predictions, scores them, and compares, analyses and
 | Methodology | `/methodology` | How prediction files are scored and how to read the score tables. The notes below the tables link to its sections. |
 | Action log | `/actions` | All changes, with the name of the user. Writers only. |
 | Accounts | `/accounts` | The accounts and their permissions. Admins only, in the Admin menu. |
-| Shown metrics | `/shown-metrics` | The attribute averages that the pages show. Admins only, in the Admin menu. |
+| Shown metrics | `/shown-metrics` | The attribute averages and totals that the pages show. Admins only, in the Admin menu. |
 
 Anyone who can open the app can view it and download prediction files, scores and coding tables. Changes need a signed-in [account](#accounts) with write permission.
 
@@ -60,7 +60,7 @@ The data directory holds:
 - `uploads/`: uploaded files that are not stored yet, removed at start, and at the start of another upload if they are older than 24 h,
 - `vendor/`: the map libraries and MathJax,
 - `accounts.sqlite3`: the [accounts](#accounts),
-- `display_settings.sqlite3`: the [hidden metrics](#hidden-metrics),
+- `display_settings.sqlite3`: the [shown metrics](#shown-metrics),
 - `label_reviews.sqlite3`: the [label reviews](#label-reviews),
 - `nicegui_storage/` and `storage_secret.txt`: NiceGUI's per-browser storage, e.g. of the signed-in account, and the key of its session cookie. Deleting the key signs out all users.
 
@@ -76,7 +76,7 @@ Users register and sign in with the links in the top bar. Each account has one p
 |---|---|
 | view | View and download, like visitors without an account. |
 | write | Also upload, replace and delete prediction files, delete models and methods, edit descriptions and method display names, create ensembles, review labels, and see the action log. |
-| admin | Also change the permissions of accounts and remove them on the Accounts page, choose the [shown metrics](#hidden-metrics), and see the per-class scores of [protected splits](#protected-splits). |
+| admin | Also change the permissions of accounts and remove them on the Accounts page, choose the [shown metrics](#shown-metrics), and see the per-class scores of [protected splits](#protected-splits). |
 
 The first account to register is an admin, and later accounts get view permission. The app refuses to remove the last admin or to take away its admin permission.
 
@@ -214,9 +214,9 @@ To keep a copy, download the prediction files of a model, e.g. an ensemble, as o
 
 ## Scoring
 
-A background thread scores each new prediction file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes and segments that a file does not predict count as invalid predictions (`--missing-attribute-policy invalid`, `--missing-segment-policy invalid`), so all models are scored on the same attributes and segments.
+A background thread scores each new prediction file on its evaluation sets, with the defaults of `irap-eval evaluate` and 1000 bootstrap resamples (`scoring.ScoringSettings`). Attributes and segments that a file does not predict count as invalid predictions (`--missing-attribute-policy invalid`, `--missing-segment-policy invalid`), so all models are scored on the same attributes and segments. Besides the default metrics of `irap-eval evaluate`, it scores `amF1_supp1`, `amF1_supp100`, `totnc_{R>0}` (the total over attributes of the number of classes with a recall above 0), `aminR` and, for probabilistic predictions, `aECE` (`scoring.ADDED_AGGREGATE_METRIC_NAMES`), which the pages hide by default ([shown metrics](#shown-metrics)).
 
-`scores.sqlite3` stores the attribute averages and per-attribute values, and their values in each bootstrap resample of road sequences (`irap_evaluation.resample_model_metrics`), as float32: about 1.9 MB per file and evaluation set on Vietnam. All files on an evaluation set share the resamples. So the pages compute means over models, intervals and paired comparisons of methods from the stored values, also over any subset of attributes, as `irap-eval evaluate` and `irap-eval compare` compute them (see [confidence intervals](../irap_evaluation/docs/evaluation.md#confidence-intervals)).
+`scores.sqlite3` stores the attribute averages and totals and their per-attribute values, and their values in each bootstrap resample of road sequences (`irap_evaluation.resample_model_metrics`), as float32: about 2.6 MB per file and evaluation set on Vietnam (18 aggregates and their values of 35 attributes, 1000 resamples). All files on an evaluation set share the resamples. So the pages compute means over models, intervals and paired comparisons of methods from the stored values, also over any subset of attributes, as `irap-eval evaluate` and `irap-eval compare` compute them (see [confidence intervals](../irap_evaluation/docs/evaluation.md#confidence-intervals)).
 
 Resampling takes about 1.1 s per file and evaluation set on Vietnam val and 1.5 s on train. Most of it is for the [manual review proportion](../irap_evaluation/docs/evaluation.md#manual-review-proportion), whose statistics also take about 80 MB of memory while a train file is scored.
 
@@ -236,21 +236,22 @@ The Scores page shows the means over each method's models, with their bootstrap 
 - **Sorting:** in the per-attribute view, a click on the header of a method or a label count, e.g. on the arrow below it, sorts the attributes by that column: worst first for a method, smallest first for a label count, and reversed after a second click. A click on Attribute restores the order. Hidden label counts cannot be sorted by, since the order would reveal them.
 - **Method filter:** a case-insensitive regular expression that matches any part of the name, e.g. `foo`, or `^(foo|bar)$` for exactly these two.
 - **Compare with** adds each method's difference from a reference method, with its interval, as `irap-eval compare` computes it. It is available on the reference set and the full set, which are the same for all files of a split. See [comparing methods](../irap_evaluation/docs/evaluation.md#comparing-methods) for how to read the differences.
-- **Attribute filter**, here and on the Method and Model pages, chooses the attributes that the averages cover. The averages of a method over a new subset take about 12 ms on Vietnam (35 attributes). The pages compute them in a thread, so that a large table does not hold up the server, and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
+- **`totnc_{R>0}`**, if admins show it, is the number of (attribute, class) pairs with a recall above 0, of the classes that occur as a label or a prediction. Like the other counts, it has no better direction in `irap_evaluation`. The pages sort and highlight it highest first, since more recalled classes are better. Counts have one decimal, since the means over models and the interval bounds need not be integers.
+- **Attribute filter**, here and on the Method and Model pages, chooses the attributes that the averages and totals cover. The averages of a method over a new subset take about 12 ms on Vietnam (35 attributes). The pages compute them in a thread, so that a large table does not hold up the server, and the worker keeps them in memory (`scoring_worker.NUM_CACHED_METHOD_RESAMPLES`).
 
 The URL keeps the view, so it can be shared as a link.
 
 ### Method and Model pages
 
-A method name links to the Method page with the same split and attributes. It shows the attribute averages of the method's mean and of each of its models, which are shaded but not tested against each other, and the per-attribute metrics of the mean.
+A method name links to the Method page with the same split and attributes. It shows the attribute averages and totals of the method's mean and of each of its models, which are shaded but not tested against each other, and the per-attribute metrics of the mean.
 
 The Model page shows the scores of a file on each evaluation set. It downloads them as the JSON document of `irap-eval evaluate`, without intervals (`/api/submissions/<id>/scores/<set>.json`).
 
 Their per-attribute tables show mF1, mP, mR, MCC, the accuracy A, `MRP90` and the number of invalid predictions. A is next to `MRP90` because the manual review proportion follows the error rate 1 − A more closely than mF1. The columns sort as in the Scores page: worst first for a metric, largest first for the invalid predictions.
 
-### Hidden metrics
+### Shown metrics
 
-On the Shown metrics page, admins can hide any attribute average except the main metric, amF1. Hiding an average also hides its per-attribute metric, e.g. aBrier hides Brier. Hidden metrics are left out of the columns and the sort and View options of the Scores page, the tables of the Method and Model pages, and the metric list of the Methodology page. A link with a hidden metric (`sort` or `metric`) is refused. Files are scored as before, and the downloaded scores have all metrics, so a metric that is shown again appears at once. Open pages show a change after a reload.
+On the Shown metrics page, admins can show or hide any attribute average or total except the main metric, amF1. The default metrics of `irap-eval evaluate` are shown by default, and those that the server adds (`method_ranking.DEFAULT_HIDDEN_METRIC_NAMES`) are hidden. `display_settings.sqlite3` stores the choices of the admins, which override the defaults, also a choice equal to the default. Hiding an aggregate also hides its per-attribute metric, e.g. aBrier hides Brier. Hidden metrics are left out of the columns and the sort and View options of the Scores page, the tables of the Method and Model pages, and the metric list of the Methodology page. A link with a hidden metric (`sort` or `metric`) is refused. Files are scored as before, and the downloaded scores have all metrics, so a metric that is shown again appears at once. Open pages show a change after a reload.
 
 ## Analysis
 
@@ -304,7 +305,7 @@ irap_evaluation_server/
 ├─ database.py              Connections to the SQLite databases and the migrations of their schemas
 ├─ archive.py               ModelArchive: models, their prediction files, the SQLite index and action log
 ├─ accounts.py              AccountStore: the accounts, their permissions and password hashes
-├─ display_settings.py      The hidden metrics, which admins choose
+├─ display_settings.py      The shown metrics, which admins choose
 ├─ uploads.py               The checks of uploaded files and .zip archives, and their planned updates
 ├─ model_listing.py         The models of the Models and Method pages, grouped by method
 ├─ scoring.py               Scoring settings and the score cache

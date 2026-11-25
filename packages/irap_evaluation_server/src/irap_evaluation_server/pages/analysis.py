@@ -305,7 +305,7 @@ def _get_ranking_average(scored_model: ScoredModel,
                          attributes: T.Sequence[str]) -> float | None:
     """Returns the average of `_RANKING_METRIC` over `attributes`, None if the model lacks it."""
     metrics = select_model_metrics(scored_model, attributes)
-    return None if metrics is None else metrics.averages.get(_RANKING_METRIC)
+    return None if metrics is None else metrics.aggregates.get(_RANKING_METRIC)
 
 
 def _make_model_label(scored_model: ScoredModel, attributes: T.Sequence[str]) -> str:

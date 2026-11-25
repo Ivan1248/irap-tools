@@ -1,6 +1,6 @@
-"""What the Scores page shows: the methods of a dataset split, ranked by a metric averaged over a
-subset of the attributes (see `scoring` for the scores), the order of table rows by their values,
-and the highlights of compared values."""
+"""What the Scores page shows: the methods of a dataset split, ranked by a metric aggregated over
+a subset of the attributes (see `scoring` for the scores), the order of table rows by their
+values, and the highlights of compared values."""
 
 import dataclasses as dc
 import math
@@ -15,53 +15,90 @@ from .method_scores import (
     compute_method_scores,
     group_scored_models_by_method,
 )
-from .scoring import AVERAGE_METRIC_NAMES
+from .scoring import ADDED_AGGREGATE_METRIC_NAMES, AGGREGATE_METRIC_NAMES
 
 K = T.TypeVar("K", bound=T.Hashable)
 
-#: The columns of the method table, of which admins can hide some (`ShownMetrics`).
-RANKING_METRIC_NAMES = AVERAGE_METRIC_NAMES
+#: The columns of the method table, attribute aggregates with distinct per-attribute metrics, of
+#: which admins can hide some (`ShownMetrics`).
+RANKING_METRIC_NAMES = AGGREGATE_METRIC_NAMES
 DEFAULT_SORT_METRIC = ie.get_attribute_average_name(ie.IRAP_MAIN_METRIC)
 #: The metrics that admins can hide: all but the main one, which is the default sort.
 HIDEABLE_METRIC_NAMES = tuple(n for n in RANKING_METRIC_NAMES if n != DEFAULT_SORT_METRIC)
+#: The metrics that are hidden unless admins show them: those that the server scores beyond the
+#: defaults of irap_evaluation, so that the pages show the same metrics as before they were added.
+DEFAULT_HIDDEN_METRIC_NAMES = ADDED_AGGREGATE_METRIC_NAMES
 #: The metrics of the tables of each attribute's scores (`ShownMetrics.attribute_table_names`).
 #: The accuracy is next to the manual review proportion, which is read against the error rate.
 ATTRIBUTE_TABLE_METRIC_NAMES = (*ie.IRAP_ATTRIBUTE_METRIC_NAMES, "A",
                                 ie.MANUAL_REVIEW_PROPORTION_METRIC)
 
 
+def is_shown_by_default(metric_name: str) -> bool:
+    """Returns whether the pages show a metric of `RANKING_METRIC_NAMES` unless admins choose
+    otherwise (`DEFAULT_HIDDEN_METRIC_NAMES`)."""
+    return metric_name not in DEFAULT_HIDDEN_METRIC_NAMES
+
+
 @dc.dataclass(frozen=True)
 class ShownMetrics:
-    """The metrics that the pages show, those of `RANKING_METRIC_NAMES` that admins have not
-    hidden (`display_settings.DisplaySettingsStore`). A hidden attribute average hides its
-    per-attribute metric too, e.g. aBrier hides Brier.
+    """The metrics that the pages show, those of `RANKING_METRIC_NAMES` that are shown by default
+    (`is_shown_by_default`) or by the choice of admins (`display_settings.DisplaySettingsStore`).
+    A hidden attribute aggregate hides its per-attribute metric too, e.g. aBrier hides Brier.
 
     Attributes:
-        average_names: The shown attribute averages, in the order of `RANKING_METRIC_NAMES`.
+        aggregate_names: The shown attribute aggregates, in the order of
+            `RANKING_METRIC_NAMES`.
     """
 
-    average_names: tuple[str, ...]
+    aggregate_names: tuple[str, ...]
 
     @classmethod
-    def from_hidden(cls, hidden: T.Collection[str]) -> T.Self:
+    def from_choices(cls, metric_to_is_shown: T.Mapping[str, bool]) -> T.Self:
         """Args:
-            hidden: The hidden attribute averages. Those that are not in `HIDEABLE_METRIC_NAMES`,
-                e.g. stored before a library update, are shown.
+            metric_to_is_shown: Metric -> whether admins chose to show it, which overrides its
+                default. The choices of metrics that are not in `HIDEABLE_METRIC_NAMES`, e.g.
+                stored before a library update, are ignored.
         """
         return cls(tuple(n for n in RANKING_METRIC_NAMES
-                         if n not in hidden or n not in HIDEABLE_METRIC_NAMES))
+                         if n not in HIDEABLE_METRIC_NAMES
+                         or metric_to_is_shown.get(n, is_shown_by_default(n))))
+
+    @property
+    def has_totals(self) -> bool:
+        """Whether a total over attributes is shown, e.g. totnc_{R>0}."""
+        return any(ie.parse_metric_name(n).attribute_aggregation == "tot"
+                   for n in self.aggregate_names)
+
+    @property
+    def aggregate_kinds(self) -> str:
+        """Names the kinds of the shown aggregates for page texts: 'averages', or 'averages and
+        totals' if a total over attributes is shown."""
+        return "averages and totals" if self.has_totals else "averages"
 
     @property
     def per_attribute_names(self) -> tuple[str, ...]:
-        """The per-attribute metrics of the shown averages, e.g. mF1 of amF1, for the
+        """The per-attribute metrics of the shown aggregates, e.g. mF1 of amF1, for the
         per-attribute view."""
-        return tuple(ie.parse_metric_name(n).name for n in self.average_names)
+        return tuple(ie.parse_metric_name(n).name for n in self.aggregate_names)
+
+    def get_aggregate_name(self, per_attribute_name: str) -> str:
+        """Returns the shown attribute aggregate of a shown per-attribute metric, e.g. amF1 for mF1
+        and totnc_{R>0} for nc_{R>0}.
+
+        Raises:
+            ValueError: If the metric is not in `per_attribute_names`.
+        """
+        if per_attribute_name not in (names := self.per_attribute_names):
+            raise ValueError(f"No shown attribute aggregate of {per_attribute_name!r}.")
+        return self.aggregate_names[names.index(per_attribute_name)]
 
     @property
     def attribute_table_names(self) -> tuple[str, ...]:
         """The metrics of `ATTRIBUTE_TABLE_METRIC_NAMES` whose averages are shown, e.g. for the
         tables of the metrics of each attribute."""
-        return tuple(n for n in ATTRIBUTE_TABLE_METRIC_NAMES if n in self.per_attribute_names)
+        return tuple(n for n in ATTRIBUTE_TABLE_METRIC_NAMES
+                     if ie.get_attribute_average_name(n) in self.aggregate_names)
 
 
 #: The level of the one-sided test of whether a value is worse than the best
@@ -154,13 +191,15 @@ def _get_value_sort_key(value: float | None, is_descending: bool) -> tuple[bool,
 def _get_sort_key(metrics: ie.MetricValues[float] | None, metric: str,
                   name: str) -> tuple[bool, float, str]:
     """Returns the sort key of `sort_method_scores` and `sort_scored_models`."""
-    value = None if metrics is None else metrics.averages.get(metric)
+    value = None if metrics is None else metrics.aggregates.get(metric)
     return (*_get_value_sort_key(value, is_descending=not ie.is_lower_better(metric)), name)
 
 
 def sort_method_scores(rows: T.Iterable[MethodScores], metric: str) -> list[MethodScores]:
-    """Sorts methods best first by the attribute average `metric` (see
-    `irap_evaluation.is_lower_better`).
+    """Sorts methods best first by the attribute aggregate `metric` (see
+    `irap_evaluation.is_lower_better`). A count has no better direction there, so it is sorted
+    highest first, and `compute_highlights` takes its highest value as the best. This suits the
+    count of `RANKING_METRIC_NAMES`, totnc_{R>0}, the number of classes that are recalled.
 
     Rows without a value (an error, a metric that the method lacks, or NaN) are last. Ties are
     ordered by shown method name.
@@ -180,7 +219,7 @@ def select_model_metrics(model: ScoredModel,
 
 def sort_scored_models(models: T.Iterable[ScoredModel], metric: str,
                        attributes: T.Sequence[str]) -> list[ScoredModel]:
-    """Sorts models best first by the attribute average `metric` over `attributes`
+    """Sorts models best first by the attribute aggregate `metric` over `attributes`
     (`select_model_metrics`), as `sort_method_scores` sorts methods. Ties are ordered by shown
     model label."""
     return sorted(models, key=lambda m: _get_sort_key(select_model_metrics(m, attributes),

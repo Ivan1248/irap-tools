@@ -45,14 +45,27 @@ _logger = logging.getLogger(__name__)
 #: 'error': an unexpected error, e.g. a missing file. It is scored again at the next start.
 ScoringStatus = T.Literal["scored", "failed", "error"]
 
-#: The attribute averages that are scored (`irap_evaluation.get_default_metric_names`), amF1
-#: first. Hard predictions lack those of predicted distributions.
-AVERAGE_METRIC_NAMES = tuple(n for n in ie.get_default_metric_names("probs")
-                             if ie.parse_metric_name(n).is_averaged)
-#: The metrics whose resampled values are stored (`resample_result`): `AVERAGE_METRIC_NAMES` and
-#: their per-attribute values, from which the averages over a subset of the attributes are
+#: The attribute aggregates that are scored in addition to the defaults of irap_evaluation
+#: (`irap_evaluation.get_default_metric_names`), e.g. for result tables.
+ADDED_AGGREGATE_METRIC_NAMES = ("amF1_supp1", "amF1_supp100", "totnc_{R>0}", "aminR", "aECE")
+
+
+def get_scored_metric_names(output_kind: ie.OutputKind) -> tuple[str, ...]:
+    """Returns the metrics that are scored for predictions of an output kind: the defaults of
+    irap_evaluation and those of `ADDED_AGGREGATE_METRIC_NAMES` that the kind has, with the
+    per-attribute value of each aggregate."""
+    added = [n for n in ADDED_AGGREGATE_METRIC_NAMES if ie.can_compute_metric(n, output_kind)]
+    return ie.add_per_attribute_metric_names((*ie.get_default_metric_names(output_kind), *added))
+
+
+#: The attribute aggregates that are scored (`get_scored_metric_names`), amF1 first. Hard
+#: predictions lack those of predicted distributions.
+AGGREGATE_METRIC_NAMES = tuple(n for n in get_scored_metric_names("probs")
+                               if ie.parse_metric_name(n).is_attribute_aggregate)
+#: The metrics whose resampled values are stored (`resample_result`): `AGGREGATE_METRIC_NAMES`
+#: and their per-attribute values, from which the aggregates over a subset of the attributes are
 #: computed.
-RESAMPLED_METRIC_NAMES = ie.add_per_attribute_metric_names(AVERAGE_METRIC_NAMES)
+RESAMPLED_METRIC_NAMES = ie.add_per_attribute_metric_names(AGGREGATE_METRIC_NAMES)
 
 #: The file of the score cache in the data directory, apart from the archive, so that a migration
 #: of the archive does not copy it to its backup.
@@ -60,7 +73,7 @@ DATABASE_FILE_NAME = "scores.sqlite3"
 #: The version of the tables of the score cache (`_SCHEMA`, `PRAGMA user_version`). A cache of
 #: another version, e.g. of an older server, is created again, and the files are scored again,
 #: since the cache is computed from the files (`ScoreStore`).
-SCORE_CACHE_VERSION = 3
+SCORE_CACHE_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE submission_scorings (
@@ -104,9 +117,10 @@ def compute_json_sha256(value: T.Any) -> str:
 @dc.dataclass(frozen=True)
 class ScoringSettings:
     """How the server scores submissions and computes intervals: the defaults of
-    `irap-eval evaluate`, but with 1000 bootstrap resamples, and with the attribute predictions of
-    missing attributes and missing segments counted as invalid, so that all models are scored on
-    the same attributes and segments, also files of an older metadata build."""
+    `irap-eval evaluate`, but with more metrics (`get_scored_metric_names`), with 1000 bootstrap
+    resamples, and with the attribute predictions of missing attributes and missing segments
+    counted as invalid, so that all models are scored on the same attributes and segments, also
+    files of an older metadata build."""
 
     attribute_selection: ie.AttributeSelection = "canonical"
     null_policy: ie.NullPolicy = "first_class"
@@ -119,13 +133,13 @@ class ScoringSettings:
     @functools.cached_property
     def fingerprint(self) -> str:
         """A SHA-256 of the settings, of what they select from the libraries, e.g. the canonical
-        attributes and the default metrics, and of the output of the scoring code
+        attributes and the scored metrics, and of the output of the scoring code
         (`compute_scoring_code_fingerprint`), so that a library update that changes them makes
         stored scorings out of date."""
         return compute_json_sha256({
             **dc.asdict(self),
             "canonical_attributes": list(get_attrs_to_include()),
-            "metric_names": {kind: list(ie.get_default_metric_names(kind))
+            "metric_names": {kind: list(get_scored_metric_names(kind))
                              for kind in T.get_args(ie.OutputKind)},
             "scoring_code": compute_scoring_code_fingerprint(self)})
 
@@ -140,11 +154,13 @@ def select_scored_attributes(evaluation_set: ie.EvaluationSet,
 
 def score_predictions(predictions: ie.Predictions, evaluation_set: ie.EvaluationSet,
                       settings: ScoringSettings) -> ie.EvaluationResult:
+    """Scores predictions on the metrics of their output kind (`get_scored_metric_names`)."""
     return ie.evaluate_predictions(
         predictions, evaluation_set, attributes=select_scored_attributes(evaluation_set, settings),
         null_policy=settings.null_policy,
         missing_attribute_policy=settings.missing_attribute_policy,
-        missing_segment_policy=settings.missing_segment_policy)
+        missing_segment_policy=settings.missing_segment_policy,
+        metric_names=get_scored_metric_names(predictions.output_kind))
 
 
 def resample_result(result: ie.EvaluationResult,
@@ -248,8 +264,8 @@ class EvaluationSetScores:
             (`irap_evaluation.EvaluationSet`).
         evaluation_set_fingerprint: See `irap_evaluation.EvaluationSet.fingerprint`.
         attributes: The scored attributes, in the order of the result.
-        metrics: The default metrics (`irap_evaluation.get_default_metric_names`), which
-            include the per-attribute value of each average.
+        metrics: The scored metrics (`get_scored_metric_names`), which include the per-attribute
+            value of each attribute aggregate.
         num_invalid: Attribute -> the number of labeled segments with an invalid prediction,
             including those of missing attributes.
         missing_attributes: See `irap_evaluation.EvaluationResult.missing_attributes`.
@@ -333,13 +349,13 @@ def metric_values_to_json(values: ie.MetricValues[float]) -> str:
 def metric_values_from_json(text: str) -> ie.MetricValues[float]:
     """Decodes the JSON of `metric_values_to_json`."""
     values = json.loads(text)
-    return ie.MetricValues(averages=values["averages"], per_attribute=values["per_attribute"])
+    return ie.MetricValues(aggregates=values["aggregates"], per_attribute=values["per_attribute"])
 
 
 def resamples_to_bytes(resamples: ie.MetricValues[np.ndarray]) -> bytes:
     """Encodes resampled values (`resample_result`) as a line of JSON with the metric names and
     attributes, followed by the (K, B) little-endian float32 values in their order."""
-    names = {"averages": list(resamples.averages),
+    names = {"aggregates": list(resamples.aggregates),
              "per_attribute": {n: list(a) for n, a in resamples.per_attribute.items()}}
     return (json.dumps(names).encode() + b"\n"
             + np.stack(list(resamples.iterate_values())).astype("<f4").tobytes())
@@ -349,10 +365,10 @@ def resamples_from_bytes(data: bytes) -> ie.MetricValues[np.ndarray]:
     """Decodes `resamples_to_bytes` to read-only float32 arrays."""
     header, values_data = data.split(b"\n", 1)
     names = json.loads(header)
-    num_values = len(names["averages"]) + sum(len(a) for a in names["per_attribute"].values())
+    num_values = len(names["aggregates"]) + sum(len(a) for a in names["per_attribute"].values())
     values = iter(np.frombuffer(values_data, dtype="<f4").reshape(num_values, -1))
     return ie.MetricValues(
-        averages={n: next(values) for n in names["averages"]},
+        aggregates={n: next(values) for n in names["aggregates"]},
         per_attribute={n: {a: next(values) for a in attributes}
                        for n, attributes in names["per_attribute"].items()})
 

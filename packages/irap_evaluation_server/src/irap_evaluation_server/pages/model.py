@@ -372,9 +372,14 @@ class _ModelPage:
                 self.model_id, split, attributes, attribute_sort),
             lambda set_to_models, subset, _, attribute_sort: _make_set_score_tables_html(
                 self.worker, set_to_models, subset, shown_metrics, attribute_sort),
-            lambda shown: self._show_submission_scores(context, shown)))
+            lambda shown: self._show_submission_scores(context, shown,
+                                                       shown_metrics.aggregate_kinds)))
 
-    def _show_submission_scores(self, context: DatasetContext, shown: ShownSplitScores) -> None:
+    def _show_submission_scores(self, context: DatasetContext, shown: ShownSplitScores,
+                                aggregate_kinds: str) -> None:
+        """Args:
+            aggregate_kinds: `ShownMetrics.aggregate_kinds` of the tables.
+        """
         worker = self.worker
         scorings = shown.scorings
         [submission] = scorings.submissions
@@ -406,7 +411,7 @@ class _ModelPage:
                          f" its segments.").classes("muted")
             if missing := model.scores.missing_segment_ids:
                 ui.html(_make_missing_segments_html(missing), sanitize=False)
-            ui.label(f"Averages over {shown.subset.label}").classes("muted")
+            ui.label(f"{aggregate_kinds.capitalize()} over {shown.subset.label}").classes("muted")
             ui.html(shown.set_to_tables_html[name], sanitize=False).classes("w-full")
             with ui.element("div").classes("form-row"):
                 ui.link("Download the scores over all attributes (JSON)",

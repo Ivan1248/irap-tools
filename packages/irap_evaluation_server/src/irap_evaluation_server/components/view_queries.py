@@ -66,20 +66,22 @@ def parse_evaluation_set(query: T.Mapping[str, str]) -> str:
     return evaluation_set
 
 
-def make_view_options(per_attribute_names: T.Iterable[str]) -> dict[str, str]:
-    """Makes the options of the View select of a page with the attribute averages or one
+def make_view_options(per_attribute_names: T.Iterable[str], aggregate_kinds: str) -> dict[str, str]:
+    """Makes the options of the View select of a page with the attribute aggregates or one
     per-attribute metric (the `metric` parameter, `parse_per_attribute_metric`).
 
     Args:
         per_attribute_names: The shown per-attribute metrics
             (`method_ranking.ShownMetrics.per_attribute_names`).
+        aggregate_kinds: `method_ranking.ShownMetrics.aggregate_kinds`.
     """
-    return {"": "Attribute averages", **{m: f"Per attribute: {m}" for m in per_attribute_names}}
+    return {"": f"Attribute {aggregate_kinds}",
+            **{m: f"Per attribute: {m}" for m in per_attribute_names}}
 
 
 def parse_per_attribute_metric(query: T.Mapping[str, str],
                                per_attribute_names: T.Sequence[str]) -> str:
-    """Parses the `metric` parameter: a per-attribute metric, or '' for the attribute averages.
+    """Parses the `metric` parameter: a per-attribute metric, or '' for the attribute aggregates.
 
     Args:
         per_attribute_names: The shown per-attribute metrics

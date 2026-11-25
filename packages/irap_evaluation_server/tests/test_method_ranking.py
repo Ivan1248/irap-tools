@@ -21,6 +21,7 @@ from irap_evaluation_server.components.score_tables import (
 from irap_evaluation_server.components.view_queries import select_matching_names
 from irap_evaluation_server.label_counts import AttributeLabelCounts
 from irap_evaluation_server.method_ranking import (
+    DEFAULT_HIDDEN_METRIC_NAMES,
     DEFAULT_SORT_METRIC,
     RANKING_METRIC_NAMES,
     CellHighlight,
@@ -60,7 +61,7 @@ def make_scored_model(submission_id, attribute_to_value, method_name="m",
                       missing_attributes=(), training_splits=()):
     """Makes a scored model whose iRAP metrics of each attribute equal the given value."""
     metrics = ie.MetricValues(
-        averages={ie.get_attribute_average_name(n): math.nan
+        aggregates={ie.get_attribute_average_name(n): math.nan
                   for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES},
         per_attribute={n: dict(attribute_to_value) for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES})
     scores = EvaluationSetScores(
@@ -80,7 +81,7 @@ def make_method_scores(method_name, averages, error=None, training_splits=(), at
         scored_models=(make_scored_model(1, {"x": 0.5}, method_name,
                                          training_splits=training_splits),),
         attributes=attributes,
-        metrics=None if error else ie.MetricValues(averages=averages, per_attribute={}),
+        metrics=None if error else ie.MetricValues(aggregates=averages, per_attribute={}),
         error=error)
 
 
@@ -116,7 +117,7 @@ def test_rank_methods_means_over_models():
               make_scored_model(3, {"x": 0.5, "y": 0.1}, method_name="n")]
     rows = rank_methods(models, ["x"], "amF1")
     assert [(r.method_name, r.num_models) for r in rows] == [("n", 1), ("m", 2)]
-    assert rows[1].metrics.averages["amF1"] == pytest.approx(0.3)
+    assert rows[1].metrics.aggregates["amF1"] == pytest.approx(0.3)
     [row] = rank_methods(models[:1], ["x", "z"], "amF1")
     assert "not scored on z" in row.error
 
@@ -124,7 +125,7 @@ def test_rank_methods_means_over_models():
 def test_sort_scored_models_by_the_average_over_a_subset():
     models = [make_scored_model(1, {"x": 0.2, "y": 0.9}),
               make_scored_model(2, {"x": 0.4, "y": 0.1}), make_scored_model(3, {"x": 0.3})]
-    assert select_model_metrics(models[0], ["x", "y"]).averages["amF1"] == pytest.approx(0.55)
+    assert select_model_metrics(models[0], ["x", "y"]).aggregates["amF1"] == pytest.approx(0.55)
     assert select_model_metrics(models[2], ["x", "y"]) is None  # It is not scored on y.
     assert select_model_metrics(models[0], []) is None
     assert [m.submission.id for m in sort_scored_models(models, "amF1", ["x"])] == [2, 3, 1]
@@ -251,7 +252,7 @@ def test_method_tables_escape_names():
                                 missing_attributes=("y",))]
     rows = [*rank_methods(models, ["x", "y"], "amF1"),
             make_method_scores("<n>", {}, error="Models <differ>.", attributes=("x", "y"))]
-    resamples = ie.MetricValues(averages={"amF1": np.linspace(0.1, 0.3, 20)}, per_attribute={})
+    resamples = ie.MetricValues(aggregates={"amF1": np.linspace(0.1, 0.3, 20)}, per_attribute={})
     scope = ScoresScope("vietnam", "val", ("x",))
     table = make_method_table_html(rows, {"<m>": resamples}, 0.95, ["amF1"], "amF1", scope,
                                    "reference")
@@ -259,7 +260,7 @@ def test_method_tables_escape_names():
     assert "method=%3Cm%3E" in table  # The link to the Method page.
     assert "Models &lt;differ&gt;." in table
 
-    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "mF1", scope,
+    per_attribute = make_per_attribute_table_html(rows, {}, 0.95, "amF1", scope,
                                                   attribute_to_label_counts=None,
                                                   shows_class_counts=True)
     assert "<m>" not in per_attribute and "<n>" not in per_attribute
@@ -287,7 +288,8 @@ def test_per_attribute_table_sorts_the_attributes_by_a_column():
     def get_attribute_order(attribute_sort, metric_name="mF1", shows_class_counts=True,
                             attribute_to_label_counts=label_counts):
         table = make_per_attribute_table_html(
-            [row], {}, 0.95, metric_name, ScoresScope("vietnam", "val", ()),
+            [row], {}, 0.95, ie.get_attribute_average_name(metric_name),
+            ScoresScope("vietnam", "val", ()),
             attribute_to_label_counts, shows_class_counts, attribute_sort=attribute_sort)
         return re.findall(r"<tr><td>(\w)</td>", table)  # Without the Average row.
 
@@ -316,7 +318,7 @@ def test_model_scores_table_sorts_the_attributes_by_a_column():
     scores = compute_method_scores("m", [model], attributes)
 
     def get_attribute_order(attribute_sort):
-        tables_html = make_model_scores_html(scores, None, 0.95, ShownMetrics.from_hidden(()),
+        tables_html = make_model_scores_html(scores, None, 0.95, ShownMetrics.from_choices({}),
                                              attribute_sort)
         return re.findall(r"<tr><td>(\w)</td>", tables_html)  # Without the Average row.
 
@@ -340,7 +342,7 @@ def test_method_scores_have_the_mean_of_the_models():
 
     def make_html(method_scores):
         return make_method_scores_html(method_scores, None, seed_scores, [None, None], 0.95,
-                                       ShownMetrics.from_hidden(()), scope)
+                                       ShownMetrics.from_choices({}), scope)
 
     tables_html = make_html(compute_method_scores("m", models, attributes))
     # Invalid predictions of x, y, and their mean in the Average row.
@@ -353,15 +355,69 @@ def test_method_scores_have_the_mean_of_the_models():
 
 
 def test_shown_metrics_leave_out_the_hidden_ones():
-    assert ShownMetrics.from_hidden(()).average_names == RANKING_METRIC_NAMES
+    # By default, the metrics that the server added are hidden, so that the pages show the
+    # default metrics of irap_evaluation.
+    default = ShownMetrics.from_choices({})
+    assert default.aggregate_names == tuple(n for n in ie.get_default_metric_names("probs")
+                                            if ie.parse_metric_name(n).is_attribute_aggregate)
+    assert set(RANKING_METRIC_NAMES) - set(default.aggregate_names) == set(
+        DEFAULT_HIDDEN_METRIC_NAMES)
+    assert default.aggregate_kinds == "averages"
     # The main metric and unknown names cannot be hidden.
-    shown = ShownMetrics.from_hidden({"amP", "aBrier", DEFAULT_SORT_METRIC, "aUnknown"})
-    assert shown.average_names == tuple(n for n in RANKING_METRIC_NAMES
-                                        if n not in ("amP", "aBrier"))
+    shown = ShownMetrics.from_choices({"amP": False, "aBrier": False, DEFAULT_SORT_METRIC: False,
+                                       "aUnknown": False, "totnc_{R>0}": True, "aECE": False})
+    assert shown.aggregate_names == (*(n for n in default.aggregate_names
+                                       if n not in ("amP", "aBrier")), "totnc_{R>0}")
     assert "Brier" not in shown.per_attribute_names and "NLL" in shown.per_attribute_names
+    assert shown.get_aggregate_name("nc_{R>0}") == "totnc_{R>0}"
+    assert shown.get_aggregate_name("mF1") == "amF1"
+    with pytest.raises(ValueError, match="No shown attribute aggregate"):
+        shown.get_aggregate_name("ECE")
+    assert shown.aggregate_kinds == "averages and totals"
     assert shown.attribute_table_names == ("mF1", "mR", "MCC", "A", "MRP90")
-    assert ShownMetrics.from_hidden({"aMRP90"}).attribute_table_names == (
+    assert ShownMetrics.from_choices({"aMRP90": False}).attribute_table_names == (
         "mF1", "mP", "mR", "MCC", "A")
+    every = ShownMetrics.from_choices({n: True for n in DEFAULT_HIDDEN_METRIC_NAMES})
+    assert every.aggregate_names == RANKING_METRIC_NAMES
+
+
+def test_ranking_metrics_have_distinct_per_attribute_metrics_and_one_count():
+    # The per-attribute view selects an aggregate by its per-attribute metric.
+    per_attribute_names = [ie.parse_metric_name(n).name for n in RANKING_METRIC_NAMES]
+    assert len(set(per_attribute_names)) == len(per_attribute_names)
+    # Counts are sorted and highlighted highest first, which suits only counts of good outcomes.
+    assert [n for n in RANKING_METRIC_NAMES if ie.is_count_metric(n)] == ["totnc_{R>0}"]
+
+
+def test_tables_of_attribute_totals():
+    attributes = ["x", "y"]
+    metrics_a = ie.MetricValues(aggregates={"amF1": 0.5, "totnc_{R>0}": 5},
+                                per_attribute={"mF1": {"x": 0.5, "y": 0.5},
+                                               "nc_{R>0}": {"x": 2, "y": 3}})
+    metrics_b = dc.replace(metrics_a, per_attribute={**metrics_a.per_attribute,
+                                                     "nc_{R>0}": {"x": 1, "y": 3}})
+
+    def make_scored(submission_id, metrics):
+        scores = EvaluationSetScores(
+            evaluation_set="reference", context_offsets=(0,), in_split_offsets=(),
+            evaluation_set_fingerprint="f", attributes=tuple(attributes),
+            metrics=ie.select_metric_attributes(metrics, attributes),
+            num_invalid=dict.fromkeys(attributes, 0), missing_attributes=(),
+            missing_segment_ids=())
+        return ScoredModel(make_submission(submission_id, f"m{submission_id}", seed=1), scores)
+
+    rows = rank_methods([make_scored(1, metrics_a), make_scored(2, metrics_b)], attributes,
+                        "totnc_{R>0}")
+    # Higher is better: more classes are recalled.
+    assert [r.method_name for r in rows] == ["m1", "m2"]
+    assert rows[1].metrics.aggregates["totnc_{R>0}"] == 4
+    scope = ScoresScope("vietnam", "val", ())
+    table = make_per_attribute_table_html(rows, {}, 0.95, "totnc_{R>0}", scope,
+                                          attribute_to_label_counts=None, shows_class_counts=True)
+    assert ">Total</td>" in table and ">Average</td>" not in table
+    method_table = make_method_table_html(rows, {}, 0.95, ["amF1", "totnc_{R>0}"], "totnc_{R>0}",
+                                          scope, "reference")
+    assert "totnc_{R&gt;0} ▾" in method_table
 
 
 def test_only_models_with_distributions_have_the_manual_review_proportion(
@@ -374,11 +430,11 @@ def test_only_models_with_distributions_have_the_manual_review_proportion(
     for method_name, has_manual_review_proportion in (("probs", True), ("hard", False)):
         model = method_to_model[method_name]
         scores = compute_method_scores(method_name, [model], model.scores.attributes)
-        assert ("aMRP90" in scores.metrics.averages) == has_manual_review_proportion
+        assert ("aMRP90" in scores.metrics.aggregates) == has_manual_review_proportion
         resamples = worker.get_method_resamples(scores, MODEL_SCORES_METRIC_NAMES)
         assert ("MRP90" in resamples.per_attribute) == has_manual_review_proportion
         # The tables of a hard model have no row and no column of the manual review proportion.
-        tables_html = make_model_scores_html(scores, resamples, 0.95, ShownMetrics.from_hidden(()))
+        tables_html = make_model_scores_html(scores, resamples, 0.95, ShownMetrics.from_choices({}))
         assert ("MRP90" in tables_html) == has_manual_review_proportion
 
 

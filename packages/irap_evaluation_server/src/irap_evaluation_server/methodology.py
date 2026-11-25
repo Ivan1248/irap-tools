@@ -137,8 +137,8 @@ def _make_attributes_markdown() -> str:
 - The scored attributes are the {len(get_attrs_to_include())} canonical iRAP attributes, without
   those that have no labels in the evaluation set. A segment without a label of an attribute is
   not scored for that attribute.
-- The attribute filter selects the attributes that the attribute averages are computed over. It
-  does not change the metric values of the individual attributes.
+- The attribute filter selects the attributes that the attribute averages and totals are
+  computed over. It does not change the metric values of the individual attributes.
 - An **attribute prediction** is the prediction of one attribute for one segment. It is
   **invalid** if the file leaves it empty, e.g. since a VLM's answer names no class of the
   attribute. In the metrics computed from predicted classes, an invalid attribute prediction counts
@@ -174,10 +174,33 @@ predictions only, mF1 here is computed over all segments, with the reviewed ones
 """
 
 
-def _make_metrics_markdown(per_attribute_names: T.Collection[str]) -> str:
+def _join_words(words: T.Sequence[str]) -> str:
+    """Joins words as in a sentence, e.g. 'a, b and c'."""
+    return ", ".join(words[:-1]) + " and " + words[-1] if len(words) > 1 else "".join(words)
+
+
+def _make_metrics_markdown(shown_metrics: ShownMetrics) -> str:
+    """Makes the text of the metrics section.
+
+    Args:
+        shown_metrics: The shown attribute aggregates, whose per-attribute metrics the text
+            describes.
+    """
+    parsed = [ie.parse_metric_name(n) for n in shown_metrics.aggregate_names]
+    per_attribute_names = [p.name for p in parsed]
     descriptions = "\n".join(f"- {ie.describe_metric(n)}" for n in per_attribute_names)
     manual_review_proportion = (_make_manual_review_proportion_markdown()
                     if ie.MANUAL_REVIEW_PROPORTION_METRIC in per_attribute_names else "")
+    class_condition = (
+        " The suffix `_{…}` restricts $K$ to the classes that meet a condition, e.g. `_{R>0}` to"
+        " the classes with a recall above 0." if any(p.class_condition for p in parsed) else "")
+    total = ("\n\nAn **attribute total**, with the prefix `tot`, is the sum of a count over the"
+             " selected attributes, e.g. `totnc_{R>0}`, the number of (attribute, class) pairs"
+             " with a recall above 0."
+             if shown_metrics.has_totals else "")
+    distribution_names = _join_words([p.name for p in parsed if p.needs_distributions])
+    needs_distributions = (f" {distribution_names} need probabilistic predictions."
+                           if distribution_names else "")
     return rf"""
 A metric of an attribute is computed from all segments of the evaluation set that have a label of
 the attribute, pooled, e.g. from the attribute's confusion matrix over these segments.
@@ -188,7 +211,7 @@ the F1 of class $k$ and $K$ is the set of the attribute's classes that occur as 
 prediction in the evaluation set. (mNLL averages over the classes that occur as a label.) So a
 macro metric depends on which classes the evaluation set contains, and rare classes make it noisy.
 The suffix `_suppN`, e.g. `_supp10`, restricts $K$ to the classes with at least $N$ labeled
-segments in the evaluation set.
+segments in the evaluation set.{class_condition}
 
 The per-attribute view of the Scores page shows counts of the labels of each attribute in the
 evaluation set, which are the same for all methods:
@@ -209,8 +232,8 @@ example count and the smallest-class example count, since they reveal the class 
 An **attribute average**, with the prefix `a`, is the mean of a metric over the attributes, each
 with the same weight, e.g. $\mathrm{{amF1}} = \frac{{1}}{{|A|}} \sum_{{a \in A}} \mathrm{{mF1}}_a$,
 where $\mathrm{{mF1}}_a$ is the mF1 of attribute $a$ and $A$ is the set of the selected attributes
-for which the metric is defined. The main metric is `{DEFAULT_SORT_METRIC}`. NLL, Brier, mNLL and
-the manual review proportion need probabilistic predictions.
+for which the metric is defined. The main metric is
+`{DEFAULT_SORT_METRIC}`.{needs_distributions}{total}
 
 {descriptions}
 {manual_review_proportion}"""
@@ -401,7 +424,7 @@ def make_methodology_sections(settings: ScoringSettings, dataset_names: T.Sequen
         MethodologySection("attributes", "Attributes and invalid predictions",
                            _make_attributes_markdown()),
         MethodologySection(METRICS_SECTION, "Metrics",
-                           _make_metrics_markdown(shown_metrics.per_attribute_names)),
+                           _make_metrics_markdown(shown_metrics)),
         MethodologySection(INTERVALS_SECTION, "Confidence intervals",
                            _make_intervals_markdown(settings)),
         MethodologySection(COMPARISONS_SECTION, "Comparing methods",

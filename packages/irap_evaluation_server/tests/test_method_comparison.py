@@ -66,8 +66,9 @@ def test_comparison_equals_compare_methods(dataset_contexts, worker, method_to_m
         seed=0)
     expected_differences = to_labeled_metric_values(expected)
     for label, difference in to_labeled_metric_values(differences).items():
+        # NaN where the metric is undefined, e.g. amF1_supp100 without classes of 100 labels.
         assert difference.difference == pytest.approx(expected_differences[label].difference,
-                                                      rel=1e-12)
+                                                      rel=1e-12, nan_ok=True)
 
     def select_intervals(values):
         return ie.map_metric_values(lambda d: d.interval, values)
@@ -79,7 +80,7 @@ def test_hard_predictions_are_compared_on_the_common_metrics(worker, method_to_m
     attributes = method_to_models["a"][0].scores.attributes
     for names in [("a", "hard"), ("hard", "a")]:
         differences = _compare(worker, method_to_models, *names, attributes)
-        assert "amF1" in differences.averages and "aNLL" not in differences.averages
+        assert "amF1" in differences.aggregates and "aNLL" not in differences.aggregates
         assert "mF1" in differences.per_attribute
 
 
@@ -89,7 +90,7 @@ def test_a_method_has_no_resampled_values_of_metrics_that_it_lacks(worker, metho
     row_a, row_hard = (compute_method_scores(n, method_to_models[n], attributes)
                        for n in ("a", "hard"))
     for metric_name in ("NLL", "MRP90"):
-        names = get_per_attribute_table_metric_names(metric_name)
+        names = get_per_attribute_table_metric_names(ie.get_attribute_average_name(metric_name))
         assert worker.get_method_resamples(row_a, names).names == (
             ie.get_attribute_average_name(metric_name), metric_name)
         hard_resamples = worker.get_method_resamples(row_hard, names)

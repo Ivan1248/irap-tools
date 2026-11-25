@@ -29,11 +29,13 @@ from irap_evaluation_server.method_scores import (
     get_combination_error,
 )
 from irap_evaluation_server.scoring import (
+    ADDED_AGGREGATE_METRIC_NAMES,
     SCORE_CACHE_VERSION,
     ScoreStore,
     ScoringSettings,
     SubmissionScoring,
     compute_scoring_code_fingerprint,
+    get_scored_metric_names,
     get_unscored_reason,
     is_scoring_current,
     remove_class_scores,
@@ -66,6 +68,34 @@ def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker
     assert compatible_scores.context_offsets == (0, -1)
     assert_close(compatible_scores.metrics,
                  score_submission_again(worker, submission, model_compatible_set).metrics)
+
+
+def test_the_added_metrics_are_scored_and_resampled(archive, dataset_contexts, store, worker):
+    submissions = [
+        add_model(archive, dataset_contexts, make_model(dataset_contexts, "probs")),
+        add_model(archive, dataset_contexts, make_model(dataset_contexts, "hard", is_hard=True))]
+    method_to_model = {m.submission.model.method_name: m
+                       for m in score_and_get_models(worker, [s.id for s in submissions])}
+    for method_name, expected in [
+            ("probs", ADDED_AGGREGATE_METRIC_NAMES),
+            ("hard", ("amF1_supp1", "amF1_supp100", "totnc_{R>0}", "aminR"))]:
+        model = method_to_model[method_name]
+        metrics = model.scores.metrics
+        assert ([n for n in ADDED_AGGREGATE_METRIC_NAMES if n in metrics.aggregates]
+                == list(expected))
+        per_attribute = metrics.per_attribute["nc_{R>0}"]
+        assert metrics.aggregates["totnc_{R>0}"] == sum(per_attribute.values())
+        assert isinstance(metrics.aggregates["totnc_{R>0}"], int)
+        resamples = store.get_resamples(model.submission.id, "reference",
+                                        model.scores.evaluation_set_fingerprint)
+        for name in expected:
+            assert name in resamples.aggregates
+            assert ie.parse_metric_name(name).name in resamples.per_attribute
+    # The scored metrics of hard predictions are those of probabilistic ones without the metrics
+    # of distributions.
+    assert set(get_scored_metric_names("hard")) == {
+        n for n in get_scored_metric_names("probs")
+        if not ie.parse_metric_name(n).needs_distributions}
 
 
 def test_missing_segments_are_scored_as_invalid(archive, dataset_contexts, store, worker):
@@ -330,18 +360,20 @@ def test_store_keeps_undefined_and_infinite_values(archive, dataset_contexts, st
     score_and_get_models(worker, [submission.id])
     scoring = store.get_scoring(submission.id)
     scores = scoring.get_scores("reference")
-    metrics = dc.replace(scores.metrics, averages={**scores.metrics.averages,
-                                                   "amF1": math.nan, "aNLL": math.inf})
+    metrics = dc.replace(scores.metrics, aggregates={**scores.metrics.aggregates,
+                                                     "amF1": math.nan, "aNLL": math.inf})
     resamples = store.get_resamples(submission.id, "reference", scores.evaluation_set_fingerprint)
-    special = np.resize([math.nan, math.inf, -math.inf, 0.25], len(resamples.averages["aNLL"]))
-    resamples = dc.replace(resamples, averages={**resamples.averages, "aNLL": special})
+    special = np.resize([math.nan, math.inf, -math.inf, 0.25], len(resamples.aggregates["aNLL"]))
+    resamples = dc.replace(resamples, aggregates={**resamples.aggregates, "aNLL": special})
     store.set_scoring(
         dc.replace(scoring, evaluation_set_scores=(dc.replace(scores, metrics=metrics),)),
         {"reference": {}}, {"reference": resamples})
     new_store = ScoreStore(archive.data_dir)
-    averages = new_store.get_scoring(submission.id).get_scores("reference").metrics.averages
-    assert math.isnan(averages["amF1"]) and averages["aNLL"] == math.inf
-    assert np.isfinite(averages["aA"])
+    aggregates = new_store.get_scoring(submission.id).get_scores("reference").metrics.aggregates
+    assert math.isnan(aggregates["amF1"]) and aggregates["aNLL"] == math.inf
+    assert np.isfinite(aggregates["aA"])
+    # A total over attributes stays an int.
+    assert isinstance(aggregates["totnc_{R>0}"], int)
     stored = new_store.get_resamples(submission.id, "reference",
                                      scores.evaluation_set_fingerprint)
     np.testing.assert_equal(dc.asdict(stored), dc.asdict(resamples))

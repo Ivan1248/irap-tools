@@ -1,7 +1,9 @@
-"""What the pages show, which admins choose: the hidden metrics (`method_ranking.ShownMetrics`).
+"""What the pages show, which admins choose: the shown metrics (`method_ranking.ShownMetrics`).
 
-Hiding a metric changes only the pages, not the scoring or the downloads, so a metric that is shown
-again appears at once.
+A metric is shown or hidden by default (`method_ranking.is_shown_by_default`). The database stores
+the choices of admins, which override the defaults, so that a metric whose default changes keeps
+the choice. Hiding a metric changes only the pages, not the scoring or the downloads, so a metric
+that is shown again appears at once.
 
 The settings are in `display_settings.sqlite3` in the data directory, apart from the archive and
 the accounts.
@@ -20,20 +22,33 @@ _logger = logging.getLogger(__name__)
 DATABASE_FILE_NAME = "display_settings.sqlite3"
 #: The version of the database schema (`PRAGMA user_version`). A database of an older version is
 #: migrated (`_MIGRATIONS`).
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+
+def _replace_hidden_metrics(connection: sqlite3.Connection) -> None:
+    """Migrates version 1 to 2: replaces the table of the hidden metrics, of which all others were
+    shown, by the choices of admins, in which the hidden metrics are hidden."""
+    connection.execute("CREATE TABLE metric_choices (metric_name TEXT PRIMARY KEY,"
+                       " is_shown INTEGER NOT NULL CHECK (is_shown IN (0, 1)))")
+    connection.execute("INSERT INTO metric_choices (metric_name, is_shown)"
+                       " SELECT metric_name, 0 FROM hidden_metrics")
+    connection.execute("DROP TABLE hidden_metrics")
+
+
 #: Version v -> the migration from v to v + 1 (`database.initialize_schema`).
-_MIGRATIONS: dict[int, Migration] = {}
+_MIGRATIONS: dict[int, Migration] = {1: _replace_hidden_metrics}
 
 _SCHEMA = """
-CREATE TABLE hidden_metrics (
-    metric_name TEXT PRIMARY KEY
+CREATE TABLE metric_choices (
+    metric_name TEXT PRIMARY KEY,
+    is_shown INTEGER NOT NULL CHECK (is_shown IN (0, 1))
 );
 """
 
 
-def _read_hidden_metrics(connection: sqlite3.Connection) -> frozenset[str]:
-    return frozenset(row["metric_name"] for row in
-                     connection.execute("SELECT metric_name FROM hidden_metrics"))
+def _read_metric_choices(connection: sqlite3.Connection) -> dict[str, bool]:
+    return {row["metric_name"]: bool(row["is_shown"]) for row in
+            connection.execute("SELECT metric_name, is_shown FROM metric_choices")}
 
 
 class DisplaySettingsStore:
@@ -57,25 +72,26 @@ class DisplaySettingsStore:
         initialize_schema(self.database_path, _SCHEMA, SCHEMA_VERSION, "display settings",
                           _MIGRATIONS)
 
-    def get_hidden_metrics(self) -> frozenset[str]:
-        """Returns the hidden attribute averages. Those that are not in `HIDEABLE_METRIC_NAMES`,
-        e.g. stored before a library update, are shown (`ShownMetrics.from_hidden`)."""
+    def get_metric_choices(self) -> dict[str, bool]:
+        """Returns metric -> whether admins chose to show it, for the metrics that they chose
+        to show or hide. Those that are not in `HIDEABLE_METRIC_NAMES`, e.g. stored before a
+        library update, are ignored (`ShownMetrics.from_choices`)."""
         with connect(self.database_path) as connection:
-            return _read_hidden_metrics(connection)
+            return _read_metric_choices(connection)
 
     def get_shown_metrics(self) -> ShownMetrics:
         """Returns the metrics that the pages show."""
-        return ShownMetrics.from_hidden(self.get_hidden_metrics())
+        return ShownMetrics.from_choices(self.get_metric_choices())
 
-    def set_metric_hidden(self, metric_name: str, is_hidden: bool, actor: str) -> frozenset[str]:
-        """Hides or shows an attribute average. Changing one metric at a time keeps the changes
-        of other metrics, e.g. by another admin meanwhile.
+    def set_metric_shown(self, metric_name: str, is_shown: bool, actor: str) -> dict[str, bool]:
+        """Shows or hides an attribute aggregate, also if this is its default. Changing one metric
+        at a time keeps the changes of other metrics, e.g. by another admin meanwhile.
 
         Args:
             actor: The name of the admin who changes it.
 
         Returns:
-            The hidden attribute averages after the change.
+            The choices of the admins after the change (`get_metric_choices`).
 
         Raises:
             ValueError: If `actor` is not an admin, e.g. after another admin changed it, or the
@@ -88,19 +104,15 @@ class DisplaySettingsStore:
             # After the lock is taken, so that the check is of the permission at the write.
             if not is_admin(self.accounts.find_account(actor)):
                 raise ValueError("Only admins can change the shown metrics.")
-            if is_hidden:
-                connection.execute("INSERT OR IGNORE INTO hidden_metrics (metric_name)"
-                                   " VALUES (?)", (metric_name,))
-            else:
-                connection.execute("DELETE FROM hidden_metrics WHERE metric_name = ?",
-                                   (metric_name,))
-            hidden = _read_hidden_metrics(connection)
-        _logger.info("%s %s the metric %s.", actor, "hid" if is_hidden else "showed", metric_name)
-        return hidden
+            connection.execute("INSERT OR REPLACE INTO metric_choices (metric_name, is_shown)"
+                               " VALUES (?, ?)", (metric_name, int(is_shown)))
+            choices = _read_metric_choices(connection)
+        _logger.info("%s %s the metric %s.", actor, "showed" if is_shown else "hid", metric_name)
+        return choices
 
     def warn_about_unknown_metrics(self) -> None:
-        """Logs a warning about stored hidden metrics that are not in `HIDEABLE_METRIC_NAMES`,
-        which have no effect, e.g. at the start of the server."""
-        if unknown := sorted(self.get_hidden_metrics() - set(HIDEABLE_METRIC_NAMES)):
-            _logger.warning("The display settings %s hide the unknown metrics [%s], which are"
-                            " ignored.", self.database_path, ", ".join(unknown))
+        """Logs a warning about stored choices of metrics that are not in
+        `HIDEABLE_METRIC_NAMES`, which have no effect, e.g. at the start of the server."""
+        if unknown := sorted(set(self.get_metric_choices()) - set(HIDEABLE_METRIC_NAMES)):
+            _logger.warning("The display settings %s have choices of the unknown metrics [%s],"
+                            " which are ignored.", self.database_path, ", ".join(unknown))
