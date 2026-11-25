@@ -16,6 +16,7 @@ import irap_evaluation as ie
 
 from .archive import (
     ARCHIVE_SUFFIX,
+    MODEL_FILE_FIELDS_RULE,
     ModelArchive,
     ModelUpdate,
     NewSubmission,
@@ -148,8 +149,7 @@ def _check_same_model(new: NewSubmission, first: NewSubmission, first_member_nam
     if differing := get_differing_model_fields([new, first]):
         raise ValueError(f"It has the {describe_model_fields(new, differing)}, but"
                          f" {first_member_name} has the {describe_model_fields(first, differing)}."
-                         f" The files of a model must have the same output kind, context offsets,"
-                         f" and training and early stopping splits.")
+                         f" {MODEL_FILE_FIELDS_RULE}")
 
 
 #: The errors of reading a member of an archive that cannot be extracted, e.g. one that is

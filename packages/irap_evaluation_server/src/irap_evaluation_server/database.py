@@ -39,6 +39,13 @@ def connect(database_path: Path) -> T.Iterator[sqlite3.Connection]:
         connection.close()
 
 
+def get_database_path(connection: sqlite3.Connection) -> Path:
+    """Returns the file of the main database of a connection, e.g. for a migration that reads
+    files next to it."""
+    return Path(next(file for _, name, file in connection.execute("PRAGMA database_list")
+                     if name == "main"))
+
+
 def initialize_schema(database_path: Path, schema: str, schema_version: int,
                       database_name: str, migrations: T.Mapping[int, Migration]) -> None:
     """Creates the tables of a new database, or migrates a database of an older schema version,

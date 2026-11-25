@@ -60,7 +60,7 @@ DATABASE_FILE_NAME = "scores.sqlite3"
 #: The version of the tables of the score cache (`_SCHEMA`, `PRAGMA user_version`). A cache of
 #: another version, e.g. of an older server, is created again, and the files are scored again,
 #: since the cache is computed from the files (`ScoreStore`).
-SCORE_CACHE_VERSION = 2
+SCORE_CACHE_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE submission_scorings (
@@ -78,6 +78,7 @@ CREATE TABLE submission_scores (
         ON DELETE CASCADE,
     evaluation_set TEXT NOT NULL,
     context_offsets TEXT NOT NULL,
+    in_split_offsets TEXT NOT NULL,
     evaluation_set_fingerprint TEXT NOT NULL,
     attributes TEXT NOT NULL,
     metrics TEXT NOT NULL,
@@ -169,7 +170,8 @@ def _make_code_probe_predictions(
     header = ie.PredictionHeader(
         dataset=evaluation_set.dataset, split=evaluation_set.split,
         model=ie.ModelInfo("probe", training_splits=(), early_stopping_splits=(), seed=0),
-        context_offsets=evaluation_set.context_offsets)
+        context_offsets=evaluation_set.context_offsets,
+        in_split_offsets=evaluation_set.in_split_offsets)
     attribute_to_irap_codes = evaluation_set.vocabulary.attribute_to_irap_codes
     probabilistic = ie.Predictions.from_logits(
         header, attribute_to_irap_codes, evaluation_set.segment_ids,
@@ -202,7 +204,8 @@ def compute_scoring_code_fingerprint(settings: ScoringSettings) -> str:
     class_indices[attributes[1]][::5] = IGNORE_LABEL_INDEX
     evaluation_set = ie.EvaluationSet(
         dataset="vietnam", split="val", name=ie.REFERENCE_SET_NAME, context_offsets=(0,),
-        vocabulary=vocabulary, segment_ids=segment_ids, class_indices=class_indices,
+        in_split_offsets=(), vocabulary=vocabulary, segment_ids=segment_ids,
+        class_indices=class_indices,
         segment_sequence_ids=tuple(f"sequence{i // sequence_length}"
                                    for i in range(len(segment_ids))))
     probe_settings = dc.replace(settings, num_resamples=20)
@@ -221,15 +224,16 @@ def _combine_evaluation_set_fingerprints(evaluation_sets: T.Iterable[ie.Evaluati
 
 
 def get_evaluation_sets_fingerprint(context: DatasetContext, split: str,
-                                    context_offsets: T.Sequence[int] | None) -> str:
+                                    context_offsets: T.Sequence[int] | None,
+                                    in_split_offsets: T.Sequence[int]) -> str:
     """Computes a SHA-256 of the fingerprints of the evaluation sets that a submission can be
     scored on (see `DatasetContext.get_submission_evaluation_sets`).
 
     Raises:
-        ValueError: If the dataset has no such split.
+        ValueError: See `DatasetContext.get_submission_evaluation_sets`.
     """
-    return _combine_evaluation_set_fingerprints(
-        context.get_submission_evaluation_sets(split, context_offsets).values())
+    return _combine_evaluation_set_fingerprints(context.get_submission_evaluation_sets(
+        split, context_offsets, in_split_offsets).values())
 
 
 # Cached values ####################################################################################
@@ -240,7 +244,8 @@ class EvaluationSetScores:
 
     Attributes:
         evaluation_set: The name of the set (`datasets.EVALUATION_SET_NAMES`).
-        context_offsets: The context offsets that select the segments of the set.
+        context_offsets, in_split_offsets: The offsets that select the segments of the set
+            (`irap_evaluation.EvaluationSet`).
         evaluation_set_fingerprint: See `irap_evaluation.EvaluationSet.fingerprint`.
         attributes: The scored attributes, in the order of the result.
         metrics: The default metrics (`irap_evaluation.get_default_metric_names`), which
@@ -253,6 +258,7 @@ class EvaluationSetScores:
 
     evaluation_set: str
     context_offsets: tuple[int, ...]
+    in_split_offsets: tuple[int, ...]
     evaluation_set_fingerprint: str
     attributes: tuple[str, ...]
     metrics: ie.MetricValues[float]
@@ -265,6 +271,7 @@ class EvaluationSetScores:
         evaluation_set = result.evaluation_set
         return cls(evaluation_set=evaluation_set.name,
                    context_offsets=evaluation_set.context_offsets,
+                   in_split_offsets=evaluation_set.in_split_offsets,
                    evaluation_set_fingerprint=evaluation_set.fingerprint,
                    attributes=result.attributes, metrics=result.metrics,
                    num_invalid=dict(result.num_invalid),
@@ -281,8 +288,8 @@ class SubmissionScoring:
         notes: The notes of `irap_evaluation.select_evaluation_sets`, e.g. why a set is left out.
         model_compatible_set: The name of the evaluation set whose scores are those on the
             model-compatible set (`irap_evaluation.EvaluationSetSelection
-            .model_compatible_set_name`), e.g. 'reference' if the context offsets select its
-            segments. None if there are none.
+            .model_compatible_set_name`), e.g. 'reference' if the context offsets and in-split
+            offsets select its segments. None if there are none.
         settings_fingerprint: `ScoringSettings.fingerprint` of the settings it was scored with.
         evaluation_sets_fingerprint: `get_evaluation_sets_fingerprint` when it was scored.
         evaluation_set_scores: The scores on each evaluation set, empty unless 'scored'.
@@ -354,6 +361,7 @@ def _to_evaluation_set_scores(row: sqlite3.Row) -> EvaluationSetScores:
     return EvaluationSetScores(
         evaluation_set=row["evaluation_set"],
         context_offsets=tuple(json.loads(row["context_offsets"])),
+        in_split_offsets=tuple(json.loads(row["in_split_offsets"])),
         evaluation_set_fingerprint=row["evaluation_set_fingerprint"],
         attributes=tuple(json.loads(row["attributes"])),
         metrics=metric_values_from_json(row["metrics"]),
@@ -374,8 +382,9 @@ def _to_scoring(row: sqlite3.Row,
 
 
 #: The columns of `submission_scores` except the large report.
-_SCORES_COLUMNS = ("submission_id, evaluation_set, context_offsets, evaluation_set_fingerprint,"
-                   " attributes, metrics, num_invalid, missing_attributes, missing_segment_ids")
+_SCORES_COLUMNS = ("submission_id, evaluation_set, context_offsets, in_split_offsets,"
+                   " evaluation_set_fingerprint, attributes, metrics, num_invalid,"
+                   " missing_attributes, missing_segment_ids")
 
 
 class ScoreStore:
@@ -474,12 +483,11 @@ class ScoreStore:
                  scoring.scored_at.isoformat()))
             for scores in scoring.evaluation_set_scores:
                 connection.execute(
-                    "INSERT INTO submission_scores (submission_id, evaluation_set,"
-                    " context_offsets, evaluation_set_fingerprint, attributes, metrics,"
-                    " num_invalid, missing_attributes, missing_segment_ids, report, resamples)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    f"INSERT INTO submission_scores ({_SCORES_COLUMNS}, report, resamples)"
+                    f" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (scoring.submission_id, scores.evaluation_set,
                      json.dumps(list(scores.context_offsets)),
+                     json.dumps(list(scores.in_split_offsets)),
                      scores.evaluation_set_fingerprint, json.dumps(list(scores.attributes)),
                      metric_values_to_json(scores.metrics), json.dumps(scores.num_invalid),
                      json.dumps(list(scores.missing_attributes)),
@@ -531,8 +539,8 @@ def is_scoring_current(scoring: SubmissionScoring, submission: Submission,
     if scoring.status == "error" or scoring.settings_fingerprint != settings.fingerprint:
         return False
     try:
-        sets_fingerprint = get_evaluation_sets_fingerprint(context, submission.split,
-                                                           submission.context_offsets)
+        sets_fingerprint = get_evaluation_sets_fingerprint(
+            context, submission.split, submission.context_offsets, submission.in_split_offsets)
     except ValueError:  # The split is no longer in the metadata.
         return False
     return scoring.evaluation_sets_fingerprint == sets_fingerprint
@@ -573,8 +581,8 @@ def score_submission(
     """
     scored_at = get_utc_now()
     try:
-        sets_fingerprint = get_evaluation_sets_fingerprint(context, submission.split,
-                                                           submission.context_offsets)
+        sets_fingerprint = get_evaluation_sets_fingerprint(
+            context, submission.split, submission.context_offsets, submission.in_split_offsets)
     except ValueError as e:  # The split is not in the metadata, so the scoring is not current.
         return make_unscored_scoring(submission.id, "failed", str(e), settings), {}, {}
     try:

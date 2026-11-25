@@ -17,6 +17,7 @@ import irap_evaluation as ie
 import numpy as np
 
 from ..archive import get_description_summary
+from ..datasets import format_context_window
 from ..label_counts import AttributeLabelCounts
 from ..method_comparison import get_better_method
 from ..method_ranking import (
@@ -36,7 +37,6 @@ from ..methodology import (
     METRICS_SECTION,
 )
 from .formatting import (
-    format_context_offsets,
     make_link_html,
     make_method_link_html,
     make_model_link_html,
@@ -385,8 +385,8 @@ _MAX_NUM_LISTED_MISSING_SEGMENTS = 20
 
 def _make_notes_html(row: MethodScores, evaluation_set: str) -> str:
     """Notes the attributes and segments that the models of a row do not predict, and on the
-    model-compatible sets, the context offsets of the models and the set whose scores the row
-    shows if it is a shared one.
+    model-compatible sets, the context offsets and in-split offsets of the models and the set
+    whose scores the row shows if it is a shared one.
 
     Args:
         evaluation_set: The name of the set of the table.
@@ -400,8 +400,9 @@ def _make_notes_html(row: MethodScores, evaluation_set: str) -> str:
         notes.append(f"<span{make_title_attribute(listed)}>{len(missing)} segments not"
                      f" predicted</span>")
     if evaluation_set == ie.MODEL_COMPATIBLE_SET_NAME:
-        offsets = "; ".join(dict.fromkeys(format_context_offsets(m.submission.context_offsets)
-                                          for m in row.scored_models))
+        offsets = "; ".join(dict.fromkeys(
+            format_context_window(m.submission.context_offsets, m.submission.in_split_offsets)
+            for m in row.scored_models))
         scored_set = row.scored_models[0].scores.evaluation_set
         notes.append(f"context offsets {offsets}" + (
             "" if scored_set == evaluation_set else f" (the {scored_set} set)"))

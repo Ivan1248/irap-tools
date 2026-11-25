@@ -52,8 +52,8 @@ def make_submission(submission_id, method_name="m", seed=None, training_splits=(
     return Submission(
         id=submission_id, model=model or make_model_row(submission_id, method_name, seed),
         split=split, file_sha256="0" * 64, output_kind="probs", context_offsets=(0,),
-        training_splits=training_splits, early_stopping_splits=(), num_segments=10,
-        num_attributes=num_attributes, submitter="Bo", uploaded_at=_TIME)
+        in_split_offsets=(), training_splits=training_splits, early_stopping_splits=(),
+        num_segments=10, num_attributes=num_attributes, submitter="Bo", uploaded_at=_TIME)
 
 
 def make_scored_model(submission_id, attribute_to_value, method_name="m",
@@ -64,7 +64,8 @@ def make_scored_model(submission_id, attribute_to_value, method_name="m",
                   for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES},
         per_attribute={n: dict(attribute_to_value) for n in ie.IRAP_ATTRIBUTE_METRIC_NAMES})
     scores = EvaluationSetScores(
-        evaluation_set="reference", context_offsets=(0,), evaluation_set_fingerprint="f",
+        evaluation_set="reference", context_offsets=(0,), in_split_offsets=(),
+        evaluation_set_fingerprint="f",
         attributes=tuple(attribute_to_value),
         metrics=ie.select_metric_attributes(metrics, list(attribute_to_value)),
         num_invalid={a: 3 for a in attribute_to_value}, missing_attributes=missing_attributes,

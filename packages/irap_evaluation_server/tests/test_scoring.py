@@ -23,7 +23,11 @@ from irap_evaluation_server import scoring_worker as scoring_worker_module
 from irap_evaluation_server.config import DatasetConfig
 from irap_evaluation_server.database import connect
 from irap_evaluation_server.datasets import load_dataset_contexts
-from irap_evaluation_server.method_scores import compute_method_scores
+from irap_evaluation_server.method_scores import (
+    compute_method_scores,
+    find_common_evaluation_set,
+    get_combination_error,
+)
 from irap_evaluation_server.scoring import (
     SCORE_CACHE_VERSION,
     ScoreStore,
@@ -54,7 +58,8 @@ def test_scoring_equals_irap_evaluation(archive, dataset_contexts, store, worker
     assert store.get_score_report(submission.id, "reference") == json.loads(
         json.dumps(to_json_dict(result)))
     # The context offsets (0, -1) select more segments than the reference window (-4..0).
-    model_compatible_set = dataset_contexts["vietnam"].get_model_compatible_set(SPLIT, (0, -1))
+    model_compatible_set = dataset_contexts["vietnam"].get_model_compatible_set(SPLIT, (0, -1),
+                                                                                ())
     assert model_compatible_set.num_segments > reference_set.num_segments
     assert scoring.notes == ()
     compatible_scores = scoring.get_scores(ie.MODEL_COMPATIBLE_SET_NAME)
@@ -102,6 +107,32 @@ def test_model_compatible_sets_include_models_whose_set_is_a_shared_one(archive,
             for n, models in scorings.group_scored_models_by_set().items()} == {
         ie.REFERENCE_SET_NAME: ["m", "r"], ie.FULL_SET_NAME: ["m", "r"],
         ie.MODEL_COMPATIBLE_SET_NAME: ["m"]}
+
+
+def test_in_split_offsets_select_the_model_compatible_set(archive, store,
+                                                          split_boundary_contexts, settings):
+    context = split_boundary_contexts["vietnam"]
+    worker = ScoringWorker(archive, store, split_boundary_contexts, settings)
+    submissions = [
+        add_model(archive, split_boundary_contexts, with_context_offsets(
+            make_model(split_boundary_contexts, name), (0, -1), in_split_offsets))
+        for name, in_split_offsets in (("m", ()), ("s", (-1,)))]
+    assert [s.in_split_offsets for s in submissions] == [(), (-1,)]
+    models = score_and_get_models(worker, [s.id for s in submissions],
+                                  ie.MODEL_COMPATIBLE_SET_NAME)
+    method_to_model = {m.submission.model.method_name: m for m in models}
+    assert method_to_model["s"].scores.in_split_offsets == (-1,)
+    in_split_set = context.get_model_compatible_set(SPLIT, (0, -1), (-1,))
+    any_split_set = context.get_model_compatible_set(SPLIT, (0, -1), ())
+    assert set(any_split_set.segment_ids) - set(in_split_set.segment_ids) == {"0002"}
+    for model, evaluation_set in [(method_to_model["m"], any_split_set),
+                                  (method_to_model["s"], in_split_set)]:
+        assert find_common_evaluation_set(context, [model]) is evaluation_set
+        assert_close(model.scores.metrics, score_submission_again(
+            worker, model.submission, evaluation_set).metrics)
+    # The same context offsets with other in-split offsets select other segments.
+    assert find_common_evaluation_set(context, models) is None
+    assert "s/seed0: -1, 0 (in the split: -1)" in get_combination_error(models)
 
 
 def test_remove_class_scores(archive, dataset_contexts, store, worker):

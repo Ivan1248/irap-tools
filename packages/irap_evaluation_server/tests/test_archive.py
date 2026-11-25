@@ -544,9 +544,16 @@ END;
 """
 
 
+def _remove_in_split_offsets(connection):
+    """Removes the column of the in-split offsets, which version 4 added
+    (`archive._add_in_split_offsets`), so that the submissions table is that of version 3."""
+    connection.execute("ALTER TABLE submissions DROP COLUMN in_split_offsets")
+
+
 def test_the_score_cache_is_dropped_from_an_archive_of_version_1(archive, dataset_contexts):
     submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
     with connect(archive.database_path) as connection:
+        _remove_in_split_offsets(connection)
         connection.executescript(_SCORE_CACHE_OF_VERSION_1)
         connection.execute("INSERT INTO submission_scorings VALUES (?)", (submission.id,))
         connection.execute("INSERT INTO result_cache VALUES ('k')")
@@ -564,6 +571,7 @@ def test_intersect_segments_is_replaced_in_an_archive_of_version_2(archive):
     old_details = [{"members": [], "intersect_segments": True, "notes": []},
                    {"members": [], "intersect_segments": False}]
     with connect(archive.database_path) as connection:
+        _remove_in_split_offsets(connection)
         for i, details in enumerate(old_details):
             connection.execute("INSERT INTO actions VALUES (?, '', '', 'ensemble', 1, 'e', 1, ?)",
                                (i, json.dumps(details)))
@@ -576,3 +584,31 @@ def test_intersect_segments_is_replaced_in_an_archive_of_version_2(archive):
         {"members": [], "segment_combination": "intersection", "attribute_combination": "same",
          "notes": []},
         {"members": [], "segment_combination": "same", "attribute_combination": "same"}]
+
+
+def test_in_split_offsets_are_read_from_the_files_in_an_archive_of_version_3(archive,
+                                                                             dataset_contexts):
+    submissions = [add_model(archive, dataset_contexts, with_context_offsets(
+        make_model(dataset_contexts, name), (0, -1), in_split_offsets))
+        for name, in_split_offsets in (("m", ()), ("s", (-1,)))]
+    with connect(archive.database_path) as connection:
+        _remove_in_split_offsets(connection)
+        connection.execute("PRAGMA user_version = 3")
+    ModelArchive(archive.data_dir)
+    assert sorted(archive.list_submissions(), key=lambda s: s.id) == submissions
+    assert [s.in_split_offsets for s in submissions] == [(), (-1,)]
+    with connect(archive.database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_a_migration_from_version_3_needs_the_files(archive, dataset_contexts):
+    submission = add_model(archive, dataset_contexts, make_model(dataset_contexts, "m"))
+    archive.get_predictions_path(submission.id).unlink()
+    with connect(archive.database_path) as connection:
+        _remove_in_split_offsets(connection)
+        connection.execute("PRAGMA user_version = 3")
+    with pytest.raises(FileNotFoundError):
+        ModelArchive(archive.data_dir)
+    # The failed migration is rolled back.
+    with connect(archive.database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3

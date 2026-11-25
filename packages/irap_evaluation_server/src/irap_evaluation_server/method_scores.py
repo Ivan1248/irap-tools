@@ -11,7 +11,7 @@ import irap_evaluation as ie
 import numpy as np
 
 from .archive import Submission, get_method_description, list_submitters
-from .datasets import DatasetContext
+from .datasets import DatasetContext, format_context_window
 from .scoring import (
     RESAMPLED_METRIC_NAMES,
     EvaluationSetScores,
@@ -39,8 +39,8 @@ def get_model_evaluation_set(context: DatasetContext,
             scoring (its fingerprint differs).
     """
     submission, scores = scored_model.submission, scored_model.scores
-    name_to_set = context.get_submission_evaluation_sets(submission.split,
-                                                         submission.context_offsets)
+    name_to_set = context.get_submission_evaluation_sets(
+        submission.split, submission.context_offsets, submission.in_split_offsets)
     if scores.evaluation_set not in name_to_set:
         raise ValueError(f"File #{submission.id} of {submission.label} has no evaluation set"
                          f" {scores.evaluation_set!r}.")
@@ -111,7 +111,8 @@ def select_scored_models(submissions: T.Iterable[Submission],
                          evaluation_set: str) -> list[ScoredModel]:
     """Selects the submissions that are scored on the evaluation set with this name, with those
     scores (`scoring.SubmissionScoring.get_scores`). On the model-compatible set, these are the
-    scores of a shared set for a model whose context offsets select the segments of that set.
+    scores of a shared set for a model whose context offsets and in-split offsets select the
+    segments of that set.
 
     Args:
         submissions: Of one split, so that the submissions of a method are its models.
@@ -144,7 +145,7 @@ def find_common_evaluation_set(context: DatasetContext,
                                models: T.Sequence[ScoredModel]) -> ie.EvaluationSet | None:
     """Returns the evaluation set that all models are scored on (`are_scored_on_same_set`), or
     None if they are scored on different sets, e.g. model-compatible sets of different context
-    offsets.
+    offsets or in-split offsets.
 
     Raises:
         ValueError: If `models` is empty, and see `get_model_evaluation_set`.
@@ -160,7 +161,10 @@ def get_combination_error(models: T.Sequence[ScoredModel]) -> str | None:
     if not models:
         return "At least one model is required."
     if not are_scored_on_same_set(models):
-        offsets = ", ".join(f"{m.submission.label}: {m.scores.context_offsets}" for m in models)
+        offsets = "; ".join(
+            f"{m.submission.label}: "
+            f"{format_context_window(m.scores.context_offsets, m.scores.in_split_offsets)}"
+            for m in models)
         return (f"The models are scored on different segments (context offsets {offsets}), so"
                 f" they cannot be combined.")
     if len({(m.scores.metrics.names, m.scores.attributes) for m in models}) > 1:

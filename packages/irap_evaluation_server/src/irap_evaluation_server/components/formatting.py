@@ -44,11 +44,6 @@ def format_training_split_rows(info: ie.ModelInfo | None) -> dict[str, str]:
                                       else format_splits(info.early_stopping_splits))}
 
 
-def format_context_offsets(offsets: T.Sequence[int] | None) -> str:
-    """Formats context offsets: 'unknown' for None."""
-    return "unknown" if offsets is None else ", ".join(map(str, offsets))
-
-
 def make_split_options(splits: T.Iterable[str],
                        split_to_segment_ids: T.Mapping[str, T.Sequence[str]]) -> dict[str, str]:
     """Makes the options of a split select: each split with its number of segments.
@@ -74,12 +69,12 @@ def make_evaluation_set_options(
             for n, l in labels.items()}
 
 
-def format_evaluation_set_title(name: str, context_offsets_text: str) -> str:
-    """Formats the title of the scores on an evaluation set, with the context offsets
-    (`format_context_offsets`) on the model-compatible set."""
+def format_evaluation_set_title(name: str, context_window_text: str) -> str:
+    """Formats the title of the scores on an evaluation set, with the context offsets and
+    in-split offsets (`datasets.format_context_window`) on the model-compatible set."""
     if name in ie.SHARED_EVALUATION_SET_NAMES:
         return EVALUATION_SET_LABELS[name]
-    return f"{EVALUATION_SET_LABELS[name]}, context offsets {context_offsets_text}"
+    return f"{EVALUATION_SET_LABELS[name]}, context offsets {context_window_text}"
 
 
 def make_link_html(path: str, text: str) -> str:

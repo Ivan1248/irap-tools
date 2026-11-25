@@ -1,6 +1,7 @@
 """The configured datasets: their metadata and the evaluation sets of their splits."""
 
 import dataclasses as dc
+import itertools
 import threading
 import typing as T
 from pathlib import Path
@@ -14,6 +15,30 @@ from .config import DatasetConfig
 EVALUATION_SET_NAMES = (*ie.SHARED_EVALUATION_SET_NAMES, ie.MODEL_COMPATIBLE_SET_NAME)
 
 _CachedValue = T.TypeVar("_CachedValue")
+
+
+def format_offsets(offsets: T.Iterable[int]) -> str:
+    """Formats offsets in ascending order, with runs of at least 3 consecutive offsets as ranges,
+    e.g. '-4, -1, 0' or '-14 to 10'."""
+    # The offsets of a run have the same difference to their index.
+    runs = [[o for _, o in run] for _, run in itertools.groupby(
+        enumerate(sorted(set(offsets))), key=lambda p: p[1] - p[0])]
+    return ", ".join(f"{run[0]} to {run[-1]}" if len(run) >= 3 else ", ".join(map(str, run))
+                     for run in runs)
+
+
+def format_context_window(context_offsets: T.Sequence[int] | None,
+                          in_split_offsets: T.Sequence[int]) -> str:
+    """Formats the context offsets and in-split offsets of a model
+    (`irap_evaluation.PredictionHeader`), which select its model-compatible set (see
+    `format_offsets`), e.g. '-4, -1, 0', '-14 to 10 (in the split: -10 to 10)', or 'unknown' for
+    unknown context offsets."""
+    if context_offsets is None:
+        return "unknown"
+    text = format_offsets(context_offsets)
+    if not in_split_offsets:
+        return text
+    return f"{text} (in the split: {format_offsets(in_split_offsets)})"
 
 
 @dc.dataclass(eq=False)
@@ -32,8 +57,9 @@ class DatasetContext:
     #: split -> its shared sets by name (`irap_evaluation.get_shared_evaluation_sets`).
     _shared_set_cache: dict[str, dict[str, ie.EvaluationSet]] = dc.field(
         default_factory=dict, init=False, repr=False)
-    #: (split, context offsets) -> the model-compatible set.
-    _model_compatible_set_cache: dict[tuple[str, tuple[int, ...]], ie.EvaluationSet] = dc.field(
+    #: (split, context offsets, in-split offsets) -> the model-compatible set.
+    _model_compatible_set_cache: dict[tuple[str, tuple[int, ...], tuple[int, ...]],
+                                      ie.EvaluationSet] = dc.field(
         default_factory=dict, init=False, repr=False)
     #: Held while a set is computed, so that concurrent first uses compute it once. Cached sets
     #: are read without it, so that a page does not wait for the computation of another set.
@@ -78,39 +104,45 @@ class DatasetContext:
         """Returns the number of segments of each shared evaluation set of a split, by name."""
         return {n: s.num_segments for n, s in self.get_shared_evaluation_sets(split).items()}
 
-    def get_model_compatible_set(self, split: str,
-                                 context_offsets: T.Sequence[int]) -> ie.EvaluationSet:
+    def get_model_compatible_set(self, split: str, context_offsets: T.Sequence[int],
+                                 in_split_offsets: T.Sequence[int]) -> ie.EvaluationSet:
         """Returns `irap_evaluation.get_model_compatible_set` of a split, computed on first use.
 
         Raises:
-            ValueError: If the dataset has no such split.
+            ValueError: If the dataset has no such split, or an in-split offset is not a context
+                offset.
         """
-        context_offsets = tuple(context_offsets)
+        context_offsets, in_split_offsets = tuple(context_offsets), tuple(in_split_offsets)
         return self._get_cached(
-            self._model_compatible_set_cache, (split, context_offsets), split,
+            self._model_compatible_set_cache, (split, context_offsets, in_split_offsets), split,
             lambda: ie.get_model_compatible_set(self.metadata, self.name, split,
-                                                context_offsets))
+                                                context_offsets, in_split_offsets))
 
     def get_submission_evaluation_sets(
-            self, split: str, context_offsets: T.Sequence[int] | None
-    ) -> dict[str, ie.EvaluationSet]:
+            self, split: str, context_offsets: T.Sequence[int] | None,
+            in_split_offsets: T.Sequence[int]) -> dict[str, ie.EvaluationSet]:
         """Returns the evaluation sets that a submission of a split can be scored on, by name:
         the shared sets, and the model-compatible set if the context offsets are known.
 
+        Args:
+            context_offsets, in_split_offsets: Of the submission
+                (`irap_evaluation.PredictionHeader`).
+
         Raises:
-            ValueError: If the dataset has no such split.
+            ValueError: See `get_model_compatible_set`.
         """
         name_to_set = dict(self.get_shared_evaluation_sets(split))
         if context_offsets is not None:
             name_to_set[ie.MODEL_COMPATIBLE_SET_NAME] = self.get_model_compatible_set(
-                split, context_offsets)
+                split, context_offsets, in_split_offsets)
         return name_to_set
 
     def select_evaluation_sets(
             self, predictions: ie.Predictions,
             missing_segment_policy: ie.MissingSegmentPolicy) -> ie.EvaluationSetSelection:
         """Applies `irap_evaluation.select_evaluation_sets` to predictions, with the shared sets
-        of their split and the model-compatible set of the context offsets in their header.
+        of their split and the model-compatible set of the context offsets and in-split offsets
+        in their header.
 
         Args:
             missing_segment_policy: `scoring.ScoringSettings.missing_segment_policy`.
@@ -126,7 +158,8 @@ class DatasetContext:
         offsets = header.context_offsets
         return ie.select_evaluation_sets(
             predictions.segment_ids, self.get_shared_evaluation_sets(header.split).values(),
-            None if offsets is None else self.get_model_compatible_set(header.split, offsets),
+            None if offsets is None else self.get_model_compatible_set(
+                header.split, offsets, header.in_split_offsets),
             missing_segment_policy)
 
     def check_new_predictions(self, predictions: ie.Predictions,

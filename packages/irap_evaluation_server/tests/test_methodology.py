@@ -28,6 +28,13 @@ def test_linked_sections_exist():
     assert {EVALUATION_SETS_SECTION, INTERVALS_SECTION, COMPARISONS_SECTION} <= set(ids)
 
 
+def test_reference_windows_state_the_in_split_offsets():
+    [section] = [s for s in make_methodology_sections(SCORING_SETTINGS, ["vietnam", "bh"],
+                                                      ShownMetrics.from_hidden(()))
+                 if s.id == EVALUATION_SETS_SECTION]
+    assert "(vietnam: −4 to 0; bh: −14 to 10, with −10 to 10 in the split)" in section.markdown
+
+
 def test_settings_that_the_text_does_not_describe_are_refused():
     with pytest.raises(ValueError, match="null, missing attribute and missing segment policies"):
         check_described_settings(dc.replace(SCORING_SETTINGS, null_policy="exclude"))

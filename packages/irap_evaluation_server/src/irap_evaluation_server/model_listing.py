@@ -51,6 +51,11 @@ class ModelSummary:
         return next((s.context_offsets for s in self.submissions), None)
 
     @property
+    def in_split_offsets(self) -> tuple[int, ...]:
+        """Empty if there are none or the model has no submission."""
+        return next((s.in_split_offsets for s in self.submissions), ())
+
+    @property
     def model_info(self) -> ie.ModelInfo | None:
         """The model of the files, with the training splits, None if the model has no
         submission."""

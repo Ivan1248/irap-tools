@@ -87,7 +87,7 @@ def test_find_common_evaluation_set_of_model_compatible_sets(archive, dataset_co
     context = dataset_contexts["vietnam"]
     for offsets, model in offsets_to_model.items():
         assert find_common_evaluation_set(context, [model]) is context.get_model_compatible_set(
-            SPLIT, offsets)
+            SPLIT, offsets, ())
     assert len(offsets_to_model) == 2 and find_common_evaluation_set(context, models) is None
     with pytest.raises(ValueError, match="At least one model"):
         find_common_evaluation_set(context, [])

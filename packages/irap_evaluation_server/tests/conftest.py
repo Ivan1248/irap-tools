@@ -46,6 +46,18 @@ def two_split_contexts(metadata_dir):
 
 
 @pytest.fixture
+def split_boundary_contexts(metadata_dir):
+    """The dataset with the second segment of the first road, '0001', in the split 'train'
+    instead of `SPLIT`, so that the previous segment of '0002' is in another split."""
+    splits_path = metadata_dir / MetaFiles.SPLITS
+    splits = json.loads(splits_path.read_text(encoding="utf-8"))
+    splits = {SPLIT: [s for s in splits[SPLIT] if s != "0001"], "train": ["0001"]}
+    splits_path.write_text(json.dumps(splits), encoding="utf-8")
+    return load_dataset_contexts({"vietnam": DatasetConfig(
+        dataset_dir=metadata_dir, metadata_dir=metadata_dir, analysis_splits=())})
+
+
+@pytest.fixture
 def archive(tmp_path: Path) -> ModelArchive:
     return ModelArchive(tmp_path / "data")
 

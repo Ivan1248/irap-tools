@@ -298,7 +298,8 @@ class EnsembleForm:
                     create_native_select(
                         "Attributes if the members predict different ones", _COMBINATION_TEXTS,
                         "same", lambda v: setattr(self.inputs, "attribute_combination", v))
-                ui.label("Members with different context offsets predict different segments."
+                ui.label("Members with different context offsets or in-split offsets predict"
+                         " different segments."
                          " With all segments or attributes, a member that does not predict one"
                          " counts as invalid, so an attribute that only one member predicts is"
                          " that member's prediction.").classes("muted")

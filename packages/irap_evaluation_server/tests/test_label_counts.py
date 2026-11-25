@@ -29,7 +29,7 @@ def test_count_attribute_labels():
                                   for a in class_indices})
     evaluation_set = ie.EvaluationSet(
         dataset="vietnam", split="val", name=ie.REFERENCE_SET_NAME, context_offsets=(0,),
-        vocabulary=vocabulary, segment_ids=tuple(map(str, range(7))),
+        in_split_offsets=(), vocabulary=vocabulary, segment_ids=tuple(map(str, range(7))),
         class_indices=class_indices, segment_sequence_ids=("s",) * 7)
     assert count_attribute_labels(evaluation_set, ["b", "a", "c"]) == {
         "b": AttributeLabelCounts(num_labeled_segments=6, num_labeled_classes=1,

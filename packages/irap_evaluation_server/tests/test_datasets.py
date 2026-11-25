@@ -9,7 +9,8 @@ from run_helpers import with_split
 from synthetic_vietnam import SPLIT, make_predictions
 
 from irap_evaluation_server.config import DatasetConfig
-from irap_evaluation_server.datasets import load_dataset_contexts
+from irap_evaluation_server.datasets import (format_context_window, format_offsets,
+                                             load_dataset_contexts)
 
 
 def test_load_dataset_contexts_checks_the_analysis_splits(metadata_dir):
@@ -45,8 +46,29 @@ def test_shared_evaluation_sets(dataset_contexts):
     assert context.count_shared_evaluation_set_segments(SPLIT) == {
         ie.REFERENCE_SET_NAME: context.get_reference_set(SPLIT).num_segments,
         ie.FULL_SET_NAME: len(context.metadata.splits[SPLIT])}
-    assert list(context.get_submission_evaluation_sets(SPLIT, (0, -1))) == [
+    assert list(context.get_submission_evaluation_sets(SPLIT, (0, -1), ())) == [
         ie.REFERENCE_SET_NAME, ie.FULL_SET_NAME, ie.MODEL_COMPATIBLE_SET_NAME]
+
+
+def test_format_context_window():
+    assert format_context_window(None, ()) == "unknown"
+    assert format_context_window((0, -1, -4), ()) == "-4, -1, 0"
+    assert format_context_window((-2, -1, 0), (-1, 0)) == "-2 to 0 (in the split: -1, 0)"
+    assert format_context_window(range(10, -15, -1), range(-10, 11)) == (
+        "-14 to 10 (in the split: -10 to 10)")
+    assert format_offsets((5, 0, -1, -2, -3, 3, 4)) == "-3 to 0, 3 to 5"
+
+
+def test_model_compatible_sets_are_cached_by_context_and_in_split_offsets(
+        split_boundary_contexts):
+    context = split_boundary_contexts["vietnam"]
+    any_split_set = context.get_model_compatible_set(SPLIT, (0, -1), ())
+    in_split_set = context.get_model_compatible_set(SPLIT, [0, -1], [-1])
+    assert in_split_set.in_split_offsets == (-1,)
+    assert in_split_set.segment_ids != any_split_set.segment_ids
+    assert context.get_model_compatible_set(SPLIT, (0, -1), (-1,)) is in_split_set
+    assert context.get_submission_evaluation_sets(SPLIT, (0, -1), (-1,))[
+        ie.MODEL_COMPATIBLE_SET_NAME] is in_split_set
 
 
 def test_segment_images_must_be_in_the_dataset_directory(dataset_contexts, tmp_path):

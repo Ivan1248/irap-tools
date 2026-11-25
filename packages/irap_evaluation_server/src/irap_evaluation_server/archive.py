@@ -45,7 +45,14 @@ from pathlib import Path
 
 import irap_evaluation as ie
 
-from .database import Migration, begin_write, connect, get_utc_now, initialize_schema
+from .database import (
+    Migration,
+    begin_write,
+    connect,
+    get_database_path,
+    get_utc_now,
+    initialize_schema,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -60,7 +67,7 @@ DATABASE_FILE_NAME = "archive.sqlite3"
 #: The version of the database schema (`PRAGMA user_version`). A database of an older version is
 #: migrated (`_MIGRATIONS`). Version 1 is the schema of commit c084f1a (2026-10-12), the first in
 #: production.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _drop_score_cache(connection: sqlite3.Connection) -> None:
@@ -99,8 +106,28 @@ def _replace_intersect_segments(connection: sqlite3.Connection) -> None:
                            (json.dumps(details), action_id))
 
 
+def _add_in_split_offsets(connection: sqlite3.Connection) -> None:
+    """Migrates version 3 to 4: adds the in-split offsets of the submissions
+    (`irap_evaluation.PredictionHeader.in_split_offsets`), read from the headers of their files.
+    A file stored by a server of version 3 can have them, since its irap_evaluation ignored
+    unknown header fields.
+
+    Raises:
+        OSError: If a file cannot be read, e.g. since it is missing.
+        irap_evaluation.PredictionFormatError: If the header of a file is invalid.
+    """
+    data_dir = get_database_path(connection).parent
+    connection.execute("ALTER TABLE submissions ADD COLUMN in_split_offsets TEXT NOT NULL"
+                       " DEFAULT '[]'")
+    for (submission_id,) in connection.execute("SELECT id FROM submissions").fetchall():
+        header = ie.read_prediction_header(_get_predictions_path(data_dir, submission_id))
+        connection.execute("UPDATE submissions SET in_split_offsets = ? WHERE id = ?",
+                           (json.dumps(list(header.in_split_offsets)), submission_id))
+
+
 #: Version v -> the migration from v to v + 1 (`database.initialize_schema`).
-_MIGRATIONS: dict[int, Migration] = {1: _drop_score_cache, 2: _replace_intersect_segments}
+_MIGRATIONS: dict[int, Migration] = {1: _drop_score_cache, 2: _replace_intersect_segments,
+                                     3: _add_in_split_offsets}
 
 #: SQLite stores integers as signed 64-bit values.
 _SQLITE_INTEGER_RANGE = range(-2**63, 2**63)
@@ -142,7 +169,9 @@ CREATE TABLE submissions (
     num_segments INTEGER NOT NULL,
     num_attributes INTEGER NOT NULL,
     submitter TEXT NOT NULL,
-    uploaded_at TEXT NOT NULL
+    uploaded_at TEXT NOT NULL,
+    -- Last and with a default, as the migration from version 3 adds it (`_add_in_split_offsets`).
+    in_split_offsets TEXT NOT NULL DEFAULT '[]'
 );
 CREATE UNIQUE INDEX submission_split ON submissions (model_id, split);
 -- Without foreign keys, since the actions outlive deleted models and submissions.
@@ -214,6 +243,7 @@ class Submission:
     files.
 
     Attributes:
+        context_offsets, in_split_offsets: See `irap_evaluation.PredictionHeader`.
         training_splits, early_stopping_splits: See `irap_evaluation.ModelInfo`.
         submitter: The account name of the writer who uploaded it.
         uploaded_at: The time of the upload, in UTC.
@@ -225,6 +255,7 @@ class Submission:
     file_sha256: str
     output_kind: ie.OutputKind
     context_offsets: tuple[int, ...] | None
+    in_split_offsets: tuple[int, ...]
     training_splits: tuple[str, ...] | None
     early_stopping_splits: tuple[str, ...]
     num_segments: int
@@ -354,6 +385,10 @@ class NewSubmission:
         return self.header.context_offsets
 
     @property
+    def in_split_offsets(self) -> tuple[int, ...]:
+        return self.header.in_split_offsets
+
+    @property
     def training_splits(self) -> tuple[str, ...] | None:
         return self.header.model.training_splits
 
@@ -367,9 +402,13 @@ class NewSubmission:
 MODEL_FILE_FIELDS: T.Mapping[str, T.Callable[[Submission | NewSubmission], T.Any]] = {
     "output kind": lambda s: s.output_kind,
     "context offsets": lambda s: s.context_offsets,
+    "in-split offsets": lambda s: s.in_split_offsets,
     "training splits": lambda s: s.training_splits,
     "early stopping splits": lambda s: s.early_stopping_splits,
 }
+#: States that the files of a model share the `MODEL_FILE_FIELDS`, for messages.
+MODEL_FILE_FIELDS_RULE = (f"The files of a model must have the same"
+                          f" {', '.join(MODEL_FILE_FIELDS)}.")
 
 
 def get_differing_model_fields(files: T.Iterable[Submission | NewSubmission]) -> list[str]:
@@ -500,6 +539,15 @@ class _DryRunFinished(Exception):
     """Ends the transaction of a dry run of `ModelArchive._apply`, which rolls it back."""
 
 
+def _get_submissions_dir(data_dir: Path) -> Path:
+    return data_dir / "submissions"
+
+
+def _get_predictions_path(data_dir: Path, submission_id: int) -> Path:
+    """Returns the path of the stored file of a submission (`ModelArchive.get_predictions_path`)."""
+    return _get_submissions_dir(data_dir) / str(submission_id) / "predictions.parquet"
+
+
 def compute_file_sha256(path: Path) -> str:
     with path.open("rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
@@ -527,6 +575,7 @@ def _to_submission(row: sqlite3.Row) -> Submission:
         id=row["id"], model=model, split=row["split"],
         file_sha256=row["file_sha256"], output_kind=row["output_kind"],
         context_offsets=_from_optional_json(row["context_offsets"]),
+        in_split_offsets=tuple(json.loads(row["in_split_offsets"])),
         training_splits=_from_optional_json(row["training_splits"]),
         early_stopping_splits=tuple(json.loads(row["early_stopping_splits"])),
         num_segments=row["num_segments"], num_attributes=row["num_attributes"],
@@ -728,10 +777,9 @@ def _check_model_invariant(connection: sqlite3.Connection, model_id: int) -> Non
         values = "; ".join(f"{s.split}: {describe_model_fields(s, differing)}"
                            for s in sorted(submissions, key=lambda s: s.split))
         raise ValueError(f"The files of the splits of {submissions[0].label} would differ in"
-                         f" {', '.join(differing)}: {values}. The files of a model must have the"
-                         f" same output kind, context offsets, and training and early stopping"
-                         f" splits. To change them, replace all its files together, e.g. with a"
-                         f" .zip archive, or delete the other files first.")
+                         f" {', '.join(differing)}: {values}. {MODEL_FILE_FIELDS_RULE} To change"
+                         f" them, replace all its files together, e.g. with a .zip archive, or"
+                         f" delete the other files first.")
 
 
 def _check_method_invariant(connection: sqlite3.Connection, dataset: str,
@@ -798,10 +846,10 @@ class ModelArchive:
 
     @property
     def submissions_dir(self) -> Path:
-        return self.data_dir / "submissions"
+        return _get_submissions_dir(self.data_dir)
 
     def get_predictions_path(self, submission_id: int) -> Path:
-        return self.submissions_dir / str(submission_id) / "predictions.parquet"
+        return _get_predictions_path(self.data_dir, submission_id)
 
     def _list_deleted_submission_dirs(self, connection: sqlite3.Connection) -> list[Path]:
         """Lists the directories in `submissions_dir` of the submissions that are deleted as
@@ -1138,10 +1186,10 @@ class ModelArchive:
         replaced = update.replaced.get(header.split)
         cursor = connection.execute(
             "INSERT INTO submissions (model_id, split, file_sha256, output_kind, context_offsets,"
-            " training_splits, early_stopping_splits, num_segments, num_attributes, submitter,"
-            " uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " in_split_offsets, training_splits, early_stopping_splits, num_segments,"
+            " num_attributes, submitter, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (model.id, header.split, file_sha256, new.output_kind,
-             _to_optional_json(header.context_offsets),
+             _to_optional_json(header.context_offsets), json.dumps(list(header.in_split_offsets)),
              _to_optional_json(header.model.training_splits),
              json.dumps(list(header.model.early_stopping_splits)), new.num_segments,
              new.num_attributes, actor, get_utc_now().isoformat()))

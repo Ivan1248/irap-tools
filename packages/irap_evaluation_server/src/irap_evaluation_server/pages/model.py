@@ -46,7 +46,6 @@ from ..components.changes import (
 from ..components.confirmation_dialog import confirm_changes
 from ..components.downloads import make_prepared_download_response
 from ..components.formatting import (
-    format_context_offsets,
     format_evaluation_set_title,
     format_training_split_rows,
     format_utc_time,
@@ -92,7 +91,7 @@ from ..components.score_tables import (
     make_model_scores_note_html,
 )
 from ..components.split_scores_panel import ShownSplitScores, create_split_scores_panel
-from ..datasets import DatasetContext
+from ..datasets import DatasetContext, format_context_window
 from ..display_settings import DisplaySettingsStore
 from ..method_ranking import ShownMetrics
 from ..method_scores import ScoredModel, compute_method_scores
@@ -251,7 +250,8 @@ class _ModelPage:
                 **format_training_split_rows(summary.model_info),
                 "Output": summary.output_kind or "–",
                 "Context offsets": ("–" if not summary.submissions
-                                    else format_context_offsets(summary.context_offsets)),
+                                    else format_context_window(summary.context_offsets,
+                                                               summary.in_split_offsets)),
                 "Created": format_utc_time(model.created_at),
             }
             ui.html(f"Model {make_truncated_name_html(model.shown_label)}",
@@ -396,13 +396,14 @@ class _ModelPage:
         shows_class_scores = can_see_class_scores(self.account, context.config, submission.split)
         model_compatible_set = scorings.current[submission.id].model_compatible_set
         for name, [model] in shown.set_to_models.items():
-            ui.label(format_evaluation_set_title(
-                name, format_context_offsets(model.scores.context_offsets))).classes(
+            ui.label(format_evaluation_set_title(name, format_context_window(
+                model.scores.context_offsets, model.scores.in_split_offsets))).classes(
                 "subsection-title")
             if name != ie.MODEL_COMPATIBLE_SET_NAME and name == model_compatible_set:
-                ui.label(f"Also the model-compatible set: the context offsets"
-                         f" {format_context_offsets(submission.context_offsets)} select its"
-                         f" segments.").classes("muted")
+                window = format_context_window(submission.context_offsets,
+                                               submission.in_split_offsets)
+                ui.label(f"Also the model-compatible set: the context offsets {window} select"
+                         f" its segments.").classes("muted")
             if missing := model.scores.missing_segment_ids:
                 ui.html(_make_missing_segments_html(missing), sanitize=False)
             ui.label(f"Averages over {shown.subset.label}").classes("muted")

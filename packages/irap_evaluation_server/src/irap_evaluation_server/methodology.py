@@ -14,9 +14,10 @@ import math
 import typing as T
 
 import irap_evaluation as ie
-from irap_data import get_dataset_preset
+from irap_data import DatasetPreset, get_dataset_preset
 from irap_data.attrs import get_attrs_to_include
 
+from .datasets import format_offsets
 from .method_ranking import DEFAULT_SORT_METRIC, NOT_WORSE_SIGNIFICANCE_LEVEL, ShownMetrics
 from .scoring import ScoringSettings
 
@@ -47,9 +48,19 @@ def _format_percent(fraction: float) -> str:
     return f"{fraction * 100:g}%"
 
 
-def _format_context_window(offsets: range) -> str:
-    """Formats contiguous context offsets, e.g. '−4 to 0'."""
-    return f"{offsets.start} to {offsets.stop - 1}".replace("-", "−")
+def _format_offsets_as_text(offsets: T.Iterable[int]) -> str:
+    """`format_offsets` with the minus signs of running text, e.g. '−4 to 0'."""
+    return format_offsets(offsets).replace("-", "−")
+
+
+def _format_reference_window(preset: DatasetPreset) -> str:
+    """Formats the reference context offsets and in-split offsets of a release, e.g. '−14 to 10,
+    with −10 to 10 in the split'."""
+    window = _format_offsets_as_text(preset.reference_context_offsets)
+    if not preset.reference_in_split_offsets:
+        return window
+    return (f"{window}, with {_format_offsets_as_text(preset.reference_in_split_offsets)} in the"
+            f" split")
 
 
 def _get_interval_probabilities(confidence: float) -> tuple[float, float]:
@@ -77,37 +88,41 @@ _METHODS_MARKDOWN = r"""
 - The metric value of a method is the **mean over its models**: if a method has $M$ models, whose
   values of a metric on an evaluation set are $m_1, \dots, m_M$, its value is
   $\overline{m} = \frac{1}{M} \sum_{i=1}^{M} m_i$. On the model-compatible sets, models with
-  different context offsets are not averaged, since their sets can differ.
+  different context offsets or in-split offsets are not averaged, since their sets can differ.
 """
 
 
 def _make_evaluation_sets_markdown(dataset_names: T.Sequence[str]) -> str:
-    windows = "; ".join(
-        f"{n}: {_format_context_window(get_dataset_preset(n).reference_context_offsets)}"
-        for n in dataset_names)
+    windows = "; ".join(f"{n}: {_format_reference_window(get_dataset_preset(n))}"
+                        for n in dataset_names)
     return f"""
 A model predicts the attributes of a segment from the images of the segment and of other segments
 of the same road. Its **context offsets** are the positions of these segments in the road relative
-to the predicted segment, e.g. 0 for the segment itself and −1 for the previous segment. An
-**evaluation set** is a subset of the labeled segments of a split. A prediction file is scored on
-up to three evaluation sets:
+to the predicted segment, e.g. 0 for the segment itself and −1 for the previous segment. Its
+**in-split offsets**, if any, are the context offsets whose segments must also be in the split of
+the predicted segment, e.g. of a sequential model that reads the outputs of a base model on the
+neighbouring segments: the outputs on training segments are optimistic. An **evaluation set** is a
+subset of the labeled segments of a split. A prediction file is scored on up to three evaluation
+sets:
 
 - **Reference set**: the segments for which every offset of a fixed window ({windows}) points to
-  a segment of the same road with an image. It is the same for all models, so their metric values
-  are comparable.
+  a segment of the same road with an image, and every offset of its in-split part to a segment of
+  the same split. It is the same for all models, so their metric values are comparable.
 - **Full set**: all segments of the split with an image (context offsets 0). It is also the same
   for all models, but only the files that predict all its segments are scored on it, e.g. of
   models without context or with padding for missing context segments.
-- **Model-compatible set**: the segments for which every offset of the model points to a segment of
-  the same road with an image, as in the evaluation during training. If it equals the reference
-  set or the full set, the scores on that set are also those on the model-compatible set, which
-  "Model-compatible sets" on the Scores page shows with the other models' model-compatible sets.
-  Models with different context offsets are not tested against each other on their
-  model-compatible sets, since these can differ.
+- **Model-compatible set**: the segments for which every context offset of the model points to a
+  segment of the same road with an image, and every in-split offset to a segment of the same
+  split, as in the evaluation during training. If it equals the reference set or the full set, the
+  scores on that set are also those on the model-compatible set, which "Model-compatible sets" on
+  the Scores page shows with the other models' model-compatible sets. Models with different
+  context offsets or in-split offsets are not tested against each other on their model-compatible
+  sets, since these can differ.
 
-A model with an offset outside the reference window cannot predict all segments of the reference
-set, so it is scored only on its model-compatible set, and on the full set if it predicts all its
-segments. Files of unlabeled splits are not scored.
+A model with a context offset outside the reference window, or an in-split offset outside its
+in-split part, cannot predict all segments of the reference set, so it is scored only on its
+model-compatible set, and on the full set if it predicts all its segments. Files of unlabeled
+splits are not scored.
 
 If a file does not predict segments of its model-compatible set, e.g. since a new build of the
 dataset metadata added them to the split, their attribute predictions count as invalid (see

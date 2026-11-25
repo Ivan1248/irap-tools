@@ -17,7 +17,6 @@ from ..components.attribute_filter import AttributeSubset
 from ..components.changes import load_after_change, run_change_in_thread, run_refreshes
 from ..components.confirmation_dialog import confirm_changes
 from ..components.formatting import (
-    format_context_offsets,
     format_evaluation_set_title,
     format_training_split_rows,
     make_action_table_html,
@@ -53,7 +52,7 @@ from ..components.score_tables import (
     make_method_scores_html,
     make_method_scores_note_html,
 )
-from ..datasets import DatasetContext
+from ..datasets import DatasetContext, format_context_window
 from ..display_settings import DisplaySettingsStore
 from ..method_ranking import ShownMetrics
 from ..method_scores import MethodScores, ScoredModel, compute_method_scores
@@ -272,8 +271,10 @@ class _MethodPage:
             if (explanation := ie.explain_split_use(split_use, shown.split)) is not None:
                 ui.label(explanation).classes("error" if split_use == "training" else "muted")
             for name, tables_html in shown.set_to_tables_html.items():
-                # The models of a method can differ in context offsets, and then not be averaged.
-                offsets = sorted({format_context_offsets(m.scores.context_offsets)
+                # The models of a method can differ in context offsets or in-split offsets, and
+                # then not be averaged.
+                offsets = sorted({format_context_window(m.scores.context_offsets,
+                                                        m.scores.in_split_offsets)
                                   for m in shown.set_to_models[name]})
                 ui.label(format_evaluation_set_title(name, " / ".join(offsets))).classes(
                     "subsection-title")

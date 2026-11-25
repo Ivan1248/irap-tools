@@ -43,10 +43,11 @@ class EnsemblePlan:
 
     def make_model_info(self) -> ie.ModelInfo:
         """Makes the model of the ensemble, with the default method name and its training and
-        early stopping splits (`irap_evaluation.make_ensemble_model_info`). The files of a member
-        have the same training and early stopping splits, so those of any split are used."""
+        early stopping splits (`irap_evaluation.make_composite_model_info`). The files of a
+        member have the same training and early stopping splits, so those of any split are
+        used."""
         submissions = next(iter(self.split_to_submissions.values()))
-        return ie.make_ensemble_model_info(s.model_info for s in submissions)
+        return ie.make_composite_model_info(s.model_info for s in submissions)
 
 
 def plan_ensemble(submissions: T.Iterable[Submission], dataset: str,

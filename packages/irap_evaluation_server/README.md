@@ -185,7 +185,7 @@ A file is refused if:
 - it has no seed, neither in its header nor in the Seed field,
 - its dataset is not configured, or its splits, attributes or iRAP codes are not those of the dataset,
 - it has no context offsets and lacks segments of both the reference set and the full set,
-- its output kind, context offsets, or training or early stopping splits differ from those of the model's other files,
+- its output kind, context offsets, in-split offsets, or training or early stopping splits differ from those of the model's other files,
 - the method's models would not have distinct seeds or would differ in training or early stopping splits (`irap_evaluation.check_method_models`), since a method is one training recipe and its models are averaged.
 
 Files of unlabeled splits are stored but not scored.
@@ -200,7 +200,7 @@ The fields of the upload form:
 
 A file of a split that the model already has replaces its file, which is deleted permanently with its scores. Before anything is stored, the user confirms the deletion of replaced files and the replacement of the description or the method display name. If the model changes in the meantime, e.g. by another user, the upload is refused and can be retried.
 
-A `.zip` archive uploads the files of one model on several splits at once. Every member must be a `.parquet` prediction file (others are refused, not skipped) of a distinct split. All members must have the same model, output kind, context offsets, and training and early stopping splits (`archive.MODEL_FILE_FIELDS`), but their header `details` may differ. Either all files are stored, each as its own submission, or none. An archive that replaces all files of a model may change their output kind, context offsets, and training and early stopping splits.
+A `.zip` archive uploads the files of one model on several splits at once. Every member must be a `.parquet` prediction file (others are refused, not skipped) of a distinct split. All members must have the same model, output kind, context offsets, in-split offsets, and training and early stopping splits (`archive.MODEL_FILE_FIELDS`), but their header `details` may differ. Either all files are stored, each as its own submission, or none. An archive that replaces all files of a model may change these fields.
 
 ### Deletion
 
@@ -229,7 +229,7 @@ At start, the server scores again the prediction files whose scores are out of d
 The Scores page shows the means over each method's models, with their bootstrap intervals.
 
 - **Highlights:** a value is bold if it is the best of its column (of its row, in the per-attribute view), or not significantly worse than the best: a one-sided paired bootstrap test at 5 %, whose 90 % interval of the difference from the best reaches 0 (`method_ranking.is_not_significantly_worse`). The test needs the methods on the same segments, so on the model-compatible sets, values are bold only if all shown methods are scored on the same set.
-- **Model-compatible sets** show each method on its model's own set. If the context offsets of a model select the segments of the reference set or the full set, these are its scores on that set, and its Notes say so.
+- **Model-compatible sets** show each method on its model's own set. The set of a model is selected by its context offsets and in-split offsets (`irap_evaluation.PredictionHeader`), which the Notes show. If they select the segments of the reference set or the full set, these are its scores on that set, and its Notes say so.
 - **Used splits:** methods trained on the shown split are hidden by default, since their scores are not of held-out data. Methods that used the split for early stopping, or whose training splits are unknown, are marked.
 - **`aMRP90`** is the mean over the attributes of the [manual review proportion](../irap_evaluation/docs/evaluation.md#manual-review-proportion) `MRP90`: the fraction of an attribute's segments that a reviewer has to correct, starting with the least confident predictions, until its mF1 reaches 0.9. Like NLL and Brier, it needs probabilistic predictions, so methods of hard predictions have no value.
 - **Label counts:** before the methods, the per-attribute view shows counts of each attribute's labels in the evaluation set (`label_counts`): Class count (the classes that occur as a label), Example count (the labeled segments), Minority-class example count (the labeled segments outside the most frequent class) and Smallest-class example count (the labeled segments of the rarest class). They are computed from the labels, since the counts of the scores (`n`, `support`) leave out invalid predictions under `null_policy='exclude'`. On the model-compatible sets, they are shown only if all shown methods are scored on the same set.
@@ -285,8 +285,8 @@ The "Create an ensemble" form of the Models page creates the weighted mean of th
 
 - The ensemble is a model with the given method name, display name and seed (0 in a new form). A blank method name is made of the sorted method names of the members with their seeds, e.g. `strong-probs_seeds1-3` (`irap_evaluation.make_ensemble_method_name`). A blank display name keeps the method's.
 - It gets a prediction file for each split on which every member has one. These replace all files of an existing model of that name, so that all its files are of the same members.
-- Its training splits are the union of its members', and its early stopping splits are its members' early stopping splits that are not among its training splits (`irap_evaluation.make_ensemble_model_info`).
-- Members that predict different segments or attributes are refused by default. The form can instead combine the segments and attributes that every member predicts, or all that any member predicts, where one that a member does not predict counts as invalid (`irap_evaluation.MemberCombination`). Members with different context offsets predict different segments. With all attributes, an attribute that only one member predicts is that member's prediction.
+- Its training splits are the union of its members', and its early stopping splits are its members' early stopping splits that are not among its training splits (`irap_evaluation.make_composite_model_info`).
+- Members that predict different segments or attributes are refused by default. The form can instead combine the segments and attributes that every member predicts, or all that any member predicts, where one that a member does not predict counts as invalid (`irap_evaluation.MemberCombination`). Members with different context offsets or in-split offsets predict different segments. With all attributes, an attribute that only one member predicts is that member's prediction.
 - Its files are checked, confirmed and scored like uploads. The action log records the members, weights and combinations of segments and attributes. If a member's file changes before the ensemble is stored, the ensemble is refused and can be created again.
 
 ## Coding tables
