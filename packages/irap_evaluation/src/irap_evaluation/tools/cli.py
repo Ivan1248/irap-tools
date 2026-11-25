@@ -205,7 +205,7 @@ def _compute_method_average_tables(
 
 def run_evaluate(args: argparse.Namespace) -> None:
     predictions_seq = _read_prediction_files(args.files)
-    evaluation_report.check_model_dir_names(p.header.model.label for p in predictions_seq)
+    evaluation_report.check_model_dir_names(p.header.model for p in predictions_seq)
     method_context_offsets = _parse_method_offsets(args.context_offsets)
     method_in_split_offsets = _parse_method_offsets(args.in_split_offsets)
     method_names = {p.header.model.method_name for p in predictions_seq}

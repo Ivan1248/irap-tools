@@ -20,6 +20,8 @@ from ..file_names import to_valid_file_name
 from ..methods import compute_method_metrics, group_models_by_method
 from ..metric_names import parse_metric_name
 from ..metrics import MetricValues, map_metric_values
+from ..prediction_io import make_model_file_name
+from ..predictions import ModelInfo
 
 V = T.TypeVar("V")
 
@@ -296,13 +298,20 @@ def to_evaluation_set_tables(
             for key, table in long_table.groupby(list(EVALUATION_SET_COLUMNS), sort=False)}
 
 
-def check_model_dir_names(model_labels: T.Iterable[str]) -> None:
+def get_model_dir_name(model: ModelInfo) -> str:
+    """The name of a model's directory in `write_evaluation_reports`: its name in file names
+    (`make_model_file_name`), so that a long method name is cut and ends with a hash."""
+    return make_model_file_name(model.method_name, model.seed)
+
+
+def check_model_dir_names(models: T.Iterable[ModelInfo]) -> None:
     """Checks that the models get different directories in `write_evaluation_reports`.
 
     Raises:
-        ValueError: If several model labels (`ModelInfo.label`) map to the same directory name.
+        ValueError: If several models (`ModelInfo.label`) map to the same directory name.
     """
-    num_models_per_dir = collections.Counter(map(to_valid_file_name, set(model_labels)))
+    label_to_dir_name = {m.label: get_model_dir_name(m) for m in models}
+    num_models_per_dir = collections.Counter(label_to_dir_name.values())
     if clashes := sorted(d for d, n in num_models_per_dir.items() if n > 1):
         raise ValueError(f"Several models map to the output directories {clashes}. Rename the"
                          f" methods.")
@@ -355,7 +364,7 @@ def write_evaluation_reports(
             map to one path, e.g. for evaluation sets named 'a b' and 'a_b', or a table cannot be
             made (see `to_per_attribute_table` and `to_average_table`).
     """
-    check_model_dir_names(r.model.label for r in results)
+    check_model_dir_names(r.model for r in results)
     out_dir = Path(out_dir)
     with_intervals = any(r.intervals is not None for r in results)
     long_table = to_long_table(results)
@@ -367,7 +376,7 @@ def write_evaluation_reports(
     table_files += [(out_dir / to_valid_file_name(f"method_averages_{'_'.join(key)}.csv"), table)
                     for key, table in (method_average_tables or {}).items()]
     json_files = [
-        (out_dir / to_valid_file_name(r.model.label) / to_valid_file_name(
+        (out_dir / get_model_dir_name(r.model) / to_valid_file_name(
             f"metrics_{r.evaluation_set.dataset}_{r.evaluation_set.split}"
             f"_{r.evaluation_set.name}.json"),
          json.dumps(to_json_dict(r), indent=2, ensure_ascii=False, allow_nan=False))

@@ -1,7 +1,7 @@
 import pytest
 
 from irap_evaluation.file_names import shorten_file_name, to_valid_file_name
-from irap_evaluation.prediction_io import make_prediction_file_name
+from irap_evaluation.prediction_io import make_model_file_name, make_prediction_file_name
 
 LONG_NAME = "trainer,epoch_count=3_model,encoder_f=partial(encoder,variant='large')" * 4
 
@@ -51,6 +51,16 @@ def test_prediction_file_name_has_the_method_the_seed_and_the_split():
         == "Qwen_Qwen3-VL.val.predictions.parquet"
     assert make_prediction_file_name("Qwen/Qwen3-VL", 3, "val") \
         == "Qwen_Qwen3-VL_seed3.val.predictions.parquet"
+
+
+def test_a_model_has_the_same_name_hash_in_its_report_directory_and_prediction_files():
+    dir_name = make_model_file_name(LONG_NAME, 3)
+    file_name = make_prediction_file_name(LONG_NAME, 3, "val")
+    assert len(dir_name.encode()) == 255
+    assert dir_name.endswith("_seed3")
+    hash_part = dir_name.removesuffix("_seed3").rpartition("-")[2]
+    assert file_name.endswith(f"-{hash_part}_seed3.val.predictions.parquet")
+    assert make_model_file_name("Qwen/Qwen3-VL", 3) == "Qwen_Qwen3-VL_seed3"
 
 
 @pytest.mark.parametrize("seed", [None, 3])

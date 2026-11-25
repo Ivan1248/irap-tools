@@ -108,6 +108,7 @@ from .metrics import (
     sum_statistics,
 )
 from .prediction_io import (
+    make_model_file_name,
     make_prediction_file_name,
     read_prediction_header,
     read_predictions,

@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from irap_data.metadata import MetaFiles, get_dataset_preset
-from irap_evaluation.prediction_io import read_predictions, write_predictions
+from irap_evaluation.prediction_io import make_model_file_name, read_predictions, write_predictions
 from irap_evaluation.tools.cli import main
 
 from synthetic_vietnam import SPLIT, make_predictions
@@ -151,6 +151,22 @@ def _write_method_model_files(metadata, tmp_path, method_to_num_models):
                 model_seed=model_seed, context_offsets=None))
             paths.append(str(path))
     return paths
+
+
+def test_evaluate_writes_the_report_of_a_model_with_a_long_method_name(metadata_dir, metadata,
+                                                                      tmp_path):
+    # Longer than a file name may be, as the method names of vidlu's training configurations.
+    name = "trainer,epoch_count=15_model,encoder_f=partial(encoder,variant='large')" * 5
+    path = tmp_path / "long.predictions.parquet"
+    write_predictions(path, make_predictions(metadata.vocabulary, list(metadata.splits[SPLIT]),
+                                             name=name, seed=0, model_seed=1))
+    out = tmp_path / "results"
+    assert main(["evaluate", str(metadata_dir), str(path), "--out", str(out)]) == 0
+    (model_dir,) = [p for p in out.iterdir() if p.is_dir()]
+    assert model_dir.name == make_model_file_name(name, 1)
+    assert (model_dir / "metrics_vietnam_val_reference.json").exists()
+    # The tables name the model by its full label.
+    assert set(pd.read_csv(out / "summary_long.csv")["model"]) == {f"{name}/seed1"}
 
 
 def test_methods_with_several_models(metadata_dir, metadata, tmp_path, capsys):

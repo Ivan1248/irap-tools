@@ -254,22 +254,34 @@ def from_arrow_table(table: pa.Table,
                                           is_valid)
 
 
+def make_model_file_name(method_name: str, seed: int | None, kept_suffix: str = "") -> str:
+    """The name of a model in file and directory names, followed by `kept_suffix`: `<method>`, or
+    `<method>_seed<seed>` for a model with a seed, i.e. its label (`ModelInfo.label`) made valid
+    by `to_valid_file_name`.
+
+    A method name that would make the name longer than `MAX_FILE_NAME_BYTES` is cut by
+    `shorten_file_name`, so it ends with the same hash whatever `kept_suffix` is, e.g. in the
+    names of a model's prediction files and of its report directory.
+
+    Raises:
+        ValueError: If the seed and `kept_suffix` leave no room for the method name.
+    """
+    stem = to_valid_file_name(format_model_label(method_name, seed))
+    seed_part = "" if seed is None else f"_seed{seed}"
+    return shorten_file_name(stem.removesuffix(seed_part), seed_part + kept_suffix)
+
+
 def make_prediction_file_name(method_name: str, seed: int | None, split: str) -> str:
     """The conventional name of a prediction file: `<method>.<split>.predictions.parquet`, or
-    `<method>_seed<seed>.<split>.predictions.parquet` for a model with a seed.
-
-    The method name and the split are made valid by `to_valid_file_name`. A method name that
-    would make the name longer than `MAX_FILE_NAME_BYTES` is cut by `shorten_file_name`. The
-    full method name is in the file's header.
+    `<method>_seed<seed>.<split>.predictions.parquet` for a model with a seed (see
+    `make_model_file_name`). The split is made valid by `to_valid_file_name`. The full method
+    name is in the file's header.
 
     Raises:
         ValueError: If the split name leaves no room for the method name.
     """
-    # The label is `<method>/seed<seed>` for a model with a seed, as for report directories.
-    stem = to_valid_file_name(format_model_label(method_name, seed))
-    seed_part = "" if seed is None else f"_seed{seed}"
-    return shorten_file_name(stem.removesuffix(seed_part),
-                             f"{seed_part}.{to_valid_file_name(split)}.predictions.parquet")
+    return make_model_file_name(method_name, seed,
+                                f".{to_valid_file_name(split)}.predictions.parquet")
 
 
 def write_predictions(path: str | Path, predictions: Predictions) -> None:
