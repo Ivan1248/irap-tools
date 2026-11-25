@@ -1009,6 +1009,13 @@ def main(argv: list[str] | None = None) -> int:
         drop_missing_attrs=args.drop_rows_missing_attributes,
         report=rep,
     )
+    if not all_rows:
+        # An empty rows.parquet has no columns, so build_metadata.py would fail later
+        # with an unclear error.
+        print(f"ERROR: no rows were parsed: {len(rep.skipped_files)} of {len(inputs.files)} "
+              f"file(s) were skipped (see the warnings above), and the others had no "
+              f"kept rows. Nothing was written.", file=sys.stderr)
+        return 1
 
     kept, dup_dropped, dup_issues = resolve_duplicates(all_rows, attribute_names)
     issues = rep.issues + dup_issues
