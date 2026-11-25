@@ -1,5 +1,6 @@
 """Tests of the torch-free metadata API in `irap_data.metadata`."""
 
+import dataclasses as dc
 import json
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import pytest
 from irap_data.metadata import (
     DATASET_PRESETS,
     IGNORE_LABEL_INDEX,
+    DatasetPreset,
     ClassVocabulary,
     IRAPMetadata,
     MetaFiles,
@@ -21,6 +23,7 @@ from irap_data.metadata import (
     compute_segment_labels,
     get_segment_location,
     select_preset_split_segments,
+    select_reference_split_segments,
     select_split_segments,
     to_irap_code,
 )
@@ -110,26 +113,59 @@ def test_context_follows_the_road_order_not_the_segment_ids():
 
 def test_select_split_segments(metadata):
     selection = select_split_segments(metadata, "val", context_offsets=(0, -1),
-                                      allow_missing_attributes=True)
+                                      in_split_offsets=(), allow_missing_attributes=True)
     assert selection.segment_ids == ("S1", "S2", "S5", "T1")
     assert selection.attr_to_num_labeled == {"A": 4, "B": 4}
     subset = select_split_segments(metadata, "val", context_offsets=(0, -1),
-                                   allow_missing_attributes=True,
+                                   in_split_offsets=(), allow_missing_attributes=True,
                                    ncontext_segment_id_subset={"S2", "T1"})
     assert subset.segment_ids == ("S2", "T1")
     with pytest.raises(ValueError, match="Invalid split"):
-        select_split_segments(metadata, "test", context_offsets=(0,),
+        select_split_segments(metadata, "test", context_offsets=(0,), in_split_offsets=(),
                               allow_missing_attributes=True)
 
 
-def test_select_preset_split_segments_uses_reference_offsets(metadata):
+def test_select_split_segments_keeps_in_split_offsets_in_the_split(metadata):
+    # S2 moves to another split, so S1, whose next segment is S2, has a complete window with
+    # (0, 1), but not one whose next segment is in its split.
+    metadata = dc.replace(metadata, splits={"val": ["S0", "S1", "S4", "S5", "T0", "T1"],
+                                            "train": ["S2"]})
+    kwargs = dict(context_offsets=(0, 1), allow_missing_attributes=True)
+    assert select_split_segments(metadata, "val", in_split_offsets=(),
+                                 **kwargs).segment_ids == ("S0", "S1", "S4", "T0")
+    selection = select_split_segments(metadata, "val", in_split_offsets=(1,), **kwargs)
+    assert selection.segment_ids == ("S0", "S4", "T0")
+    # The context segments outside the in-split offsets may be in any split.
+    assert select_split_segments(metadata, "val", context_offsets=(0, 1, 2), in_split_offsets=(0,),
+                                 allow_missing_attributes=True).segment_ids == ("S0",)
+    with pytest.raises(ValueError, match="not among the context offsets"):
+        select_split_segments(metadata, "val", in_split_offsets=(-1,), **kwargs)
+
+
+def test_dataset_presets_have_in_split_offsets_within_the_context_offsets():
+    with pytest.raises(ValueError, match="not among the context offsets"):
+        DatasetPreset(allow_missing_attributes=True, reference_context_offsets=range(-1, 1),
+                      reference_in_split_offsets=range(0, 2))
+    bh = DATASET_PRESETS["bh"]
+    assert (bh.reference_context_offsets, bh.reference_in_split_offsets) == (range(-14, 11),
+                                                                           range(-10, 11))
+
+
+def test_select_reference_split_segments_uses_reference_offsets(metadata):
     # The -4..0 Vietnam reference window of S4 and S5 includes S3, which has no image, and r1 is
     # too short.
-    assert select_preset_split_segments(metadata, "vietnam", "val").segment_ids == ()
-    model = select_preset_split_segments(metadata, "vietnam", "val", context_offsets=(0,))
+    assert select_reference_split_segments(metadata, "vietnam", "val").segment_ids == ()
+    with pytest.raises(ValueError, match="Unknown iRAP dataset"):
+        select_reference_split_segments(metadata, "atlantis", "val")
+
+
+def test_select_preset_split_segments_uses_the_given_offsets(metadata):
+    model = select_preset_split_segments(metadata, "vietnam", "val", (0,), ())
     assert model.segment_ids == ("S0", "S1", "S2", "S4", "S5", "T0", "T1")
     with pytest.raises(ValueError, match="Unknown iRAP dataset"):
-        select_preset_split_segments(metadata, "atlantis", "val")
+        select_preset_split_segments(metadata, "atlantis", "val", (0,), ())
+    with pytest.raises(ValueError, match="not among the context offsets"):
+        select_preset_split_segments(metadata, "vietnam", "val", (0,), (-1,))
 
 
 def test_select_split_segments_matches_irap_dataset(metadata_dir, metadata):
@@ -140,7 +176,7 @@ def test_select_split_segments_matches_irap_dataset(metadata_dir, metadata):
         dataset = IRAPDataset(metadata_dir / "images", "val", metadata_dir=metadata_dir,
                               context_offsets=offsets, allow_missing_attributes=True)
         selection = select_split_segments(metadata, "val", context_offsets=offsets,
-                                          allow_missing_attributes=True)
+                                          in_split_offsets=(), allow_missing_attributes=True)
         assert tuple(dataset.segment_ids) == selection.segment_ids
         assert dataset.info.attr_to_num_labeled == selection.attr_to_num_labeled
 

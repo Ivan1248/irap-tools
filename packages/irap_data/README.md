@@ -45,7 +45,8 @@ Labels and segment selection without images or PyTorch:
 from irap_data import load_irap_metadata, select_preset_split_segments
 
 metadata = load_irap_metadata("/data/IRAP_Vietnam")
-val = select_preset_split_segments(metadata, "vietnam", "val", context_offsets=(0, -1, -4))
+val = select_preset_split_segments(metadata, "vietnam", "val", context_offsets=(0, -1, -4),
+                                   in_split_offsets=())
 print(len(val.segment_ids), metadata.vocabulary.class_counts)
 ```
 
@@ -60,10 +61,11 @@ ds = InferenceImageDataset.from_folder(
 
 ### Segment selection
 
-`irap_data.metadata.select_split_segments` selects the segments of a split for the datasets and the statistics. It keeps a segment if it has an image, labels, and a complete context window: every context offset falls inside its road sequence and has an image.
+`irap_data.metadata.select_split_segments` selects the segments of a split for the datasets and the statistics. It keeps a segment if it has an image, labels, and a complete context window: every context offset falls inside its road sequence and has an image, and the segments at the `in_split_offsets`, a subset of the context offsets that is empty for most models, are in the same split.
 
 - **BH N-context filter.** `make_bh_data` requires `use_ncontext_filter`. With `True`, it restricts each labeled split, as the original code does, to the segments in its `seg_to_res/<split>.pickle` whose 10 preceding and 10 following segments on the road are in the same file (`load_ncontext_segment_ids`). The selected segments are then the same for any context offsets with `max(abs(context_offsets)) ≤ 10`. Recent work does not use the filter, and `DATASET_PRESETS`, the evaluation sets and `IRAP_DATASET_FACTORIES` do not apply it. iRAP-Vietnam has no `seg_to_res` files.
-- **Reference set.** The reference set of a split is the segments with a complete context window for the `reference_context_offsets` of the release in `DATASET_PRESETS` (`select_preset_split_segments` with `context_offsets=None`). All models whose context offsets lie within this window can be scored on it.
+- **Reference set.** The reference set of a split is the segments with a complete context window for the `reference_context_offsets` and `reference_in_split_offsets` of the release in `DATASET_PRESETS` (`select_reference_split_segments`). All models whose context offsets lie within this window, and whose in-split offsets lie within the in-split offsets, can be scored on it. For BH, these are the segments that the sequential enhancement of Kačan et al. can predict: images at −14…10, and the −10…10 window of base-model outputs in the segment's split.
+- **In-split offsets.** A model that reads base-model outputs of its context segments, like sequential enhancement, uses them only within the split, because the outputs on training segments are optimistic. Its `in_split_offsets` are these positions. The other context segments, e.g. the frames of a per-segment model, may be in any split.
 - **Unlabeled splits.** `splits.json` can contain `unlabeled_train`, `unlabeled_val` and `unlabeled_test` (unlabeled segments from the same sequences or areas as the labeled split) and `unlabeled_unlocated` (segments with an unknown relationship to the other splits). The datasets return them with all targets `-1`. The context-window check applies to them, the N-context filter does not.
 - **Segments in no road sequence.** A segment that is in no road sequence has no context window. `select_split_segments` warns about such segments, as they point to incomplete metadata.
 

@@ -22,6 +22,7 @@ from ..metadata import (
     get_segment_location,
     is_unlabeled_split,
     select_preset_split_segments,
+    select_reference_split_segments,
 )
 
 # Segment selections ###############################################################################
@@ -36,9 +37,11 @@ SELECTION_DESCRIPTIONS: dict[SelectionKind, str] = {
     "with_context": "The labeled segments whose context window with the context offsets of the"
                     " release (`irap_data.DatasetPreset.reference_context_offsets`) is complete:"
                     " every offset stays inside the road sequence of the segment and has an"
-                    " image. The segments near the ends of a road sequence are left out. A model"
-                    " whose context offsets lie within the window can be scored on all of"
-                    " them, so they are an evaluation set common to such models.",
+                    " image, and the segments at the in-split offsets of the release"
+                    " (`reference_in_split_offsets`) are in the same split. The segments near"
+                    " the ends of a road sequence or of a split are left out. A model whose"
+                    " context offsets lie within the window can be scored on all of them, so"
+                    " they are an evaluation set common to such models.",
     "model": "The labeled segments whose context window with the context offsets of a model is"
              " complete: the segments that the model is trained and evaluated on.",
 }
@@ -70,10 +73,16 @@ def select_segments(
         return compute_split_labels(
             metadata, split,
             allow_missing_attributes=get_dataset_preset(dataset_name).allow_missing_attributes)
-    if selection in ("with_context", "model"):
-        selected = select_preset_split_segments(metadata, dataset_name, split, context_offsets)
-        return {sid: selected.segment_id_to_labels[sid] for sid in selected.segment_ids}
-    raise ValueError(f"Unknown selection {selection!r}. Choose from {list(SELECTION_DESCRIPTIONS)}.")
+    if selection == "with_context":
+        selected = select_reference_split_segments(metadata, dataset_name, split)
+    elif selection == "model":
+        # The statistics describe a model by its context offsets only, without in-split offsets.
+        selected = select_preset_split_segments(metadata, dataset_name, split, context_offsets,
+                                                in_split_offsets=())
+    else:
+        raise ValueError(
+            f"Unknown selection {selection!r}. Choose from {list(SELECTION_DESCRIPTIONS)}.")
+    return {sid: selected.segment_id_to_labels[sid] for sid in selected.segment_ids}
 
 
 def compute_sequence_indices(

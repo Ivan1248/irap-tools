@@ -40,31 +40,61 @@ class DatasetPreset:
     Attributes:
         allow_missing_attributes: Whether a segment with a missing or unknown attribute code is
             kept, with `IGNORE_LABEL_INDEX` for that attribute, rather than dropped.
-        reference_context_offsets: The contiguous context offsets that define the reference
-            evaluation set: the segments whose context window with these offsets is complete. A
-            model whose context offsets lie within this window can predict every reference
-            segment, so all such models are scored on the same segments.
+        reference_context_offsets: The contiguous context offsets that, with
+            `reference_in_split_offsets`, define the reference evaluation set: the segments whose
+            context window with these offsets is complete (see `select_split_segments`). A model
+            whose context offsets and in-split offsets lie within these can predict every
+            reference segment, so all such models are scored on the same segments.
+        reference_in_split_offsets: The contiguous offsets, a part of
+            `reference_context_offsets`, whose segments must also be in the split of the
+            reference segment. Empty for none.
     """
 
     allow_missing_attributes: bool
     reference_context_offsets: range
+    reference_in_split_offsets: range
 
     def __post_init__(self):
         if self.reference_context_offsets.step != 1 or 0 not in self.reference_context_offsets:
             raise ValueError(f"The reference context offsets {self.reference_context_offsets}"
                              f" must have step 1 and contain 0.")
+        if self.reference_in_split_offsets.step != 1:
+            raise ValueError(f"The reference in-split offsets {self.reference_in_split_offsets}"
+                             f" must have step 1.")
+        check_in_split_offsets(self.reference_context_offsets, self.reference_in_split_offsets)
+
+
+def check_in_split_offsets(context_offsets: T.Sequence[int],
+                           in_split_offsets: T.Sequence[int]) -> None:
+    """Checks that the in-split offsets of a context window are some of its context offsets.
+
+    Raises:
+        ValueError: If an in-split offset is not a context offset.
+    """
+    if outside := sorted(set(in_split_offsets) - set(context_offsets)):
+        raise ValueError(f"The in-split offsets {outside} are not among the context offsets"
+                         f" {tuple(context_offsets)}.")
 
 
 #: Presets by release name, the same names as `irap_dataset.IRAP_DATASET_FACTORIES`. They do not
 #: apply the N-context filter of iRAP-BH (`load_ncontext_segment_ids`), so neither do the
 #: evaluation sets.
 DATASET_PRESETS: dict[str, DatasetPreset] = {
-    # The window that the N-context filter requires (10 segments on each side).
-    "bh": DatasetPreset(allow_missing_attributes=False, reference_context_offsets=range(-10, 11)),
+    # The segments that the sequential enhancement of Kačan et al. can predict: its window of 10
+    # segments on each side must lie in the split, since the base model's outputs on training
+    # segments are optimistic, and each segment of the window needs the base model's context
+    # frames at -1 and -4, in any split. Their code scores the base model on the same segments
+    # (its N-context filter).
+    "bh": DatasetPreset(allow_missing_attributes=False,
+                        reference_context_offsets=range(-14, 11),
+                        reference_in_split_offsets=range(-10, 11)),
     # Vietnam road sequences are short (median 29 segments in the 2026-07-31 metadata), so the
-    # window holds only the past context that the default model offsets (0, -1, -4) need.
+    # window holds only the past context that the default model offsets (0, -1, -4) need. The
+    # previous segments are not in the split of a val or test segment (2026-07-31 metadata), so
+    # no offset is in-split.
     "vietnam": DatasetPreset(allow_missing_attributes=True,
-                             reference_context_offsets=range(-4, 1)),
+                             reference_context_offsets=range(-4, 1),
+                             reference_in_split_offsets=range(0)),
 }
 
 
@@ -767,6 +797,7 @@ def select_split_segments(
     split: str,
     *,
     context_offsets: T.Sequence[int],
+    in_split_offsets: T.Sequence[int],
     allow_missing_attributes: bool,
     ncontext_segment_id_subset: T.Container[str] | None = None,
 ) -> SplitSelection:
@@ -774,11 +805,20 @@ def select_split_segments(
 
     The filters apply in this order: an image path exists and the labels are complete (see
     `compute_split_labels`), the context window is complete (see
-    `compute_segment_context_ids`), and the segment is in `ncontext_segment_id_subset`.
+    `compute_segment_context_ids`), the segments at `in_split_offsets` are in `split`, and the
+    segment is in `ncontext_segment_id_subset`.
+
+    Args:
+        in_split_offsets: Context offsets whose segments must be in `split` too, e.g. those
+            whose base-model outputs a sequential model reads: the outputs on training segments
+            are optimistic, so a window that reaches into another split would make the scores
+            optimistic. Empty for none.
 
     Raises:
-        ValueError: If `split` is not in `splits.json`.
+        ValueError: If `split` is not in `splits.json`, or an in-split offset is not a context
+            offset.
     """
+    check_in_split_offsets(context_offsets, in_split_offsets)
     segment_id_to_labels = compute_split_labels(
         metadata, split, allow_missing_attributes=allow_missing_attributes)
     num_without_sequence = sum(sid not in metadata.sequence_index for sid in segment_id_to_labels)
@@ -790,6 +830,12 @@ def select_split_segments(
         metadata.road_id_to_segment_id_sequence, segment_id_to_labels, context_offsets,
         available_segment_ids=metadata.segment_id_to_data_paths_rel,
         sequence_index=metadata.sequence_index)
+    if in_split_offsets:
+        split_segment_ids = set(metadata.splits[split])
+        in_split_positions = [list(context_offsets).index(o) for o in in_split_offsets]
+        segment_id_to_context_ids = {
+            sid: ids for sid, ids in segment_id_to_context_ids.items()
+            if all(ids[i] in split_segment_ids for i in in_split_positions)}
     if ncontext_segment_id_subset is not None:
         segment_id_to_context_ids = {sid: ids for sid, ids in segment_id_to_context_ids.items()
                                      if sid in ncontext_segment_id_subset}
@@ -806,18 +852,33 @@ def select_preset_split_segments(
     metadata: IRAPMetadata,
     dataset_name: str,
     split: str,
-    context_offsets: T.Sequence[int] | None = None,
+    context_offsets: T.Sequence[int],
+    in_split_offsets: T.Sequence[int],
 ) -> SplitSelection:
     """Selects the segments of `split` with the loading defaults of a release.
 
     Args:
         dataset_name: A key of `DATASET_PRESETS`.
-        context_offsets: The context offsets of a model, or None for the reference offsets of
-            the release (see `DatasetPreset`).
+        context_offsets, in_split_offsets: The offsets of a model (see `select_split_segments`).
+    """
+    return select_split_segments(
+        metadata, split, context_offsets=context_offsets, in_split_offsets=in_split_offsets,
+        allow_missing_attributes=get_dataset_preset(dataset_name).allow_missing_attributes)
+
+
+def select_reference_split_segments(
+    metadata: IRAPMetadata,
+    dataset_name: str,
+    split: str,
+) -> SplitSelection:
+    """Selects the segments of `split` with the reference offsets of a release.
+
+    The offsets are `DatasetPreset.reference_context_offsets` and `reference_in_split_offsets`.
+
+    Args:
+        dataset_name: A key of `DATASET_PRESETS`.
     """
     preset = get_dataset_preset(dataset_name)
-    return select_split_segments(
-        metadata, split,
-        context_offsets=(preset.reference_context_offsets if context_offsets is None
-                         else context_offsets),
-        allow_missing_attributes=preset.allow_missing_attributes)
+    return select_preset_split_segments(
+        metadata, dataset_name, split, preset.reference_context_offsets,
+        preset.reference_in_split_offsets)

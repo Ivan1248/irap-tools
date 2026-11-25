@@ -93,6 +93,8 @@ class IRAPDataset(Dataset):
             metadata,
             subset,
             context_offsets=self.context_offsets,
+            # The dataset loads only images, which are valid inputs in any split.
+            in_split_offsets=(),
             allow_missing_attributes=allow_missing_attributes,
             ncontext_segment_id_subset=ncontext_segment_id_subset,
         )

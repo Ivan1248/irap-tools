@@ -27,6 +27,7 @@ from .metadata import (
     SplitSelection,
     compute_class_occurrence_counts,
     compute_label_matrix,
+    check_in_split_offsets,
     compute_num_segments_per_class,
     compute_segment_labels,
     compute_split_labels,
@@ -43,6 +44,7 @@ from .metadata import (
     load_ncontext_segment_ids,
     resolve_irap_paths,
     select_preset_split_segments,
+    select_reference_split_segments,
     select_split_segments,
 )
 
