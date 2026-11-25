@@ -13,11 +13,15 @@ Writes (into ``<data_dir>/_work/``):
 
 What this measures:
 
-Each coding-table file is treated as one annotator. ``parse_coding_tables.py``
-normally keeps a single row per ``seg_id`` (the duplicate with the most filled
-cells) and discards the rest; this tool instead uses the *pre-dedup* rows so a
-segment coded by several annotators contributes one record per annotator, and
-quantifies how much the annotators agree.
+Each coding-table file is treated as one annotator, and so is each further
+copy of a ``seg_id`` within a file, labeled ``"<file> (copy k)"``.
+``parse_coding_tables.py`` keeps a
+single row per ``seg_id`` (the duplicate with the most filled cells) and
+discards the rest; this tool instead uses the *pre-dedup* rows so a segment
+coded by several annotators contributes one record per annotator, and
+quantifies how much the annotators agree. A copy label names a position in the
+file, not a person, so the ``pairs`` of a file with its copies may pool
+different annotators.
 
 For every iRAP attribute independently, over the segments coded by >= 2
 annotators (``--min-annotators``):
@@ -59,7 +63,6 @@ from parse_coding_tables import (
     collect_all_rows,
     format_row_ranges,
     is_real_attribute_code,
-    num_filled_attribute_cells,
     prepare_parse_inputs,
 )
 
@@ -103,26 +106,22 @@ def agreement_kappa(a: T.Sequence[int], b: T.Sequence[int]) -> dict[str, T.Any]:
 # -----------------------------------------------------------------------------
 
 
-def group_by_segment(
-    all_rows: T.Sequence[dict],
-    attribute_names: T.Sequence[str],
-) -> dict[str, dict[str, dict]]:
-    """Group pre-dedup rows into ``{seg_id: {source_file: record}}``.
+def group_by_segment(all_rows: T.Sequence[dict]) -> dict[str, dict[str, dict]]:
+    """Groups pre-dedup rows into ``{seg_id: {annotator: record}}``.
 
-    A segment coded twice within one file collapses to the record with the most
-    filled cells (same rule parse_coding_tables uses for cross-file dups), so
-    each annotator contributes a single record per segment.
+    Every row is an annotation. The annotator of the first row of a seg_id in a
+    file (by Excel row) is the file name, and that of its k-th row is
+    ``"<file> (copy k)"``, so that the copies within a file are treated as
+    separate annotators.
     """
     groups: dict[str, dict[str, dict]] = defaultdict(dict)
-    for rec in all_rows:
-        per_file = groups[rec["seg_id"]]
-        source_file = rec["source_file"]
-        prev = per_file.get(source_file)
-        if prev is None or (
-            num_filled_attribute_cells(rec, attribute_names)
-            > num_filled_attribute_cells(prev, attribute_names)
-        ):
-            per_file[source_file] = rec
+    num_rows_per_seg_id_and_file: Counter[tuple[str, str]] = Counter()
+    for rec in sorted(all_rows, key=lambda r: (r["source_file"], r["source_row"])):
+        seg_id, source_file = rec["seg_id"], rec["source_file"]
+        num_rows_per_seg_id_and_file[seg_id, source_file] += 1
+        k = num_rows_per_seg_id_and_file[seg_id, source_file]
+        annotator = source_file if k == 1 else f"{source_file} (copy {k})"
+        groups[seg_id][annotator] = rec
     return groups
 
 
@@ -130,15 +129,15 @@ def attribute_comparisons(
     shared: T.Mapping[str, dict[str, dict]],
     attr: str,
 ) -> T.Iterator[dict[str, int]]:
-    """Yield ``{source_file: code}`` of genuine codes for one attribute, per segment.
+    """Yield ``{annotator: code}`` of genuine codes for one attribute, per segment.
 
     Only segments where >= 2 annotators gave a genuine code for ``attr`` are
     yielded.
     """
-    for per_file in shared.values():
+    for per_annotator in shared.values():
         coded = {
-            source_file: rec.get(attr)
-            for source_file, rec in per_file.items()
+            annotator: rec.get(attr)
+            for annotator, rec in per_annotator.items()
             if is_real_attribute_code(rec.get(attr))
         }
         if len(coded) >= 2:
@@ -160,14 +159,14 @@ def compute_attribute_metrics(
     n_segments = 0
     for coded in attribute_comparisons(shared, attr):
         n_segments += 1
-        files = sorted(coded)
-        for a, b in itertools.permutations(files, 2):
+        annotators = sorted(coded)
+        for a, b in itertools.permutations(annotators, 2):
             pooled_true.append(coded[a])
             pooled_pred.append(coded[b])
             t, p = pair_ordered[(a, b)]
             t.append(coded[a])
             p.append(coded[b])
-        for a, b in itertools.combinations(files, 2):
+        for a, b in itertools.combinations(annotators, 2):
             unordered_a.append(coded[a])
             unordered_b.append(coded[b])
 
@@ -215,8 +214,8 @@ def collect_conflicts(
     """
     conflicts_per_attr: dict[str, list[dict]] = defaultdict(list)
     counts: Counter = Counter()
-    for seg_id, per_file in shared.items():
-        group = list(per_file.values())
+    for seg_id, per_annotator in shared.items():
+        group = list(per_annotator.values())
         for attr in find_conflicting_attributes(group, attribute_names):
             counts[attr] += 1
             if len(conflicts_per_attr[attr]) >= max_per_attribute:
@@ -243,14 +242,14 @@ def shared_segment_ranges(
 ) -> list[dict]:
     """Summarise the duplicated segments as seg_id ranges per annotator set.
 
-    Groups the shared segments by the exact set of annotators (source files)
-    that coded them and collapses each group's seg_ids into continuous ranges
+    Groups the shared segments by the exact set of annotators that coded them
+    and collapses each group's seg_ids into continuous ranges
     (``format_row_ranges``). Returns one entry per annotator set, most segments
     first.
     """
     by_set: dict[tuple[str, ...], list[int]] = defaultdict(list)
-    for seg_id, per_file in shared.items():
-        by_set[tuple(sorted(per_file))].append(int(seg_id))
+    for seg_id, per_annotator in shared.items():
+        by_set[tuple(sorted(per_annotator))].append(int(seg_id))
     entries = [
         {
             "annotators": list(annotators),
@@ -274,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--min-annotators", type=int, default=2,
         help="Only evaluate segments coded by at least this many annotators "
-             "(distinct source files). Default: 2.",
+             "(source files and copies within a file). Default: 2.",
     )
     parser.add_argument(
         "--max-conflicts-per-attribute", type=int, default=200,
@@ -296,13 +295,13 @@ def main(argv: list[str] | None = None) -> int:
     all_rows = collect_all_rows(inputs)
     attribute_names = inputs.attribute_names
 
-    groups = group_by_segment(all_rows, attribute_names)
+    groups = group_by_segment(all_rows)
     shared = {
-        seg_id: per_file
-        for seg_id, per_file in groups.items()
-        if len(per_file) >= args.min_annotators
+        seg_id: per_annotator
+        for seg_id, per_annotator in groups.items()
+        if len(per_annotator) >= args.min_annotators
     }
-    annotators = sorted({rec["source_file"] for rec in all_rows})
+    annotators = sorted({a for per_annotator in groups.values() for a in per_annotator})
 
     conflicts_per_attr, conflict_counts = collect_conflicts(
         shared, attribute_names, max_per_attribute=args.max_conflicts_per_attribute
@@ -353,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
 def _print_summary(report: dict) -> None:
     """Compact stdout summary, attributes ordered by worst agreement first."""
     summary = report["summary"]
-    print(f"Annotators (files contributing rows): {len(summary['annotators'])}")
+    print(f"Annotators (files and copies within files): {len(summary['annotators'])}")
     print(f"Segments total: {summary['num_segments_total']}; shared by >= "
           f"{report['meta']['min_annotators']} annotator(s): "
           f"{summary['num_shared_segments']}")

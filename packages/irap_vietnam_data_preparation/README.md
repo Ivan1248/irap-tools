@@ -77,7 +77,7 @@ Writes one row per segment to `_work/rows.parquet` and a summary to `_work/parse
 
 Each cell set to `-1`, each interpreted value (e.g. a speed limit below 30 km/h, a duplicate dropped in a tie, or a duplicate with different codes) and each file-level irregularity (e.g. an ignored column with values) is an _issue_. The parser prints a warning per group of equal issues with their Excel row numbers to stderr, where a dropped duplicate also names the row that was kept, e.g. `6820 (kept: 6780)`, and a summary of the issues to stdout. `parse_report.json` lists the issues of each file, with their rows.
 
-Optional: `python cross_annotator_eval.py $DATA_DIR` measures the agreement between the coding tables that code the same segments. It writes `_work/cross_annotator_report.json`.
+Optional: `python cross_annotator_eval.py $DATA_DIR` measures the agreement between the annotations of the same segments: those of different coding tables, and the copies of a `seg_id` within a table, which are treated as separate annotators. It writes `_work/cross_annotator_report.json`.
 
 ### 4. Build the metadata
 
