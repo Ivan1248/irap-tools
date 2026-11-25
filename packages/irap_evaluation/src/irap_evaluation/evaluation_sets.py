@@ -50,6 +50,8 @@ class EvaluationSet:
             (`get_model_compatible_set`).
         context_offsets: The context offsets that selected the segments, also of a subset
             (see `select_evaluation_subset`).
+        in_split_offsets: The context offsets whose segments are in the split (see
+            `irap_data.select_split_segments`).
         vocabulary: The attributes and classes of the dataset.
         segment_ids: (N,) the evaluated segments.
         class_indices: Attribute -> (N,) int64 class indices in `vocabulary` order,
@@ -62,6 +64,7 @@ class EvaluationSet:
     split: str
     name: str
     context_offsets: tuple[int, ...]
+    in_split_offsets: tuple[int, ...]
     vocabulary: ClassVocabulary
     segment_ids: tuple[str, ...]
     class_indices: T.Mapping[str, np.ndarray]
@@ -83,6 +86,14 @@ class EvaluationSet:
         return np.array([index_of[s] for s in self.segment_sequence_ids], dtype=np.int64)
 
     @property
+    def context_window_description(self) -> str:
+        """The offsets that selected the segments, for messages, e.g. 'context offsets
+        (0, -1)'."""
+        in_split = (f", in-split offsets {self.in_split_offsets}" if self.in_split_offsets
+                    else "")
+        return f"context offsets {self.context_offsets}{in_split}"
+
+    @property
     def attr_to_num_labeled(self) -> dict[str, int]:
         return {a: int((v != IGNORE_LABEL_INDEX).sum()) for a, v in self.class_indices.items()}
 
@@ -94,8 +105,8 @@ class EvaluationSet:
         digest = hashlib.sha256()
         description = {
             "dataset": self.dataset, "split": self.split, "name": self.name,
-            "context_offsets": self.context_offsets, "segment_ids": self.segment_ids,
-            "segment_sequence_ids": self.segment_sequence_ids,
+            "context_offsets": self.context_offsets, "in_split_offsets": self.in_split_offsets,
+            "segment_ids": self.segment_ids, "segment_sequence_ids": self.segment_sequence_ids,
             "attribute_to_irap_codes": self.vocabulary.attribute_to_irap_codes,
             "attributes": list(self.class_indices)}
         digest.update(json.dumps(description).encode())
@@ -105,24 +116,27 @@ class EvaluationSet:
 
 
 def get_evaluation_set(metadata: IRAPMetadata, dataset: str, split: str,
-                       context_offsets: T.Sequence[int], name: str) -> EvaluationSet:
-    """The evaluation set that `context_offsets` select in a split.
+                       context_offsets: T.Sequence[int], name: str, *,
+                       in_split_offsets: T.Sequence[int]) -> EvaluationSet:
+    """The evaluation set that `context_offsets` and `in_split_offsets` select in a split.
 
-    It has the segments with a complete context window for `context_offsets`, selected with
-    `irap_data.select_preset_split_segments`. The offsets of a model give its model-compatible
-    set (`get_model_compatible_set`), and (0,) selects every segment of the split that has an
-    image and labels (`get_full_set`).
+    It has the segments with a complete context window for `context_offsets` whose segments at
+    `in_split_offsets` are in the split, selected with `irap_data.select_preset_split_segments`.
+    The offsets of a model give its model-compatible set (`get_model_compatible_set`), and (0,)
+    selects every segment of the split that has an image and labels (`get_full_set`).
 
     Args:
         name: See `EvaluationSet.name`.
     """
-    selection = select_preset_split_segments(metadata, dataset, split, context_offsets)
+    selection = select_preset_split_segments(metadata, dataset, split, context_offsets,
+                                             in_split_offsets)
     vocabulary = metadata.vocabulary
     labels = compute_label_matrix(selection.segment_id_to_labels, selection.segment_ids,
                                   len(vocabulary.attribute_names))
     return EvaluationSet(
         dataset=dataset, split=split, name=name,
-        context_offsets=tuple(context_offsets), vocabulary=vocabulary,
+        context_offsets=tuple(context_offsets), in_split_offsets=tuple(in_split_offsets),
+        vocabulary=vocabulary,
         segment_ids=selection.segment_ids,
         class_indices={a: labels[:, i] for i, a in enumerate(vocabulary.attribute_names)},
         segment_sequence_ids=tuple(metadata.sequence_index[sid][0]
@@ -133,11 +147,12 @@ def get_reference_set(metadata: IRAPMetadata, dataset: str, split: str) -> Evalu
     """The reference set of a split, named `REFERENCE_SET_NAME`, the same for every model.
 
     It is the evaluation set of the reference offsets of the release
-    (`irap_data.DatasetPreset.reference_context_offsets`).
+    (`irap_data.DatasetPreset.reference_context_offsets` and `reference_in_split_offsets`).
     """
-    return get_evaluation_set(metadata, dataset, split,
-                              get_dataset_preset(dataset).reference_context_offsets,
-                              REFERENCE_SET_NAME)
+    preset = get_dataset_preset(dataset)
+    return get_evaluation_set(metadata, dataset, split, preset.reference_context_offsets,
+                              REFERENCE_SET_NAME,
+                              in_split_offsets=preset.reference_in_split_offsets)
 
 
 def get_full_set(metadata: IRAPMetadata, dataset: str, split: str) -> EvaluationSet:
@@ -146,7 +161,7 @@ def get_full_set(metadata: IRAPMetadata, dataset: str, split: str) -> Evaluation
 
     It contains every other evaluation set of the split.
     """
-    return get_evaluation_set(metadata, dataset, split, (0,), FULL_SET_NAME)
+    return get_evaluation_set(metadata, dataset, split, (0,), FULL_SET_NAME, in_split_offsets=())
 
 
 def get_shared_evaluation_sets(metadata: IRAPMetadata, dataset: str,
@@ -159,11 +174,12 @@ def get_shared_evaluation_sets(metadata: IRAPMetadata, dataset: str,
 
 
 def get_model_compatible_set(metadata: IRAPMetadata, dataset: str, split: str,
-                             context_offsets: T.Sequence[int]) -> EvaluationSet:
-    """The model-compatible set of a split for a model's context offsets, named
-    `MODEL_COMPATIBLE_SET_NAME`."""
+                             context_offsets: T.Sequence[int],
+                             in_split_offsets: T.Sequence[int]) -> EvaluationSet:
+    """The model-compatible set of a split for a model's context offsets and in-split offsets
+    (see `PredictionHeader`), named `MODEL_COMPATIBLE_SET_NAME`."""
     return get_evaluation_set(metadata, dataset, split, context_offsets,
-                              MODEL_COMPATIBLE_SET_NAME)
+                              MODEL_COMPATIBLE_SET_NAME, in_split_offsets=in_split_offsets)
 
 
 def select_evaluation_subset(evaluation_set: EvaluationSet, is_selected: np.ndarray,
@@ -255,7 +271,7 @@ def select_evaluation_sets(
             s for s in model_compatible_set.segment_ids if s not in predicted]):
         description = (f"No predictions for {len(missing)} of the"
                        f" {model_compatible_set.num_segments} segments of the model-compatible set"
-                       f" (context offsets {model_compatible_set.context_offsets})")
+                       f" ({model_compatible_set.context_window_description})")
         if missing_segment_policy == "error":
             raise ValueError(f"{description}, so the predictions are incomplete or of another"
                              f" metadata build.")
@@ -268,9 +284,9 @@ def select_evaluation_sets(
                         if s not in predicted and s not in expected]:
             outside = " outside the model-compatible set" if expected else ""
             notes.append(f"No predictions for {len(unscored)} of the {shared_set.num_segments}"
-                         f" segments of the {shared_set.name} set (context offsets"
-                         f" {shared_set.context_offsets}){outside}, so the model is not scored"
-                         f" on it.")
+                         f" segments of the {shared_set.name} set"
+                         f" ({shared_set.context_window_description}){outside}, so the model is"
+                         f" not scored on it.")
         else:
             evaluation_sets.append(shared_set)
     model_compatible_set_name = None
@@ -287,7 +303,7 @@ def select_evaluation_sets(
     elif equal_set_names := [s.name for s in evaluation_sets
                              if s.segment_ids == model_compatible_set.segment_ids]:
         model_compatible_set_name = equal_set_names[0]
-        notes.append(f"The context offsets {model_compatible_set.context_offsets} select the"
+        notes.append(f"The {model_compatible_set.context_window_description} select the"
                      f" segments of the {model_compatible_set_name} set, so the scores on the"
                      f" model-compatible set are those on the {model_compatible_set_name} set.")
     else:

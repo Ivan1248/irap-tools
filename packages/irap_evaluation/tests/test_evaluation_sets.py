@@ -18,7 +18,7 @@ from synthetic_vietnam import NUM_ROADS, ROAD_LENGTH, SPLIT
 
 
 def test_evaluation_sets_are_nested(metadata, reference_set, full_set):
-    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1))
+    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), ())
     assert ((reference_set.name, full_set.name, model_compatible_set.name)
             == ("reference", "full", "compatible"))
     assert (tuple(get_shared_evaluation_sets(metadata, "vietnam", SPLIT))
@@ -36,24 +36,44 @@ def test_evaluation_sets_are_nested(metadata, reference_set, full_set):
         reference_set.segment_sequence_ids)
 
 
+def test_model_compatible_set_keeps_in_split_offsets_in_the_split(metadata):
+    # The second segment of road 0 moves to the training split, so the third has its previous
+    # segment in another split.
+    in_val = [s for s in metadata.splits[SPLIT] if s != "0001"]
+    metadata = dc.replace(metadata, splits={SPLIT: in_val, "train": ["0001"]})
+    any_split = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), ())
+    in_split = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), (-1,))
+    assert set(any_split.segment_ids) - set(in_split.segment_ids) == {"0002"}
+    assert (in_split.in_split_offsets, any_split.in_split_offsets) == ((-1,), ())
+    assert in_split.context_window_description == ("context offsets (0, -1), in-split offsets"
+                                                   " (-1,)")
+    # The in-split offsets select the segments, so they are part of the fingerprint.
+    assert in_split.fingerprint != dc.replace(in_split, in_split_offsets=()).fingerprint
+    with pytest.raises(ValueError, match="not among the context offsets"):
+        get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), (1,))
+
+
 def test_evaluation_set_fingerprint(metadata, reference_set):
     fingerprint = reference_set.fingerprint
     assert get_evaluation_set(metadata, "vietnam", SPLIT, reference_set.context_offsets,
-                              reference_set.name).fingerprint == fingerprint
+                              reference_set.name,
+                              in_split_offsets=reference_set.in_split_offsets
+                              ).fingerprint == fingerprint
     attr = next(iter(reference_set.class_indices))
     labels = reference_set.class_indices[attr].copy()
     labels[0] = (labels[0] + 1) % 2
     changed = dc.replace(reference_set,
                          class_indices={**reference_set.class_indices, attr: labels})
     assert changed.fingerprint != fingerprint
-    assert get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1)).fingerprint != fingerprint
+    assert (get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), ()).fingerprint
+            != fingerprint)
 
 
 def test_select_evaluation_sets(metadata, reference_set, full_set):
-    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1))
+    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), ())
     # The window of (0, -5) reaches beyond the -4..0 reference window, so that the fifth
     # segment of each road is in the reference set but not in this model-compatible set.
-    wide_model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -5))
+    wide_model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -5), ())
     all_segments = full_set.segment_ids
     compatible_segments = model_compatible_set.segment_ids
     without_a_reference_segment = [s for s in compatible_segments
@@ -81,7 +101,7 @@ def test_select_evaluation_sets(metadata, reference_set, full_set):
     assert names == ["reference", "full"] and compatible_name == "reference"
     assert "the model-compatible set are those on the reference set" in notes[0]
     names, compatible_name, notes = select(
-        all_segments, get_model_compatible_set(metadata, "vietnam", SPLIT, (0,)))
+        all_segments, get_model_compatible_set(metadata, "vietnam", SPLIT, (0,), ()))
     assert names == ["reference", "full"] and compatible_name == "full"
     assert "the model-compatible set are those on the full set" in notes[0]
     with pytest.raises(ValueError, match="cannot be scored"):
@@ -96,7 +116,7 @@ def test_select_evaluation_sets(metadata, reference_set, full_set):
 
 
 def test_select_evaluation_sets_with_missing_segments(metadata, reference_set, full_set):
-    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1))
+    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), ())
     missing = reference_set.segment_ids[:2]
     # Not in the model-compatible set: the first segment of each road.
     beyond_window = [s for s in full_set.segment_ids if s not in model_compatible_set.segment_ids]
@@ -142,7 +162,7 @@ def test_sets_without_labels_are_left_out(metadata, reference_set, full_set):
         return dc.replace(evaluation_set, class_indices={
             a: np.full_like(v, IGNORE_LABEL_INDEX) for a, v in evaluation_set.class_indices.items()})
 
-    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1))
+    model_compatible_set = get_model_compatible_set(metadata, "vietnam", SPLIT, (0, -1), ())
     segment_ids = full_set.segment_ids
     selection = select_evaluation_sets(
         segment_ids, (without_labels(reference_set), full_set), model_compatible_set)

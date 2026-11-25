@@ -97,10 +97,10 @@ print(ie.compute_method_metrics(method_to_results["resnet"]).averages["amF1"],
 differences = ie.compare_methods(method_to_results["resnet"], method_to_results["vit"], ["amF1"])
 print(differences.averages["amF1"])  # MetricDifference(difference, interval)
 
-# Other evaluation sets: the full set, the model-compatible set of some offsets, and a subset,
-# e.g. one region.
+# Other evaluation sets: the full set, the model-compatible set of some context offsets and
+# in-split offsets (here none), and a subset, e.g. one region.
 full_set = ie.get_full_set(metadata, "vietnam", "val")
-model_compatible_set = ie.get_model_compatible_set(metadata, "vietnam", "val", (0, -1, -4))
+model_compatible_set = ie.get_model_compatible_set(metadata, "vietnam", "val", (0, -1, -4), ())
 north_set = ie.select_evaluation_subset(reference_set, is_north, name="north")
 ```
 

@@ -118,6 +118,25 @@ def test_header_rejects_duplicate_context_offsets():
         dc.replace(HEADER, context_offsets=(0, 0, -1))
 
 
+def test_header_needs_in_split_offsets_among_the_context_offsets():
+    assert dc.replace(HEADER, in_split_offsets=[0, -1]).in_split_offsets == (0, -1)
+    for context_offsets, in_split_offsets in [((0, -1), (1,)), (None, (0,))]:
+        with pytest.raises(PredictionFormatError, match="not among the context offsets"):
+            dc.replace(HEADER, context_offsets=context_offsets,
+                       in_split_offsets=in_split_offsets)
+
+
+def test_in_split_offsets_round_trip_and_default_to_none(tmp_path):
+    path = tmp_path / "m.predictions.parquet"
+    predictions = _predictions()
+    write_predictions(path, dc.replace(
+        predictions, header=dc.replace(HEADER, in_split_offsets=(0, -1))))
+    assert read_prediction_header(path).in_split_offsets == (0, -1)
+    # A header of an irap_evaluation before 0.3.0 has no in-split offsets.
+    table = _change_header(to_arrow_table(predictions), lambda h: h.pop("in_split_offsets"))
+    assert from_arrow_table(table).header.in_split_offsets == ()
+
+
 def test_arrays_are_read_only_views():
     predictions = _predictions()
     for derived in [predictions, select_segments(predictions, ["s2"]),
@@ -362,6 +381,9 @@ def test_reading_rejects_invalid_columns(make_table, message):
                                "early_stopping_splits": ["a"]}),
      "both training and early stopping"),
     (lambda h: h.update(context_offsets=["0"]), "context_offsets"),
+    (lambda h: h.update(in_split_offsets=None), "'in_split_offsets'"),
+    (lambda h: h.update(in_split_offsets=[1]), "not among the context offsets"),
+    (lambda h: h.update(in_split_offsets=[0, 0]), "duplicates"),
     (lambda h: h.update(attribute_to_irap_codes={"a": [10, 10, 30], "b": [1, 2]}), "duplicate"),
     (lambda h: h.update(attribute_to_irap_codes={"a": [10, "20", 30], "b": [1, 2]}), "not ints"),
 ])

@@ -27,19 +27,20 @@ The models of a method are then combined by their mean ([methods](#methods)). `c
 
 ## Evaluation sets
 
-For context offsets $o_1, \ldots, o_m$, the evaluation set of a split holds its segments that pass all of these filters (`irap_data.select_split_segments`):
+For context offsets $o_1, \ldots, o_m$ and in-split offsets, a subset of them, the evaluation set of a split holds its segments that pass all of these filters (`irap_data.select_split_segments`):
 
 1. **Image**: the segment has an entry in `segment_id_to_data_paths_rel.json`.
 2. **Labels**: each iRAP code is mapped to its class index. A code is missing if it is absent, None, `'None'`, negative, or not a class of the attribute. Vietnam leaves the attribute unlabeled for that segment. BH drops the segment if any attribute is missing. Any other value, e.g. a float, is an error.
 3. **Context**: for a segment at position $p$ of a sequence of length $L$, every $p + o_j$ lies in $[0, L)$, and the segment there has an image. Context segments need no label.
+4. **Split**: the segments at the in-split offsets are in the same split (`splits.json`). A model has in-split offsets if it uses some context segments only within the split, e.g. a sequential model that reads base-model outputs, which are optimistic on training segments (`in_split_offsets` in the [header](prediction_format.md#header)). The other context segments may be in any split.
 
-The N-context filter of BH (`use_ncontext_filter`) is not applied.
+The N-context filter of BH (`use_ncontext_filter`) is not applied. The BH reference set follows the same idea, but is computed from `splits.json` and the road sequences rather than from the result files of the original code.
 
 A file is scored on up to three sets:
 
-- **Reference set**: offsets −4 … 0 for Vietnam and −10 … 10 for BH (`DATASET_PRESETS`). It is the same for every model, so its scores are comparable across models.
+- **Reference set**: offsets −4 … 0 for Vietnam, without in-split offsets, and −14 … 10 for BH, with in-split offsets −10 … 10 (`DATASET_PRESETS`). It is the same for every model, so its scores are comparable across models. The BH set holds the segments that the sequential enhancement of Kačan et al. can predict: a window of 10 segments on each side in the split, each of which needs the base model's frames at −1 and −4. Their code scores the base model on the same segments.
 - **Full set**: offsets 0, i.e. every segment of the split with an image and labels (`get_full_set`). It is also the same for every model, and contains every other set. Only models that predict all its segments are scored on it, e.g. models without context or with padding for missing context segments.
-- **Model-compatible set**: the model's own offsets, from the file header or `--context-offsets`. This is the set of the training-time evaluation. If the offsets lie within the reference window, the model-compatible set contains the reference set.
+- **Model-compatible set**: the model's own offsets, from the file header or `--context-offsets` and `--in-split-offsets`. This is the set of the training-time evaluation. If the context offsets lie within the reference window and the in-split offsets within the reference in-split offsets, the model-compatible set contains the reference set.
 
 `select_evaluation_sets` (used by `irap-eval evaluate`) selects the sets as follows:
 

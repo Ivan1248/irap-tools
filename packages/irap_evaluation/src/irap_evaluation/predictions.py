@@ -10,7 +10,7 @@ import typing as T
 
 import numpy as np
 
-from irap_data.metadata import IGNORE_LABEL_INDEX, validate_irap_codes
+from irap_data.metadata import IGNORE_LABEL_INDEX, check_in_split_offsets, validate_irap_codes
 
 #: 'probs': predicted class distributions. 'hard': predicted classes without probabilities, e.g.
 #: parsed from generated text, for which the probabilistic metrics are not computed.
@@ -185,22 +185,35 @@ class PredictionHeader:
             relative to the predicted segment in its road sequence, e.g. (0, -1, -4), where -1
             is the previous segment in driving order. With the dataset and split, they define the
             model's own evaluation set. None if unknown.
+        in_split_offsets: The context offsets whose segments the model uses only if they are in
+            the split of the predicted segment, e.g. those whose base-model outputs a sequential
+            model reads, since the outputs on training segments are optimistic (see
+            `irap_data.select_split_segments`). Empty for none, and if `context_offsets` is None.
 
     Raises:
-        PredictionFormatError: If `context_offsets` has duplicates.
+        PredictionFormatError: If `context_offsets` or `in_split_offsets` has duplicates, or an
+            in-split offset is not a context offset.
     """
 
     dataset: str
     split: str
     model: ModelInfo
     context_offsets: tuple[int, ...] | None = None
+    in_split_offsets: tuple[int, ...] = ()
 
     def __post_init__(self):
-        if self.context_offsets is not None:
-            offsets = tuple(self.context_offsets)
+        context_offsets = None if self.context_offsets is None else tuple(self.context_offsets)
+        in_split_offsets = tuple(self.in_split_offsets)
+        for name, offsets in [("context offsets", context_offsets or ()),
+                              ("in-split offsets", in_split_offsets)]:
             if len(set(offsets)) != len(offsets):
-                raise PredictionFormatError(f"The context offsets {offsets} have duplicates.")
-            object.__setattr__(self, "context_offsets", offsets)
+                raise PredictionFormatError(f"The {name} {offsets} have duplicates.")
+        try:
+            check_in_split_offsets(context_offsets or (), in_split_offsets)
+        except ValueError as e:
+            raise PredictionFormatError(str(e)) from None
+        object.__setattr__(self, "context_offsets", context_offsets)
+        object.__setattr__(self, "in_split_offsets", in_split_offsets)
 
 
 def get_common_dataset_and_split(headers: T.Iterable[PredictionHeader]) -> tuple[str, str]:

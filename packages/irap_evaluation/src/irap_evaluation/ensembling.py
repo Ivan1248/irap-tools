@@ -93,12 +93,13 @@ def _get_attribute_to_irap_codes(labels: T.Sequence[str],
     return attribute_to_irap_codes
 
 
-def _get_union_of_context_offsets(
-        headers: T.Iterable[PredictionHeader]) -> tuple[int, ...] | None:
-    offsets = [h.context_offsets for h in headers]
-    if any(o is None for o in offsets):
+def _get_union_of_offsets(
+        offsets_seq: T.Iterable[T.Sequence[int] | None]) -> tuple[int, ...] | None:
+    """The union of offsets in descending order, or None if some offsets are None (unknown)."""
+    offsets_seq = list(offsets_seq)
+    if any(o is None for o in offsets_seq):
         return None
-    return tuple(sorted(set().union(*offsets), reverse=True))
+    return tuple(sorted(set().union(*offsets_seq), reverse=True))
 
 
 def _format_seeds(seeds: T.Sequence[int]) -> str:
@@ -139,25 +140,27 @@ def make_ensemble_method_name(members: T.Iterable[ModelInfo]) -> str:
     return "+".join(parts)
 
 
-def make_ensemble_model_info(members: T.Iterable[ModelInfo], method_name: str | None = None, *,
-                             method_display_name: str | None = None, seed: int | None = None,
-                             details: T.Mapping[str, T.Any] | None = None) -> ModelInfo:
-    """Makes the model of an ensemble, which uses every split that a member uses:
-    - Its training splits are the union of the members' training splits, or None if those of a
-      member are unknown.
-    - Its early stopping splits are the union of the members' early stopping splits that are not
-      training splits of the ensemble: a member that was fitted on a split makes the ensemble
-      fitted on it.
+def make_composite_model_info(components: T.Iterable[ModelInfo], method_name: str | None = None,
+                              *, method_display_name: str | None = None, seed: int | None = None,
+                              details: T.Mapping[str, T.Any] | None = None) -> ModelInfo:
+    """Makes the model of a model made of other models, e.g. an ensemble or a model trained on
+    another model's outputs, which uses every split that a component uses:
+    - Its training splits are the union of the components' training splits, or None if those of
+      a component are unknown.
+    - Its early stopping splits are the union of the components' early stopping splits that are
+      not its training splits: a component that was fitted on a split makes the model fitted on
+      it.
 
     Args:
-        method_name: The method name of the ensemble, None for `make_ensemble_method_name`.
+        method_name: The method name of the model, None for `make_ensemble_method_name`.
     """
-    members = list(members)
-    training = (None if any(m.training_splits is None for m in members)
-                else set().union(*(m.training_splits for m in members)))
-    early_stopping = set().union(*(m.early_stopping_splits for m in members)) - (training or set())
+    components = list(components)
+    training = (None if any(c.training_splits is None for c in components)
+                else set().union(*(c.training_splits for c in components)))
+    early_stopping = (set().union(*(c.early_stopping_splits for c in components))
+                      - (training or set()))
     if method_name is None:
-        method_name = make_ensemble_method_name(members)
+        method_name = make_ensemble_method_name(components)
     return ModelInfo(method_name=method_name, training_splits=training,
                      early_stopping_splits=early_stopping, seed=seed,
                      method_display_name=method_display_name, details=details)
@@ -196,7 +199,7 @@ def ensemble_predictions(
     missing segment or attribute counts as invalid. The ensemble uses whatever its members use:
     - Its context offsets are the union of the members' offsets, since it reads every frame a
       member reads, or None if the offsets of a member are unknown.
-    - Its training and early stopping splits are those of `make_ensemble_model_info`.
+    - Its training and early stopping splits are those of `make_composite_model_info`.
 
     Args:
         predictions_seq: The members.
@@ -250,14 +253,20 @@ def ensemble_predictions(
                 "members": [{"model": p.header.model.to_json_dict(),
                              "context_offsets": (None if p.header.context_offsets is None
                                                  else list(p.header.context_offsets)),
+                             "in_split_offsets": list(p.header.in_split_offsets),
                              "weight": float(w),
                              "attributes": list(p.attributes),
                              "num_segments": p.num_segments}
                             for p, w in zip(predictions_seq, weights)]}
-    model = make_ensemble_model_info([h.model for h in headers], method_name,
-                                     method_display_name=method_display_name, seed=seed,
-                                     details={**(details or {}), "ensemble": ensemble})
-    header = PredictionHeader(dataset=dataset, split=split, model=model,
-                              context_offsets=_get_union_of_context_offsets(headers))
+    model = make_composite_model_info([h.model for h in headers], method_name,
+                                      method_display_name=method_display_name, seed=seed,
+                                      details={**(details or {}), "ensemble": ensemble})
+    context_offsets = _get_union_of_offsets(h.context_offsets for h in headers)
+    header = PredictionHeader(
+        dataset=dataset, split=split, model=model, context_offsets=context_offsets,
+        # Without the context offsets of every member, the ensemble has no model-compatible set,
+        # so it has no in-split offsets either.
+        in_split_offsets=(() if context_offsets is None else
+                          _get_union_of_offsets(h.in_split_offsets for h in headers)))
     return Predictions(header, "probs", attribute_to_irap_codes, segment_ids,
                        {attr: combine_attribute(attr) for attr in attribute_to_irap_codes})

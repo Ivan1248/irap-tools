@@ -26,7 +26,8 @@ V = T.TypeVar("V")
 #: The `attribute` of an attribute average in the long table.
 AVERAGE_ATTRIBUTE = "average"
 LONG_TABLE_COLUMNS = ("model", "method", "seed", "dataset", "split", "split_use",
-                      "evaluation_set", "context_offsets", "null_policy", "attribute", "metric",
+                      "evaluation_set", "context_offsets", "in_split_offsets", "null_policy",
+                      "attribute", "metric",
                       "value", "ci_low", "ci_high", "ci_num_undefined")
 #: Column-name suffix -> long-table column, of the interval bounds in `to_average_table`.
 _INTERVAL_SUFFIX_TO_COLUMN = {" low": "ci_low", " high": "ci_high"}
@@ -39,6 +40,7 @@ def _to_rows(result: EvaluationResult) -> T.Iterator[dict[str, T.Any]]:
                   split_use=model.get_split_use(evaluation_set.split),
                   evaluation_set=evaluation_set.name,
                   context_offsets=",".join(map(str, evaluation_set.context_offsets)),
+                  in_split_offsets=",".join(map(str, evaluation_set.in_split_offsets)),
                   null_policy=result.null_policy)
     intervals = result.intervals or map_metric_values(lambda _: None, result.metrics)
 
@@ -256,6 +258,7 @@ def to_json_dict(result: EvaluationResult) -> dict[str, T.Any]:
         "split_use": result.model.get_split_use(evaluation_set.split),
         "evaluation_set": evaluation_set.name,
         "context_offsets": list(evaluation_set.context_offsets),
+        "in_split_offsets": list(evaluation_set.in_split_offsets),
         "null_policy": result.null_policy,
         "num_segments": evaluation_set.num_segments,
         "num_sequences": len(evaluation_set.sequence_ids),

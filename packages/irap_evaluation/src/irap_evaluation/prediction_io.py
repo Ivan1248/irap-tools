@@ -41,6 +41,7 @@ def _to_header_json_dict(predictions: Predictions) -> dict[str, T.Any]:
         "dataset": header.dataset,
         "split": header.split,
         "context_offsets": None if offsets is None else list(offsets),
+        "in_split_offsets": list(header.in_split_offsets),
         "model": header.model.to_json_dict(),
         "attribute_to_irap_codes": {attr: list(codes)
                                     for attr, codes in predictions.attribute_to_irap_codes.items()},
@@ -104,12 +105,16 @@ def _from_header_json_dict(d: T.Any) -> tuple[PredictionHeader, dict[str, list]]
     model = _from_model_json_dict(d["model"])
     if not (offsets is None or (isinstance(offsets, list) and all(map(_is_int, offsets)))):
         raise PredictionFormatError("'context_offsets' must be null or an array of integers.")
+    # Optional, since files written before irap_evaluation 0.3.0 do not have it.
+    in_split_offsets = d.get("in_split_offsets", [])
+    if not (isinstance(in_split_offsets, list) and all(map(_is_int, in_split_offsets))):
+        raise PredictionFormatError("'in_split_offsets' must be an array of integers.")
     if not (isinstance(attribute_to_irap_codes, dict)
             and all(isinstance(codes, list) for codes in attribute_to_irap_codes.values())):
         raise PredictionFormatError("'attribute_to_irap_codes' must map attributes to arrays of"
                                     " iRAP codes.")
     header = PredictionHeader(dataset=d["dataset"], split=d["split"], model=model,
-                              context_offsets=offsets)
+                              context_offsets=offsets, in_split_offsets=in_split_offsets)
     return header, attribute_to_irap_codes
 
 

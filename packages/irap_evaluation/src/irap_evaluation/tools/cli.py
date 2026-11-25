@@ -59,17 +59,18 @@ TABLE_METRICS = tuple(n for n in get_default_metric_names("probs")
 
 # Helpers ##########################################################################################
 
-def _parse_context_offsets(text: str) -> tuple[int, ...]:
-    return tuple(int(o) for o in text.split(","))
+def _parse_offsets(text: str) -> tuple[int, ...]:
+    """Parses '0,-1,-4', or '' for no offsets."""
+    return tuple(int(o) for o in text.split(",")) if text else ()
 
 
-def _parse_method_context_offsets(items: T.Sequence[str]) -> dict[str, tuple[int, ...]]:
-    """Parses `NAME=0,-1,-4` items."""
+def _parse_method_offsets(items: T.Sequence[str]) -> dict[str, tuple[int, ...]]:
+    """Parses `NAME=0,-1,-4` items, `NAME=` for no offsets."""
     def parse(item: str) -> tuple[str, tuple[int, ...]]:
         name, separator, offsets = item.rpartition("=")
         if not separator or not name:
             raise ValueError(f"Expected NAME=OFFSETS, e.g. resnet=0,-1,-4, got {item!r}.")
-        return name, _parse_context_offsets(offsets)
+        return name, _parse_offsets(offsets)
 
     return dict(map(parse, items))
 
@@ -144,16 +145,25 @@ def _score(predictions: Predictions, evaluation_set: EvaluationSet, *, null_poli
 def _select_model_evaluation_sets(
     predictions: Predictions,
     context_offsets: tuple[int, ...] | None,
+    in_split_offsets: tuple[int, ...],
     shared_sets_f: T.Callable[[str, str], T.Mapping[str, EvaluationSet]],
-    model_compatible_set_f: T.Callable[[str, str, tuple[int, ...]], EvaluationSet],
+    model_compatible_set_f: T.Callable[[str, str, tuple[int, ...], tuple[int, ...]],
+                                       EvaluationSet],
     missing_segment_policy: MissingSegmentPolicy,
 ) -> tuple[EvaluationSet, ...]:
     """`select_evaluation_sets` for a model, with its notes printed, and a note if it used the
-    split (`_explain_split_use`)."""
+    split (`_explain_split_use`).
+
+    Raises:
+        ValueError: If there are in-split offsets without context offsets.
+    """
     header = predictions.header
     name = header.model.label
+    if context_offsets is None and in_split_offsets:
+        raise ValueError(f"Model {name!r}: in-split offsets {in_split_offsets} without context"
+                         f" offsets.")
     model_compatible_set = None if context_offsets is None else model_compatible_set_f(
-        header.dataset, header.split, tuple(context_offsets))
+        header.dataset, header.split, tuple(context_offsets), tuple(in_split_offsets))
     try:
         selection = select_evaluation_sets(
             predictions.segment_ids, shared_sets_f(header.dataset, header.split).values(),
@@ -196,10 +206,13 @@ def _compute_method_average_tables(
 def run_evaluate(args: argparse.Namespace) -> None:
     predictions_seq = _read_prediction_files(args.files)
     evaluation_report.check_model_dir_names(p.header.model.label for p in predictions_seq)
-    method_context_offsets = _parse_method_context_offsets(args.context_offsets)
+    method_context_offsets = _parse_method_offsets(args.context_offsets)
+    method_in_split_offsets = _parse_method_offsets(args.in_split_offsets)
     method_names = {p.header.model.method_name for p in predictions_seq}
-    if unknown := set(method_context_offsets) - method_names:
-        raise ValueError(f"--context-offsets names unknown methods: {sorted(unknown)}.")
+    for option, method_offsets in [("--context-offsets", method_context_offsets),
+                                   ("--in-split-offsets", method_in_split_offsets)]:
+        if unknown := set(method_offsets) - method_names:
+            raise ValueError(f"{option} names unknown methods: {sorted(unknown)}.")
     metadata = load_irap_metadata(args.metadata_dir)
     for predictions in predictions_seq:
         check_split_names(predictions.header.model, metadata.splits)
@@ -218,6 +231,8 @@ def run_evaluate(args: argparse.Namespace) -> None:
             predictions,
             method_context_offsets.get(predictions.header.model.method_name,
                                        predictions.header.context_offsets),
+            method_in_split_offsets.get(predictions.header.model.method_name,
+                                        predictions.header.in_split_offsets),
             shared_sets_f, model_compatible_set_f, args.missing_segment_policy)]
     if not results:
         raise ValueError("No model has an evaluation set with labels (see the notes above), so"
@@ -356,6 +371,11 @@ def make_argument_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--context-offsets", nargs="*", default=[], metavar="NAME=OFFSETS",
                           help="Context offsets of methods, e.g. resnet=0,-1,-4. They override"
                                " the offsets in the file headers.")
+    evaluate.add_argument("--in-split-offsets", nargs="*", default=[], metavar="NAME=OFFSETS",
+                          help="In-split offsets of methods, e.g. seq_enh=-1,0,1, or NAME= for"
+                               " none: the context offsets whose segments a method uses"
+                               " only within the split of the predicted segment. They override"
+                               " the in-split offsets in the file headers.")
     evaluate.add_argument("--bootstrap", type=int, default=0, metavar="NUM_RESAMPLES",
                           help="Number of bootstrap resamples for confidence intervals. The"
                                " intervals of a model cover the road sequences, those of a method"

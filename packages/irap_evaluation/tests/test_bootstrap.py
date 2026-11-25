@@ -32,7 +32,8 @@ from synthetic_vietnam import (
 
 
 def test_bootstrap_intervals_contain_the_point_estimate(metadata, predictions):
-    evaluation_set = get_evaluation_set(metadata, "vietnam", SPLIT, (0,), "all")
+    evaluation_set = get_evaluation_set(metadata, "vietnam", SPLIT, (0,), "all",
+                                        in_split_offsets=())
     result = evaluate_predictions(predictions, evaluation_set)
     intervals = compute_bootstrap_intervals([result], num_resamples=200, seed=1)
     assert intervals == compute_bootstrap_intervals([result], num_resamples=200, seed=1)
@@ -53,7 +54,8 @@ def test_bootstrap_argument_errors(metadata, reference_set, predictions):
     with pytest.raises(ValueError, match="at least one model"):
         compute_bootstrap_intervals([], num_resamples=10)
     # No segment has a context window of 100 segments.
-    empty_set = get_evaluation_set(metadata, "vietnam", SPLIT, (0, -100), "empty")
+    empty_set = get_evaluation_set(metadata, "vietnam", SPLIT, (0, -100), "empty",
+                                   in_split_offsets=())
     empty_result = evaluate_predictions(predictions, empty_set, attributes=["Lane width"])
     with pytest.raises(ValueError, match="no road sequences"):
         compute_bootstrap_intervals([empty_result], num_resamples=10)
@@ -75,7 +77,8 @@ def test_compare_methods(metadata, reference_set, predictions):
     with pytest.raises(ValueError, match="not in both methods"):
         compare_methods([result_a], [result_b], ["amIoU"], num_resamples=20)
     other_set = evaluate_predictions(
-        predictions_b, get_evaluation_set(metadata, "vietnam", SPLIT, (0,), "all"))
+        predictions_b,
+        get_evaluation_set(metadata, "vietnam", SPLIT, (0,), "all", in_split_offsets=()))
     with pytest.raises(ValueError, match="different segments"):
         compare_methods([result_a], [other_set])
     with pytest.raises(ValueError, match="null policies"):

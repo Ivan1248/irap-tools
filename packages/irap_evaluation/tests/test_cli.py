@@ -27,6 +27,28 @@ def _write_model_files(metadata, tmp_path):
     return paths
 
 
+def test_evaluate_uses_in_split_offsets(metadata_dir, metadata, tmp_path, capsys):
+    # The second segment of road 0 moves to the training split. A model that reads the previous
+    # segment only within the split cannot predict the third.
+    segments = [s for s in metadata.splits[SPLIT] if s != "0001"]
+    (metadata_dir / MetaFiles.SPLITS).write_text(
+        json.dumps({SPLIT: segments, "train": ["0001"]}), encoding="utf-8")
+    predictions = make_predictions(metadata.vocabulary, [s for s in segments if s != "0002"],
+                                   name="c", seed=0, context_offsets=(0, -1))
+    path = tmp_path / "c.predictions.parquet"
+    write_predictions(path, dc.replace(
+        predictions, header=dc.replace(predictions.header, in_split_offsets=(-1,))))
+    out = tmp_path / "results"
+    assert main(["evaluate", str(metadata_dir), str(path), "--out", str(out)]) == 0
+    report = json.loads((out / "c" / "metrics_vietnam_val_compatible.json").read_text())
+    assert report["in_split_offsets"] == [-1]
+    capsys.readouterr()
+    # Without the in-split offsets, the model lacks a segment of its model-compatible set.
+    assert main(["evaluate", str(metadata_dir), str(path), "--out", str(tmp_path / "r2"),
+                 "--in-split-offsets", "c="]) == 1
+    assert "No predictions for 1 of the" in capsys.readouterr().err
+
+
 def test_evaluate_refuses_models_without_labels(metadata_dir, metadata, tmp_path, capsys):
     paths = _write_model_files(metadata, tmp_path)
     # Without road data, no segment has labels, as in an unlabeled split.

@@ -11,6 +11,7 @@ Parquet file
       dataset: Literal["bh", "vietnam"]
       split: str
       context_offsets?: list[int] | None
+      in_split_offsets?: list[int]
       model:
         method_name: str
         method_display_name?: str | None
@@ -55,10 +56,11 @@ Pandas cannot write key-value metadata. Pandas, Polars, and DuckDB drop it when 
 | `dataset` | `str` | Dataset identifier: `"bh"` or `"vietnam"`. |
 | `split` | `str` | Segment split, e.g. `"val"`. |
 | `context_offsets` | `list[int] \| None` | Relative positions of sequence segments read by the model, e.g. `[0, -1, -4]`. Absent or `null` if unknown. Optional. |
+| `in_split_offsets` | `list[int]` | The context offsets whose segments must be in the split of the predicted segment, e.g. for a sequential model that reads base-model outputs. Absent or `[]` for none. Optional, since irap_evaluation 0.3.0. |
 | `model` | `dict` | Information about the model instance (see [Model field](#model-field)). |
 | `attribute_to_irap_codes` | `dict[str, list[int]]` | Attribute column name → iRAP codes defining class order for `probs` lists and `hard` class indices. |
 
-Along with `dataset` and `split`, `context_offsets` defines the model's [evaluation set](evaluation.md#evaluation-sets).
+Along with `dataset` and `split`, `context_offsets` and `in_split_offsets` define the model's [evaluation set](evaluation.md#evaluation-sets).
 
 ### Model field
 
@@ -80,7 +82,9 @@ An ensemble written by `irap_evaluation.ensemble_predictions` is a `probs` file 
 | Field | Type | Content |
 |---|---|---|
 | `segment_combination`, `attribute_combination` | `str` | Which segments and attributes of the members it combines: `same`, `intersection` or `union` (`MemberCombination`). |
-| `members` | `list[dict]` | Per member: `model` (its [model field](#model-field)), `context_offsets`, `weight`, `attributes` and `num_segments` (the number of segments it predicts). |
+| `members` | `list[dict]` | Per member: `model` (its [model field](#model-field)), `context_offsets`, `in_split_offsets`, `weight`, `attributes` and `num_segments` (the number of segments it predicts). |
+
+The ensemble's `context_offsets` and `in_split_offsets` are the unions of its members', or `null` and `[]` if a member's context offsets are unknown.
 
 ## Examples
 

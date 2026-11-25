@@ -30,8 +30,8 @@ from .ensembling import (
     MEMBER_COMBINATIONS,
     MemberCombination,
     ensemble_predictions,
+    make_composite_model_info,
     make_ensemble_method_name,
-    make_ensemble_model_info,
 )
 from .evaluation import (
     AttributeSelection,
