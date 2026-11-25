@@ -75,7 +75,7 @@ A coding table is an Excel sheet with one row per 20 m segment, for example:
 
 Writes one row per segment to `_work/rows.parquet` and a summary to `_work/parse_report.json`. The docstring of `parse_coding_tables.py` lists the rules for dropped rows. A duplicate `seg_id` keeps the row with the most coded attributes, and the first one in a tie. An attribute cell that is blank, not an integer, or without an iRAP code (e.g. an unknown code) becomes `-1`, which is an _ignore_ label. `--drop-rows-missing-attributes` drops such rows instead.
 
-Each cell set to `-1`, each interpreted value (e.g. a speed limit below 30 km/h, a duplicate dropped in a tie, or a duplicate with different codes) and each file-level irregularity (e.g. an ignored column with values) is an _issue_. The parser prints a warning per group of equal issues with their Excel row numbers to stderr, and a summary of the issues to stdout. `parse_report.json` lists the issues of each file, with their rows.
+Each cell set to `-1`, each interpreted value (e.g. a speed limit below 30 km/h, a duplicate dropped in a tie, or a duplicate with different codes) and each file-level irregularity (e.g. an ignored column with values) is an _issue_. The parser prints a warning per group of equal issues with their Excel row numbers to stderr, where a dropped duplicate also names the row that was kept, e.g. `6820 (kept: 6780)`, and a summary of the issues to stdout. `parse_report.json` lists the issues of each file, with their rows.
 
 Optional: `python cross_annotator_eval.py $DATA_DIR` measures the agreement between the coding tables that code the same segments. It writes `_work/cross_annotator_report.json`.
 

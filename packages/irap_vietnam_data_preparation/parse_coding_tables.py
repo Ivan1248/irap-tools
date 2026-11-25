@@ -237,6 +237,8 @@ class Issue:
     row: int | None = None  # Excel row number, None for a file-level issue
     column: str | None = None  # canonical attribute name for an attribute column
     value: T.Hashable = None
+    # For a duplicate issue (of a dropped row): the source file and Excel row of the kept row.
+    kept_location: tuple[str, int] | None = None
 
 
 class InvalidCellValueError(ValueError):
@@ -713,7 +715,8 @@ def resolve_duplicates(
     dropped rows: DUPLICATE_TIE for a row dropped in a tie, and
     DUPLICATE_CONFLICT (value: ``(kept code, dropped code)``) for each
     attribute where the dropped row has a genuine code that differs from the
-    kept one, including where the kept row's cell is missing.
+    kept one, including where the kept row's cell is missing. Each issue names
+    the kept row in ``kept_location``.
     """
     by_seg: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -728,13 +731,16 @@ def resolve_duplicates(
                         key=lambda filled_and_row: -filled_and_row[0])
         (winner_filled, winner), losers = scored[0], scored[1:]
         kept.append(winner)
+        kept_location = (winner["source_file"], winner["source_row"])
         for num_filled, r in losers:
             dropped.append(r)
             file, row = r["source_file"], r["source_row"]
             if num_filled == winner_filled:
-                issues.append(Issue(IssueKind.DUPLICATE_TIE, file, row, SEG_ID_COLUMN))
+                issues.append(Issue(IssueKind.DUPLICATE_TIE, file, row, SEG_ID_COLUMN,
+                                    kept_location=kept_location))
             issues.extend(
-                Issue(IssueKind.DUPLICATE_CONFLICT, file, row, attr, (winner[attr], r[attr]))
+                Issue(IssueKind.DUPLICATE_CONFLICT, file, row, attr, (winner[attr], r[attr]),
+                      kept_location=kept_location)
                 for attr in attribute_names
                 if is_real_attribute_code(r[attr]) and r[attr] != winner[attr])
     return kept, dropped, issues
@@ -866,22 +872,39 @@ MAX_SUMMARY_LINES_PER_ISSUE_KIND = 10
 IssueGroupKey = tuple[str, str, str | None, T.Hashable]  # (file, kind, column, value)
 
 
-def group_issues(issues: T.Iterable[Issue]) -> dict[IssueGroupKey, list[int]]:
-    """Groups issues by (file, kind, column, value), with the Excel rows of each group.
+def group_issues(issues: T.Iterable[Issue]) -> dict[IssueGroupKey, list[Issue]]:
+    """Groups issues by (file, kind, column, value), with the row issues of each group.
 
     Groups are ordered by file, kind (as in ISSUE_KINDS_BY_EFFECT), column and
-    value. The rows of a file-level group are empty.
+    value, and their issues by row. The list of a file-level group is empty.
     """
     def sort_key(i: Issue):
         return (i.file, ISSUE_KIND_ORDER.index(i.kind), i.column or "", str(i.value),
                 i.row or 0)
 
-    groups: dict[IssueGroupKey, list[int]] = {}
+    groups: dict[IssueGroupKey, list[Issue]] = {}
     for i in sorted(issues, key=sort_key):
-        rows = groups.setdefault((i.file, i.kind, i.column, i.value), [])
+        row_issues = groups.setdefault((i.file, i.kind, i.column, i.value), [])
         if i.row is not None:
-            rows.append(i.row)
+            row_issues.append(i)
     return groups
+
+
+def format_issue_rows(row_issues: T.Sequence[Issue]) -> str:
+    """Formats the Excel rows of issues, each with its kept row if it is a dropped duplicate.
+
+    Rows without kept rows are joined into ranges (see :func:`format_row_ranges`),
+    e.g. ``"5329, 5346-5347"``. A kept row is shown as ``"6820 (kept: 6780)"``,
+    with the file name if it is in another file.
+    """
+    if all(i.kept_location is None for i in row_issues):
+        return format_row_ranges([i.row for i in row_issues])
+
+    def format_kept_location(i: Issue) -> str:
+        kept_file, kept_row = i.kept_location
+        return str(kept_row) if kept_file == i.file else f"{kept_file} row {kept_row}"
+
+    return ", ".join(f"{i.row} (kept: {format_kept_location(i)})" for i in row_issues)
 
 
 def issue_label(column: str | None, value: T.Hashable) -> str:
@@ -901,13 +924,15 @@ def to_json_value(value: T.Any) -> T.Any:
     return str(value)
 
 
-def issue_group_entry(kind: str, column: str | None, value: T.Hashable, rows: list[int]) -> dict:
+def issue_group_entry(kind: str, column: str | None, value: T.Hashable,
+                      row_issues: list[Issue]) -> dict:
     """Returns the parse_report.json entry of an issue group from :func:`group_issues`."""
     return {
         "kind": kind,
         **({"column": column} if column is not None else {}),
         **({"value": to_json_value(value)} if value is not None else {}),
-        **({"num_rows": len(rows), "rows": format_row_ranges(rows)} if rows else {}),
+        **({"num_rows": len(row_issues), "rows": format_issue_rows(row_issues)}
+           if row_issues else {}),
     }
 
 
@@ -917,11 +942,12 @@ def count_issues_by_kind(issues: T.Iterable[Issue]) -> dict[str, int]:
     return {kind: counts[kind] for kind in ISSUE_KIND_ORDER if counts[kind]}
 
 
-def print_issue_warnings(issue_groups: T.Mapping[IssueGroupKey, list[int]]) -> None:
+def print_issue_warnings(issue_groups: T.Mapping[IssueGroupKey, list[Issue]]) -> None:
     """Prints a warning per issue group of :func:`group_issues` to stderr."""
-    for (fname, kind, column, value), rows in issue_groups.items():
+    for (fname, kind, column, value), row_issues in issue_groups.items():
         label = issue_label(column, value)
-        where = f" in {len(rows)} row(s): {format_row_ranges(rows)}" if rows else ""
+        where = (f" in {len(row_issues)} row(s): {format_issue_rows(row_issues)}"
+                 if row_issues else "")
         print(f"WARN: {fname}: {kind}{f' ({label})' if label else ''}{where}", file=sys.stderr)
 
 
@@ -1066,9 +1092,9 @@ def main(argv: list[str] | None = None) -> int:
     for fname, reason in rep.skipped_files.items():
         files_section[fname] = {"status": "skipped", "skip_reason": reason}
     # Every file with an issue is processed or skipped.
-    for (fname, kind, column, value), rows in issue_groups.items():
+    for (fname, kind, column, value), row_issues in issue_groups.items():
         files_section[fname].setdefault("issues", []).append(
-            issue_group_entry(kind, column, value, rows))
+            issue_group_entry(kind, column, value, row_issues))
     files_section = dict(sorted(files_section.items()))
 
     issues_per_column: dict[str | None, list[Issue]] = defaultdict(list)
