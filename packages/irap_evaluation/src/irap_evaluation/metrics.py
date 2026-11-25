@@ -126,11 +126,10 @@ class ClassificationStatistics:
     calibration_gap_sums: np.ndarray | None = None
 
     def __post_init__(self):
-        of_distributions = (self.nll_sums, self.brier_sums, self.confidence_histogram,
-                            self.calibration_gap_sums)
-        if len({s is None for s in of_distributions}) != 1:
-            raise ValueError("nll_sums, brier_sums, confidence_histogram and calibration_gap_sums"
-                             " must all be given or all be None.")
+        of_distributions = [f.name for f in dc.fields(self) if f.name != "confusion_matrix"]
+        if len({getattr(self, name) is None for name in of_distributions}) != 1:
+            raise ValueError(f"The statistics {of_distributions} must all be given or all be"
+                             f" None.")
 
     @property
     def has_probabilities(self) -> bool:
@@ -296,11 +295,8 @@ def sum_statistics(statistics: ClassificationStatistics,
                                           is_infinite.astype(np.float64), axes=(-1, 0))
         return weighted + np.where(num_drawn_infinite > 0, np.inf, 0.0)
 
-    return ClassificationStatistics(weighted_sum(statistics.confusion_matrix),
-                                    weighted_sum(statistics.nll_sums),
-                                    weighted_sum(statistics.brier_sums),
-                                    weighted_sum(statistics.confidence_histogram),
-                                    weighted_sum(statistics.calibration_gap_sums))
+    return ClassificationStatistics(**{f.name: weighted_sum(getattr(statistics, f.name))
+                                       for f in dc.fields(statistics)})
 
 
 # Metrics ##########################################################################################
@@ -558,7 +554,7 @@ def compute_classification_metrics(
         base_metrics[MANUAL_REVIEW_PROPORTION_METRIC] = compute_manual_review_proportion(
             compute_review_curve(statistics, ignore_missing_classes), MANUAL_REVIEW_TARGET_MF1)
     considered_classes = _select_considered_classes(
-        statistics.support, statistics.confusion_matrix.sum(-2), ignore_missing_classes)
+        base_metrics["supp"], statistics.confusion_matrix.sum(-2), ignore_missing_classes)
 
     def select(p: ParsedMetricName) -> np.ndarray:
         if p.base not in CLASS_SELECTION_METRICS:
