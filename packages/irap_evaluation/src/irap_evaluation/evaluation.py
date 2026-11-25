@@ -12,8 +12,8 @@ from .evaluation_sets import MISSING_SEGMENT_POLICIES, EvaluationSet, MissingSeg
 from .metric_names import (
     MANUAL_REVIEW_PROPORTION_METRIC,
     PER_CLASS_METRICS,
-    PROBABILISTIC_METRICS,
     add_per_attribute_metric_names,
+    can_compute_metric,
     get_attribute_average_name,
     get_irap_metric_names,
     is_per_class_metric,
@@ -105,11 +105,29 @@ def get_default_metric_names(output_kind: OutputKind) -> tuple[str, ...]:
     value (`metric_names.add_per_attribute_metric_names`), so that
     `metrics.select_metric_attributes` can average the metrics over a subset of the attributes."""
     names = get_irap_metric_names(output_kind=output_kind)
-    averages = [n for n in names if parse_metric_name(n).is_averaged]
+    averages = [n for n in names if parse_metric_name(n).is_attribute_aggregate]
     if output_kind == "probs":
         averages.append(get_attribute_average_name(MANUAL_REVIEW_PROPORTION_METRIC))
     return add_per_attribute_metric_names(
-        (*averages, *(n for n in names if not parse_metric_name(n).is_averaged)))
+        (*averages, *(n for n in names if not parse_metric_name(n).is_attribute_aggregate)))
+
+
+def check_metric_names(metric_names: T.Iterable[str], output_kind: OutputKind) -> None:
+    """Checks that `evaluate_predictions` can compute the metrics for predictions of an output
+    kind.
+
+    Raises:
+        ValueError: For an invalid name (`metric_names.parse_metric_name`), a per-class metric,
+            which results do not keep, or a metric that the output kind lacks
+            (`metric_names.can_compute_metric`).
+    """
+    metric_names = list(metric_names)
+    if per_class := [n for n in metric_names if is_per_class_metric(n)]:
+        raise ValueError(f"Per-class metrics {per_class} are not kept in results, which keep the"
+                         f" per-class statistics (see compute_class_metrics).")
+    if lacking := [n for n in metric_names if not can_compute_metric(n, output_kind)]:
+        raise ValueError(f"Metrics {lacking} need predicted distributions, but the predictions"
+                         f" are {output_kind}.")
 
 
 @dc.dataclass(frozen=True)
@@ -123,8 +141,9 @@ class EvaluationResult:
             sequence of `evaluation_set.sequence_ids`, from which any metric can be recomputed,
             e.g. for a bootstrap resample. Its keys are the evaluated attributes (`attributes`).
         num_invalid: Attribute -> number of labeled segments with an invalid prediction.
-        metrics: The scores. The values of `n` and `nc` are ints, the others floats. For
-            per-class metrics, see `compute_class_metrics`.
+        metrics: The scores. The values of `n` and `nc` and their totals over attributes, e.g.
+            `totnc_{R>0}`, are ints, the others floats. For per-class metrics, see
+            `compute_class_metrics`.
         intervals: `bootstrap.BootstrapInterval`s of the metrics of this model alone, which cover
             the sampling of road sequences but not of models (see
             `bootstrap.compute_bootstrap_intervals`), or None.
@@ -226,19 +245,17 @@ def evaluate_predictions(
             predictions.
 
     Raises:
-        ValueError: For probabilistic metrics of hard predictions, per-class metric names, if
-            there is no attribute to score, if `null_policy='exclude'` would leave an attribute
-            without scored segments, since its attribute predictions are invalid or missing on
-            every labeled segment, and as `align_to_evaluation_set` does.
+        ValueError: As `check_metric_names` does, if there is no attribute to score, if
+            `null_policy='exclude'` would leave an attribute without scored segments, since its
+            attribute predictions are invalid or missing on every labeled segment, and as
+            `align_to_evaluation_set` does.
         PredictionFormatError: See `align_to_evaluation_set`.
     """
     if null_policy not in NULL_POLICIES:
         raise ValueError(f"null_policy must be one of {NULL_POLICIES}, got {null_policy!r}.")
     if metric_names is None:
         metric_names = get_default_metric_names(predictions.output_kind)
-    if per_class := [n for n in metric_names if is_per_class_metric(n)]:
-        raise ValueError(f"Per-class metrics {per_class} are not kept in results. Use"
-                         f" compute_class_metrics(result).")
+    check_metric_names(metric_names, predictions.output_kind)
     attributes = tuple(select_evaluated_attributes(evaluation_set) if attributes is None
                        else attributes)
     if not attributes:
@@ -298,7 +315,7 @@ def _compute_result_metrics(statistics: T.Mapping[str, ClassificationStatistics]
 def select_result_attributes(result: EvaluationResult,
                              attributes: T.Collection[str]) -> EvaluationResult:
     """The result of a subset of its attributes, with the same metrics computed again from the
-    statistics, e.g. for intervals of averages over the subset.
+    statistics, e.g. for intervals of attribute aggregates over the subset.
 
     The attributes keep the order of `result.attributes`, so that the metrics equal those of
     scoring only the subset. The intervals are None.
@@ -351,7 +368,7 @@ def compute_class_metrics(result: EvaluationResult,
     """
     if metric_names is None:
         metric_names = [n for n in PER_CLASS_METRICS
-                        if result.output_kind == "probs" or n not in PROBABILISTIC_METRICS]
+                        if can_compute_metric(n, result.output_kind)]
     if not_per_class := [n for n in metric_names if not is_per_class_metric(n)]:
         raise ValueError(f"Not per-class metrics: {not_per_class}.")
     vocabulary = result.evaluation_set.vocabulary

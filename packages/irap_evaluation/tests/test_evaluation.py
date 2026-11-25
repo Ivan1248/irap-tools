@@ -55,7 +55,7 @@ def test_evaluation_matches_direct_metric_computation(metadata, reference_set):
             selected.probs[a].shape[1], probs=selected.probs[a])
          for a in result.attributes}, result.metrics.names)
     for name in ["amF1", "aMCC", "aNLL", "amF1_supp5"]:
-        assert result.metrics.averages[name] == pytest.approx(float(expected.averages[name]),
+        assert result.metrics.aggregates[name] == pytest.approx(float(expected.aggregates[name]),
                                                               nan_ok=True)
     assert result.metrics.per_attribute["n"]["Curvature"] == int(
         (reference_set.class_indices["Curvature"] != IGNORE_LABEL_INDEX).sum())

@@ -122,6 +122,7 @@ The metrics of an attribute are computed from $C$, with, for each class $k$:
 | `IoU` | $\mathrm{TP}_k / (a_k + \hat a_k - \mathrm{TP}_k)$ (0 if the denominator is 0) |
 | `mP`, `mR`, `mF1`, `mIoU` | the mean over the classes $\mathcal{K} = \{k : a_k > 0 \text{ or } \hat a_k > 0\}$ |
 | `minP`, …, `maxIoU` | the minimum or maximum over $\mathcal{K}$ |
+| `sumP`, …, `sumIoU` | the sum over $\mathcal{K}$ |
 | `A` | $\sum_k \mathrm{TP}_k / n$ |
 | `n` | $n$ |
 | `nc` | the number of classes, $\lvert\mathcal{K}\rvert$ |
@@ -131,6 +132,7 @@ The metrics of an attribute are computed from $C$, with, for each class $k$:
 | `cNLL`, `cBrier` | $s_k / a_k$ per class (NaN if $a_k = 0$) |
 | `mNLL`, `mBrier` | the mean of `cNLL`, `cBrier` over the classes with $a_k > 0$ |
 | `minNLL`, …, `maxBrier` | the minimum or maximum of `cNLL`, `cBrier` over the classes with $a_k > 0$ |
+| `sumNLL`, `sumBrier` | the sum of `cNLL`, `cBrier` over the classes with $a_k > 0$ |
 | `ECE` | the expected calibration error $\sum_b \lvert c_b - z_b \rvert / n$ over the 15 bins of $Z$ (Guo et al., 2017) |
 | `MRP90` | the manual review proportion for `mF1` $\ge 0.9$, see [Manual review proportion](#manual-review-proportion) |
 
@@ -147,7 +149,7 @@ A class in $\mathcal{K}$ that is labeled but never predicted, or predicted but n
 - The simulation assumes that the reviewer codes as the labels do. It says how well the confidences find the segments that lower `mF1`, not how a reviewer would decide.
 - The idea is that of selective classification, where predictions with a low confidence are deferred to a person, and its risk–coverage curves: `MRP90` is about 1 − coverage at the target. Unlike the selective risk, which is computed on the kept predictions only, `mF1` here is computed over all segments, with the reviewed ones corrected.
 
-**Class selection.** Two suffixes, in this order, restrict the classes of a mean, minimum or maximum over classes and of `nc`:
+**Class selection.** Two suffixes, in this order, restrict the classes of a mean, minimum, maximum or sum over classes and of `nc`. Over an empty selection, a sum is 0, and a mean, minimum or maximum is NaN:
 
 - The support threshold `_suppN`, $N \ge 1$, keeps the classes with $a_k \ge N$, e.g. `mF1_supp10`.
 - The class condition `_{<metric><op><number>}` keeps the classes that meet one condition on a per-class metric: `supp`, `P`, `R`, `F1`, `IoU`, `cNLL` or `cBrier`, with `<`, `<=`, `=`, `>=` or `>`. For example, `nc_{R>0}` is the number of classes that are predicted correctly at least once, and `mF1_{supp<10}` the mean F1 over the classes with fewer than 10 labeled segments. `_{supp>=10}` is the same as `_supp10`. `=` compares exactly, which suits 0 and 1, the values of the undefined `P`, `R`, `F1` and `IoU`.
@@ -156,16 +158,20 @@ A class is selected if it is in the classes of the metric without suffixes ($\ma
 
 **Attribute average.** The prefix `a` averages a metric over the scored attributes where it is not NaN, e.g. `amF1`. Infinite values are included. Each attribute counts equally, so `aNLL` is the mean of the per-attribute NLLs. Per-class metrics are not averaged.
 
+**Attribute total.** The prefix `tot` sums a count over the scored attributes: `n` and `nc` with any class selection, e.g. `totnc_{R>0}`, the number of (attribute, class) pairs that are predicted correctly at least once, or `totnc_supp1_{R=0}`, the number of labeled classes that are never predicted correctly. Totals of other metrics, e.g. `totmF1`, are an error, since a sum of rates over attributes has no meaning. Like the counts, the totals of a model are integers. Averages and totals are the attribute aggregates (`MetricValues.aggregates`).
+
+**Two levels of prefixes.** A name has at most one prefix over attributes (`a` or `tot`) and at most one aggregation over classes (`m`, `min`, `max` or `sum`, or the class count `nc`), in this order, e.g. `aminR`, `asumR` and `totnc_{R>0}`. `atotnc` and `totamF1` are errors.
+
 `describe_metric(name)` describes any such name in words, e.g. for a tooltip.
 
-**Averages over a subset of the attributes.** Since an average is the mean of the per-attribute values, `select_metric_attributes(result.metrics, subset)` computes it for a subset from those values, without the predictions. It needs the per-attribute value of each average, e.g. `mP` for `amP`. `evaluate_predictions` computes them by default, and `add_per_attribute_metric_names` adds them to other lists of metric names. Intervals of such averages cannot be computed from the per-attribute intervals, since the attributes of a road sequence are correlated. `select_result_attributes(result, subset)` restricts a result to the subset with its statistics, and `compute_bootstrap_intervals` and `compare_methods` then work on it as on any result.
+**Aggregates over a subset of the attributes.** Since an average or a total is computed from the per-attribute values, `select_metric_attributes(result.metrics, subset)` computes it for a subset from those values, without the predictions. It needs the per-attribute value of each aggregate, e.g. `mP` for `amP`. `evaluate_predictions` computes them by default, and `add_per_attribute_metric_names` adds them to other lists of metric names. Intervals of such aggregates cannot be computed from the per-attribute intervals, since the attributes of a road sequence are correlated. `select_result_attributes(result, subset)` restricts a result to the subset with its statistics, and `compute_bootstrap_intervals` and `compare_methods` then work on it as on any result.
 
 The iRAP protocol (`get_irap_metric_names`) reports the following. Its main metric is `amF1`.
 
 - **Attribute averages**: `amF1`, `amP`, `amR`, `aMCC`, `aA`, `amF1_supp5` and `amF1_supp10`. `probs` files also get `aNLL`, `aBrier`, `amNLL`, `amNLL_supp5` and `amNLL_supp10`.
 - **Per attribute**: `mF1`, `A`, `n`, `MCC`, `mF1_suppN` and `nc_suppN`. `probs` files also get `NLL`, `Brier` and `mNLL`.
 
-By default (`get_default_metric_names`), `evaluate_predictions` (and so `irap-eval evaluate`) also computes, for `probs` files, the manual review proportion `aMRP90` and `MRP90`, which is not part of the protocol, and the per-attribute values of the averages that the protocol lacks: `mP`, `mR` and, for `probs` files, `mNLL_suppN`.
+By default (`get_default_metric_names`), `evaluate_predictions` (and so `irap-eval evaluate`) also computes, for `probs` files, the manual review proportion `aMRP90` and `MRP90`, which is not part of the protocol, and the per-attribute values of the averages that the protocol lacks: `mP`, `mR` and, for `probs` files, `mNLL_suppN`. `irap-eval evaluate --metric-names` computes other metrics instead, e.g. `amF1 totnc_{R>0} aminR aECE`, with the per-attribute values of their aggregates.
 
 Results keep only the attribute averages and per-attribute metrics. `compute_class_metrics(result)` computes the per-class metrics (`supp`, `P`, `R`, `F1`, `IoU`, `cNLL`, `cBrier`) and the confusion matrix of each attribute from its statistics, and `compute_review_curves(result)` the review curve of each attribute.
 
@@ -183,7 +189,7 @@ The intervals cover two sources of variation (`--bootstrap B`, `--seed`, default
 `compute_bootstrap_intervals(models)` computes them as follows:
 
 1. Each of the $B$ resamples draws the $G$ sequences of the set $G$ times with replacement. This gives multiplicities $w \sim \mathrm{Multinomial}(G; 1/G, \ldots, 1/G)$. The draws depend only on the seed, $B$ and $G$, so all models on an evaluation set share the resamples.
-2. All metrics of each model, including the means and averages, are recomputed from $\sum_g w_g C^{(g)}$, $\sum_g w_g s^{(g)}$, $\sum_g w_g H^{(g)}$ and $\sum_g w_g Z^{(g)}$, giving $m^*_i$ (`resample_model_metrics`). The confidence bins are those of the whole set in every resample. A sequence with weight 0 adds nothing, also if its NLL sum is infinite. Averages over a subset of the attributes can be computed from the resampled per-attribute values (`select_metric_attributes`), as from the values themselves.
+2. All metrics of each model, including the means over classes and the attribute aggregates, are recomputed from $\sum_g w_g C^{(g)}$, $\sum_g w_g s^{(g)}$, $\sum_g w_g H^{(g)}$ and $\sum_g w_g Z^{(g)}$, giving $m^*_i$ (`resample_model_metrics`). The confidence bins are those of the whole set in every resample. A sequence with weight 0 adds nothing, also if its NLL sum is infinite. Aggregates over a subset of the attributes can be computed from the resampled per-attribute values (`select_metric_attributes`), as from the values themselves.
 3. The resampled value of the method is
    $$v^* = \bar m^* + \frac{\mathrm{sd}(m^*_1, \ldots, m^*_M)}{\sqrt M}\, t^*, \qquad t^* \sim t_{M-1},$$
    with the sample standard deviation and one Student-t draw per resample, shared by the metrics of the method (`combine_model_resamples`). This is the posterior of the mean of normally distributed model values under the prior $p(\mu, \sigma) \propto 1/\sigma$. The t draws depend on the seed and the method name, so they are independent of the resamples and of the draws of other methods. With one model, $v^* = m^*_1$, and the interval covers only the road sequences. If $\bar m^*$ is infinite, $v^*$ is $\bar m^*$.

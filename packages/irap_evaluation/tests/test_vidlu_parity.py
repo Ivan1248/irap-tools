@@ -51,7 +51,7 @@ def _compute_vidlu_metrics(targets, outputs, output_kind):
 
 
 def _assert_metrics_equal(ours, vidlu):
-    ours = {**ours.averages, **ours.per_attribute}
+    ours = {**ours.aggregates, **ours.per_attribute}
     assert list(ours) == list(vidlu)
     for name, value in vidlu.items():
         if isinstance(value, dict):

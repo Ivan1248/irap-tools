@@ -22,7 +22,6 @@ from .metric_names import (
     CLASS_AGGREGATE_METRICS,
     CLASS_COUNT_METRICS,
     CLASS_SELECTION_METRICS,
-    DISTRIBUTION_METRICS,
     IRAP_IGNORE_MISSING_CLASSES,
     MANUAL_REVIEW_PROPORTION_METRIC,
     MANUAL_REVIEW_TARGET_MF1,
@@ -60,21 +59,22 @@ class MetricValues(T.Generic[V]):
     """Values of metrics of several attributes, e.g. scores, intervals or differences.
 
     Attributes:
-        averages: Attribute-average name (`a` prefix) -> value.
+        aggregates: Attribute-aggregate name (`a` or `tot` prefix, see
+            `metric_names.AttributeAggregation`) -> value.
         per_attribute: Per-attribute name -> attribute -> value.
     """
 
-    averages: T.Mapping[str, V]
+    aggregates: T.Mapping[str, V]
     per_attribute: T.Mapping[str, T.Mapping[str, V]]
 
     @property
     def names(self) -> tuple[str, ...]:
-        return (*self.averages, *self.per_attribute)
+        return (*self.aggregates, *self.per_attribute)
 
     def iterate_values(self) -> T.Iterator[V]:
-        """Iterates over the values of the averages, then those of each per-attribute metric and
-        attribute, in their order."""
-        yield from self.averages.values()
+        """Iterates over the values of the attribute aggregates, then those of each per-attribute
+        metric and attribute, in their order."""
+        yield from self.aggregates.values()
         for attr_to_value in self.per_attribute.values():
             yield from attr_to_value.values()
 
@@ -84,7 +84,7 @@ def map_metric_values(f: T.Callable[..., U], *values: MetricValues) -> MetricVal
     the first one."""
     first = values[0]
     return MetricValues(
-        averages={name: f(*(v.averages[name] for v in values)) for name in first.averages},
+        aggregates={name: f(*(v.aggregates[name] for v in values)) for name in first.aggregates},
         per_attribute={name: {attr: f(*(v.per_attribute[name][attr] for v in values))
                               for attr in attr_to_value}
                        for name, attr_to_value in first.per_attribute.items()})
@@ -319,25 +319,32 @@ def _compute_mean_over_defined(values: np.ndarray) -> np.ndarray:
 def _aggregate_over_classes(values: np.ndarray, classes: np.ndarray,
                             aggregation: ClassAggregation) -> np.ndarray:
     """Aggregates (..., K) per-class values over the classes where the (..., K) bool `classes` is
-    True: (...,), NaN where there are none."""
+    True: (...,). Where there are none, the sum is 0 and the other aggregations are NaN."""
     if aggregation == "m":
         return _compute_masked_mean(values, classes)
+    if aggregation == "sum":
+        # Not `values * classes`, which is NaN for an unselected class with a NaN value.
+        return np.where(classes, values, 0).sum(-1)
     reduce, identity = (np.min, np.inf) if aggregation == "min" else (np.max, -np.inf)
     return np.where(classes.any(-1), reduce(values, -1, where=classes, initial=identity), np.nan)
 
 
-def _compute_attribute_averages(
-        average_names: T.Iterable[str],
+def _compute_attribute_aggregates(
+        aggregate_names: T.Iterable[str],
         per_attribute: T.Mapping[str, T.Mapping[str, T.Any]]) -> dict[str, np.ndarray]:
-    """Attribute averages, e.g. 'amF1', from `per_attribute`: metric name -> attribute -> value,
-    arrays of the same shape. An average is the mean over the attributes where its metric is
-    defined, including infinite values."""
-    def compute_average(name: str) -> np.ndarray:
-        values = per_attribute[parse_metric_name(name).name].values()
+    """Attribute aggregates, e.g. 'amF1' and 'totnc_{R>0}', from `per_attribute`: metric name ->
+    attribute -> value, arrays of the same shape. An average is the mean over the attributes where
+    its metric is defined, including infinite values, in float64. A total is the sum over all
+    attributes, of the dtype of the values, e.g. int64 for counts, and NaN if a value is NaN."""
+    def compute_aggregate(name: str) -> np.ndarray:
+        parsed = parse_metric_name(name)
+        values = per_attribute[parsed.name].values()
+        if parsed.attribute_aggregation == "tot":
+            return np.stack([np.asarray(v) for v in values], -1).sum(-1)
         return _compute_mean_over_defined(
             np.stack([np.asarray(v, dtype=np.float64) for v in values], -1))
 
-    return {name: compute_average(name) for name in average_names}
+    return {name: compute_aggregate(name) for name in aggregate_names}
 
 
 def _select_considered_classes(num_actual: np.ndarray, num_predicted: np.ndarray,
@@ -521,7 +528,7 @@ def compute_classification_metrics(
     metric_names: T.Sequence[str],
     ignore_missing_classes: bool = IRAP_IGNORE_MISSING_CLASSES,
 ) -> dict[str, np.ndarray]:
-    """Computes per-attribute metrics (names without the `a` prefix) from the statistics.
+    """Computes per-attribute metrics (names without an `a` or `tot` prefix) from the statistics.
 
     Args:
         statistics: Statistics with batch dimensions `...`.
@@ -534,15 +541,14 @@ def compute_classification_metrics(
         Name -> an array of shape `...`, or `(..., K)` for a per-class metric.
 
     Raises:
-        ValueError: For an averaged name, or a metric of predicted distributions
-            (`metric_names.DISTRIBUTION_METRICS`) of hard predictions.
+        ValueError: For an attribute aggregate, or a metric of predicted distributions
+            (`metric_names.ParsedMetricName.needs_distributions`) of hard predictions.
     """
     parsed = [parse_metric_name(name) for name in metric_names]
-    if averaged := [p.name for p in parsed if p.is_averaged]:
-        raise ValueError(f"Attribute averages {averaged} need several attributes. See"
+    if aggregates := [name for name, p in zip(metric_names, parsed) if p.is_attribute_aggregate]:
+        raise ValueError(f"Attribute aggregates {aggregates} need several attributes. See"
                          f" compute_multi_attribute_metrics.")
-    distribution_names = [p.name for p in parsed
-                          if not DISTRIBUTION_METRICS.isdisjoint(p.required_base_metrics)]
+    distribution_names = [p.name for p in parsed if p.needs_distributions]
     if distribution_names and not statistics.has_probabilities:
         raise ValueError(f"Metrics {distribution_names} need predicted distributions, but the"
                          f" predictions are hard.")
@@ -572,7 +578,7 @@ def compute_multi_attribute_metrics(
     attribute_to_statistics: T.Mapping[str, ClassificationStatistics],
     metric_names: T.Sequence[str],
 ) -> MetricValues[np.ndarray]:
-    """Computes metrics of several attributes, including averages over attributes.
+    """Computes metrics of several attributes, including aggregates over attributes.
 
     Means over classes are those of the iRAP protocol (`IRAP_IGNORE_MISSING_CLASSES`).
 
@@ -583,16 +589,18 @@ def compute_multi_attribute_metrics(
 
     Returns:
         Arrays of shape `...`. An attribute average is the mean over the attributes where the
-        metric is defined, NaN if it is defined for none.
+        metric is defined, NaN if it is defined for none. A total over attributes, e.g.
+        'totnc_{R>0}', is the sum over the attributes, int64 like the counts.
 
     Raises:
-        ValueError: If there is no attribute, or for the average of a per-class metric.
+        ValueError: If there is no attribute, or for the aggregate of a per-class metric.
     """
     if not attribute_to_statistics:
         raise ValueError("At least one attribute is required.")
     parsed = {name: parse_metric_name(name) for name in metric_names}
-    if per_class := [n for n, p in parsed.items() if p.is_averaged and p.base in PER_CLASS_METRICS]:
-        raise ValueError(f"Cannot average per-class metrics {per_class} over attributes.")
+    if per_class := [n for n, p in parsed.items()
+                     if p.is_attribute_aggregate and p.base in PER_CLASS_METRICS]:
+        raise ValueError(f"Cannot aggregate per-class metrics {per_class} over attributes.")
     per_attribute_names = list(dict.fromkeys(p.name for p in parsed.values()))
     attribute_to_metrics = {
         attr: compute_classification_metrics(stats, per_attribute_names)
@@ -601,10 +609,10 @@ def compute_multi_attribute_metrics(
     per_attribute = {name: {attr: metrics[name] for attr, metrics in attribute_to_metrics.items()}
                      for name in per_attribute_names}
     return MetricValues(
-        averages=_compute_attribute_averages(
-            [name for name, p in parsed.items() if p.is_averaged], per_attribute),
+        aggregates=_compute_attribute_aggregates(
+            [name for name, p in parsed.items() if p.is_attribute_aggregate], per_attribute),
         per_attribute={name: per_attribute[name] for name, p in parsed.items()
-                       if not p.is_averaged})
+                       if not p.is_attribute_aggregate})
 
 
 def compute_grouped_metrics(
@@ -629,30 +637,30 @@ def compute_grouped_metrics(
 def select_metric_names(values: MetricValues[V], names: T.Container[str]) -> MetricValues[V]:
     """Selects the values of the metrics in `names`."""
     return MetricValues(
-        averages={n: v for n, v in values.averages.items() if n in names},
+        aggregates={n: v for n, v in values.aggregates.items() if n in names},
         per_attribute={n: v for n, v in values.per_attribute.items() if n in names})
 
 
 def select_metric_attributes(values: MetricValues[V],
                              attributes: T.Collection[str]) -> MetricValues[V]:
-    """The metric values of a subset of the attributes, with the attribute averages computed
+    """The metric values of a subset of the attributes, with the attribute aggregates computed
     again over the subset, as `compute_multi_attribute_metrics` computes them.
 
-    The values are floats, or arrays of the same shape, e.g. resampled values
-    (`bootstrap.resample_model_metrics`), whose averages are computed elementwise. They must
-    have the per-attribute value of each average, e.g. 'mF1' for 'amF1' (see
+    The values are numbers, or arrays of the same shape, e.g. resampled values
+    (`bootstrap.resample_model_metrics`), whose aggregates are computed elementwise. They must
+    have the per-attribute value of each aggregate, e.g. 'mF1' for 'amF1' (see
     `metric_names.add_per_attribute_metric_names`). The attributes keep the order of `values`, so
-    that the averages equal those of scoring only the subset.
+    that the aggregates equal those of scoring only the subset. A total of ints is an int.
 
     Raises:
-        ValueError: If `attributes` is empty or has attributes without values, or an average
+        ValueError: If `attributes` is empty or has attributes without values, or an aggregate
             lacks its per-attribute values.
     """
     if not attributes:
         raise ValueError("At least one attribute is required.")
-    if missing := [n for n in values.averages
+    if missing := [n for n in values.aggregates
                    if parse_metric_name(n).name not in values.per_attribute]:
-        raise ValueError(f"No per-attribute values of the averages {missing}. Add them with"
+        raise ValueError(f"No per-attribute values of the aggregates {missing}. Add them with"
                          f" add_per_attribute_metric_names.")
     if unknown := sorted(a for a in attributes
                          if any(a not in v for v in values.per_attribute.values())):
@@ -660,6 +668,7 @@ def select_metric_attributes(values: MetricValues[V],
     per_attribute = {name: {a: v for a, v in attr_to_value.items() if a in attributes}
                      for name, attr_to_value in values.per_attribute.items()}
     return MetricValues(
-        averages={name: average.item() if average.ndim == 0 else average for name, average
-                  in _compute_attribute_averages(values.averages, per_attribute).items()},
+        aggregates={name: aggregate.item() if aggregate.ndim == 0 else aggregate
+                    for name, aggregate
+                    in _compute_attribute_aggregates(values.aggregates, per_attribute).items()},
         per_attribute=per_attribute)

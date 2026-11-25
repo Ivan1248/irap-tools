@@ -280,14 +280,14 @@ def test_attribute_average_leaves_out_undefined_values():
     undefined = ClassificationStatistics(np.array([[4, 0], [0, 0]]))
     metrics = compute_multi_attribute_metrics({"x": defined, "y": undefined}, ["aMCC", "MCC"])
     assert np.isnan(metrics.per_attribute["MCC"]["y"])
-    assert metrics.averages["aMCC"] == pytest.approx(metrics.per_attribute["MCC"]["x"])
+    assert metrics.aggregates["aMCC"] == pytest.approx(metrics.per_attribute["MCC"]["x"])
     with pytest.raises(ValueError, match="per-class"):
         compute_multi_attribute_metrics({"x": defined}, ["aF1"])
 
 
 def _to_float_values(metrics):
     return type(metrics)(
-        averages={n: float(v) for n, v in metrics.averages.items()},
+        aggregates={n: float(v) for n, v in metrics.aggregates.items()},
         per_attribute={n: {a: float(v) for a, v in values.items()}
                        for n, values in metrics.per_attribute.items()})
 
@@ -309,8 +309,8 @@ def test_select_metric_attributes_equals_computing_on_the_subset():
         # Equal values, NaN where undefined.
         np.testing.assert_equal(dc.asdict(select_metric_attributes(metrics, subset)),
                                 dc.asdict(expected))
-    assert np.isnan(select_metric_attributes(metrics, ["x"]).averages["aMCC"])
-    assert select_metric_attributes(metrics, ["y", "z"]).averages["aNLL"] == np.inf
+    assert np.isnan(select_metric_attributes(metrics, ["x"]).aggregates["aMCC"])
+    assert select_metric_attributes(metrics, ["y", "z"]).aggregates["aNLL"] == np.inf
 
     with pytest.raises(ValueError, match="At least one"):
         select_metric_attributes(metrics, [])
@@ -319,6 +319,61 @@ def test_select_metric_attributes_equals_computing_on_the_subset():
     averages_only = _to_float_values(compute_multi_attribute_metrics(statistics, ["amF1"]))
     with pytest.raises(ValueError, match="add_per_attribute_metric_names"):
         select_metric_attributes(averages_only, ["x"])
+
+
+def test_attribute_totals_are_sums_of_counts():
+    # x: class 0 recalled, class 1 not, class 2 neither labeled nor predicted.
+    # y: both classes recalled, class 1 with one labeled example.
+    statistics = {
+        "x": ClassificationStatistics(np.array([[3, 1, 0], [2, 0, 0], [0, 0, 0]])),
+        "y": ClassificationStatistics(np.array([[5, 0], [0, 1]]))}
+    names = ["totn", "totnc", "totnc_{R>0}", "totnc_supp1_{R=0}", "totnc_supp2", "anc_{R>0}",
+             "amF1"]
+    metrics = compute_multi_attribute_metrics(statistics, add_per_attribute_metric_names(names))
+    expected = {"totn": 6 + 6, "totnc": 2 + 2, "totnc_{R>0}": 1 + 2, "totnc_supp1_{R=0}": 1 + 0,
+                "totnc_supp2": 2 + 1}
+    for name, total in expected.items():
+        assert metrics.aggregates[name] == total
+        assert metrics.aggregates[name].dtype == np.int64
+        per_attribute_name = name.removeprefix("tot")
+        assert metrics.aggregates[name] == sum(metrics.per_attribute[per_attribute_name].values())
+    assert metrics.aggregates["anc_{R>0}"] == pytest.approx(1.5)
+    # Over a subset, the totals stay ints.
+    x_only = select_metric_attributes(metrics, ["x"])
+    assert x_only.aggregates["totnc_{R>0}"] == 1
+    assert isinstance(x_only.aggregates["totnc_{R>0}"], int)
+    assert x_only.aggregates["anc_{R>0}"] == 1.0
+    with pytest.raises(ValueError, match="need several attributes"):
+        compute_classification_metrics(statistics["x"], ["totnc_{R>0}"])
+    # Batched statistics, e.g. of bootstrap resamples, give batched totals.
+    batched = {a: ClassificationStatistics(np.stack([s.confusion_matrix] * 3))
+               for a, s in statistics.items()}
+    np.testing.assert_array_equal(
+        compute_multi_attribute_metrics(batched, ["totnc_{R>0}"]).aggregates["totnc_{R>0}"],
+        [3] * 3)
+
+
+def test_sums_over_classes():
+    # Class 2 is neither labeled nor predicted, so it is not selected. R = (3/4, 0).
+    targets = np.array([0, 0, 0, 0, 1, 1])
+    predicted = np.array([0, 0, 0, 1, 0, 0])
+    probs = np.array([[0.9, 0.1, 0.0], [0.8, 0.2, 0.0], [0.6, 0.3, 0.1], [0.4, 0.5, 0.1],
+                      [0.7, 0.2, 0.1], [0.5, 0.4, 0.1]])
+    statistics = compute_classification_statistics(targets, predicted, 3, probs=probs)
+    metrics = compute_classification_metrics(
+        statistics, ["R", "cNLL", "sumR", "sumF1", "sumNLL", "sumR_{R>0}", "sumR_{R>1}",
+                     "sumNLL_supp3", "sumR_supp10", "mR_supp10"])
+    assert metrics["sumR"] == pytest.approx(0.75)
+    assert metrics["sumR_{R>0}"] == pytest.approx(0.75)
+    # cNLL is NaN for class 2, without examples, which the sum leaves out.
+    assert np.isnan(metrics["cNLL"][2])
+    assert metrics["sumNLL"] == pytest.approx(np.nansum(metrics["cNLL"]))
+    assert metrics["sumNLL_supp3"] == pytest.approx(metrics["cNLL"][0])
+    # Without selected classes, a sum is 0 and a mean NaN.
+    assert metrics["sumR_{R>1}"] == 0 and metrics["sumR_supp10"] == 0
+    assert np.isnan(metrics["mR_supp10"])
+    averages = compute_multi_attribute_metrics({"x": statistics}, ["asumR", "sumR"])
+    assert averages.aggregates["asumR"] == pytest.approx(0.75)
 
 
 def test_batched_metrics_equal_separate_computations():

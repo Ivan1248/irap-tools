@@ -18,15 +18,18 @@ from ..evaluation import (
 )
 from ..file_names import to_valid_file_name
 from ..methods import compute_method_metrics, group_models_by_method
-from ..metric_names import parse_metric_name
+from ..metric_names import AttributeAggregation, parse_metric_name
 from ..metrics import MetricValues, map_metric_values
 from ..prediction_io import make_model_file_name
 from ..predictions import ModelInfo
 
 V = T.TypeVar("V")
 
-#: The `attribute` of an attribute average in the long table.
-AVERAGE_ATTRIBUTE = "average"
+#: Attribute aggregation -> the `attribute` of its rows in the long table, e.g. 'average' for
+#: 'amF1' and 'total' for 'totnc_{R>0}'.
+AGGREGATE_ATTRIBUTES: dict[AttributeAggregation, str] = {"a": "average", "tot": "total"}
+_ATTRIBUTE_TO_AGGREGATION = {attribute: aggregation
+                             for aggregation, attribute in AGGREGATE_ATTRIBUTES.items()}
 LONG_TABLE_COLUMNS = ("model", "method", "seed", "dataset", "split", "split_use",
                       "evaluation_set", "context_offsets", "in_split_offsets", "null_policy",
                       "attribute", "metric",
@@ -52,21 +55,27 @@ def _to_rows(result: EvaluationResult) -> T.Iterator[dict[str, T.Any]]:
                     ci_high=math.nan if interval is None else interval.high,
                     ci_num_undefined=pd.NA if interval is None else interval.num_undefined)
 
-    for name, value in result.metrics.averages.items():
-        yield make_row(AVERAGE_ATTRIBUTE, parse_metric_name(name).name, value,
-                       intervals.averages[name])
+    for name, value in result.metrics.aggregates.items():
+        parsed = parse_metric_name(name)
+        yield make_row(AGGREGATE_ATTRIBUTES[parsed.attribute_aggregation], parsed.name, value,
+                       intervals.aggregates[name])
     for name, attr_to_value in result.metrics.per_attribute.items():
         for attr, value in attr_to_value.items():
             yield make_row(attr, name, value, intervals.per_attribute[name][attr])
 
 
-def to_long_table(results: T.Iterable[EvaluationResult]) -> pd.DataFrame:
-    """One row per (result, attribute or average, scalar metric).
+def _is_aggregate_row(long_table: pd.DataFrame) -> pd.Series:
+    return long_table["attribute"].isin(list(AGGREGATE_ATTRIBUTES.values()))
 
-    An attribute average `a<X>` gives the row (`attribute='average'`, `metric=X`), so that it
-    lines up with the per-attribute rows of `X`. `split_use` is `ModelInfo.get_split_use` of the
-    split. Without intervals, the confidence bounds are NaN
-    and `ci_num_undefined` (`BootstrapInterval.num_undefined`) is missing.
+
+def to_long_table(results: T.Iterable[EvaluationResult]) -> pd.DataFrame:
+    """One row per (result, attribute or attribute aggregate, scalar metric).
+
+    An attribute aggregate, e.g. the average `a<X>` or the total `tot<X>`, gives the row
+    (`attribute='average'` or `'total'`, see `AGGREGATE_ATTRIBUTES`, `metric=X`), so that it lines
+    up with the per-attribute rows of `X`. `split_use` is `ModelInfo.get_split_use` of the split.
+    Without intervals, the confidence bounds are NaN and `ci_num_undefined`
+    (`BootstrapInterval.num_undefined`) is missing.
     """
     table = pd.DataFrame([row for r in results for row in _to_rows(r)],
                          columns=list(LONG_TABLE_COLUMNS))
@@ -74,7 +83,8 @@ def to_long_table(results: T.Iterable[EvaluationResult]) -> pd.DataFrame:
 
 
 def to_per_attribute_table(long_table: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Attribute rows × model columns of one metric, with the attribute average last.
+    """Attribute rows × model columns of one metric, with the attribute aggregates last, the
+    average before the total (`AGGREGATE_ATTRIBUTES`).
 
     Args:
         long_table: From `to_long_table`, with one row per (model, attribute) for `metric`,
@@ -86,23 +96,24 @@ def to_per_attribute_table(long_table: pd.DataFrame, metric: str) -> pd.DataFram
             several rows.
     """
     rows = long_table[long_table["metric"] == metric]
-    if rows.empty:
-        per_attribute = long_table.loc[long_table["attribute"] != AVERAGE_ATTRIBUTE, "metric"]
+    is_aggregate = _is_aggregate_row(rows)
+    if is_aggregate.all():
+        per_attribute = long_table.loc[~_is_aggregate_row(long_table), "metric"]
         raise ValueError(f"The table has no per-attribute values of {metric!r}. It has"
-                         f" {list(dict.fromkeys(per_attribute))}. The attribute average aX is the"
-                         f" last row of the table of X.")
+                         f" {list(dict.fromkeys(per_attribute))}. The attribute aggregates of X,"
+                         f" e.g. aX, are the last rows of the table of X.")
     if rows.duplicated(["model", "attribute"]).any():
         raise ValueError(f"Several rows per (model, attribute) for {metric!r}. Restrict the"
                          f" table to one evaluation set, dataset and split.")
     table = rows.pivot(index="attribute", columns="model", values="value")
-    attributes = [a for a in dict.fromkeys(rows["attribute"]) if a != AVERAGE_ATTRIBUTE]
-    order = attributes + ([AVERAGE_ATTRIBUTE] if AVERAGE_ATTRIBUTE in table.index else [])
-    return table.loc[order, list(dict.fromkeys(rows["model"]))]
+    attributes = list(dict.fromkeys(rows.loc[~is_aggregate, "attribute"]))
+    aggregates = [a for a in AGGREGATE_ATTRIBUTES.values() if a in table.index]
+    return table.loc[attributes + aggregates, list(dict.fromkeys(rows["model"]))]
 
 
 def to_average_table(long_table: pd.DataFrame, with_intervals: bool = False) -> pd.DataFrame:
-    """Model rows × `split_use` and attribute-average columns, in the metric order of
-    `long_table`.
+    """Model rows × `split_use` and attribute-aggregate columns, e.g. 'amF1' and 'totnc_{R>0}',
+    in the metric order of `long_table`.
 
     Args:
         long_table: From `to_long_table`, restricted to one evaluation set, dataset and split.
@@ -111,7 +122,9 @@ def to_average_table(long_table: pd.DataFrame, with_intervals: bool = False) -> 
     Raises:
         ValueError: If a (model, metric) pair has several rows.
     """
-    rows = long_table[long_table["attribute"] == AVERAGE_ATTRIBUTE]
+    rows = long_table[_is_aggregate_row(long_table)]
+    # The attribute-aggregate names, e.g. 'amF1' for (`attribute='average'`, `metric='mF1'`).
+    rows = rows.assign(metric=rows["attribute"].map(_ATTRIBUTE_TO_AGGREGATION) + rows["metric"])
     if rows.duplicated(["model", "metric"]).any():
         raise ValueError("Several rows per (model, metric). Restrict the table to one evaluation"
                          " set, dataset and split.")
@@ -136,9 +149,10 @@ def to_method_average_table(
     method_to_models: T.Mapping[str, T.Sequence[EvaluationResult]],
     method_to_intervals: T.Mapping[str, MetricValues[BootstrapInterval]] | None = None,
 ) -> pd.DataFrame:
-    """Method rows × attribute-average columns: the number of models, their null policy, what
-    they used the split for (`ModelInfo.get_split_use`, the same for all models of a method), and
-    the mean of each metric over the models (`methods.compute_method_metrics`).
+    """Method rows × attribute-aggregate columns, as in `to_average_table`: the number of models,
+    their null policy, what they used the split for (`ModelInfo.get_split_use`, the same for all
+    models of a method), and the mean of each metric over the models
+    (`methods.compute_method_metrics`).
 
     Args:
         method_to_models: Method name -> the results of its models on one evaluation set.
@@ -151,12 +165,11 @@ def to_method_average_table(
         row: dict[str, T.Any] = {
             "models": len(models), "null_policy": first.null_policy,
             "split_use": first.model.get_split_use(first.evaluation_set.split)}
-        for metric, value in compute_method_metrics(models).averages.items():
-            column = parse_metric_name(metric).name
-            row[column] = value
+        for metric, value in compute_method_metrics(models).aggregates.items():
+            row[metric] = value
             if method_to_intervals is not None:
-                interval = method_to_intervals[name].averages[metric]
-                row[f"{column} low"], row[f"{column} high"] = interval.low, interval.high
+                interval = method_to_intervals[name].aggregates[metric]
+                row[f"{metric} low"], row[f"{metric} high"] = interval.low, interval.high
         return row
 
     return pd.DataFrame.from_dict(
@@ -187,9 +200,9 @@ def to_comparison_table(
 
 
 def to_labeled_metric_values(values: MetricValues[V]) -> dict[str, V]:
-    """Label -> value: the name of an attribute average, `<name> (<attribute>)` for a
+    """Label -> value: the name of an attribute aggregate, `<name> (<attribute>)` for a
     per-attribute metric."""
-    return {**values.averages,
+    return {**values.aggregates,
             **{f"{name} ({attr})": value for name, attr_to_value in values.per_attribute.items()
                for attr, value in attr_to_value.items()}}
 

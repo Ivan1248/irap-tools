@@ -16,6 +16,7 @@ from irap_evaluation.bootstrap import (
 from irap_evaluation.evaluation import evaluate_predictions, select_result_attributes
 from irap_evaluation.evaluation_sets import get_evaluation_set
 from irap_evaluation.methods import compute_method_metrics
+from irap_evaluation.metric_names import add_per_attribute_metric_names
 from irap_evaluation.metrics import (
     MetricValues,
     compute_grouped_metrics,
@@ -38,8 +39,8 @@ def test_bootstrap_intervals_contain_the_point_estimate(metadata, predictions):
     intervals = compute_bootstrap_intervals([result], num_resamples=200, seed=1)
     assert intervals == compute_bootstrap_intervals([result], num_resamples=200, seed=1)
     for name in ["amF1", "aNLL"]:
-        interval = intervals.averages[name]
-        assert interval.low <= result.metrics.averages[name] <= interval.high
+        interval = intervals.aggregates[name]
+        assert interval.low <= result.metrics.aggregates[name] <= interval.high
     assert set(intervals.per_attribute["mF1"]) == set(result.attributes)
 
 
@@ -67,12 +68,12 @@ def test_compare_methods(metadata, reference_set, predictions):
     result_a, result_b = (evaluate_predictions(p, reference_set)
                           for p in (predictions, predictions_b))
     self_difference = compare_methods([result_a], [result_a], ["amF1"],
-                                      num_resamples=50).averages["amF1"]
+                                      num_resamples=50).aggregates["amF1"]
     assert self_difference == MetricDifference(0.0, BootstrapInterval(0.0, 0.0, 0))
     per_attribute = compare_methods([result_a], [result_b], ["mF1"], num_resamples=20)
     assert set(per_attribute.per_attribute["mF1"]) == set(result_a.attributes)
     assert compare_methods([result_a], [result_b], num_resamples=20).names == \
-           tuple(result_a.metrics.averages)
+           tuple(result_a.metrics.aggregates)
 
     with pytest.raises(ValueError, match="not in both methods"):
         compare_methods([result_a], [result_b], ["amIoU"], num_resamples=20)
@@ -96,7 +97,7 @@ def _to_bounds(intervals):
     """(num_intervals, 2) the bounds of `MetricValues` of intervals."""
     per_attribute = [i for attr_to_interval in intervals.per_attribute.values()
                      for i in attr_to_interval.values()]
-    return np.array([(i.low, i.high) for i in [*intervals.averages.values(), *per_attribute]])
+    return np.array([(i.low, i.high) for i in [*intervals.aggregates.values(), *per_attribute]])
 
 
 def test_identical_models_add_no_uncertainty(metadata, reference_set):
@@ -114,8 +115,8 @@ def test_models_share_the_resamples_of_road_sequences(metadata, reference_set):
     weights = draw_group_weights(len(reference_set.sequence_ids), 20, np.random.default_rng(3))
     for model in models:
         np.testing.assert_array_equal(
-            resample_model_metrics(model, ["amF1"], num_resamples=20, seed=3).averages["amF1"],
-            compute_grouped_metrics(model.statistics, ["amF1"], weights).averages["amF1"])
+            resample_model_metrics(model, ["amF1"], num_resamples=20, seed=3).aggregates["amF1"],
+            compute_grouped_metrics(model.statistics, ["amF1"], weights).aggregates["amF1"])
 
 
 def test_resampled_averages_over_a_subset_equal_resampling_the_subset(reference_set,
@@ -127,6 +128,38 @@ def test_resampled_averages_over_a_subset_equal_resampling_the_subset(reference_
                                            subset)),
         dc.asdict(resample_model_metrics(select_result_attributes(result, subset),
                                          num_resamples=20)))
+
+
+def test_totals_over_attributes_in_resamples_and_means_over_models(metadata, reference_set):
+    names = add_per_attribute_metric_names(["amF1", "totnc_{R>0}", "totnc_supp1_{R=0}"])
+    segments = list(metadata.splits[SPLIT])
+    models = [evaluate_predictions(make_predictions(metadata.vocabulary, segments, name="m",
+                                                    seed=s, model_seed=s), reference_set,
+                                   metric_names=names)
+              for s in range(3)]
+    subset = list(models[0].attributes[:2])
+    for model in models:
+        resamples = resample_model_metrics(model, num_resamples=20, seed=2)
+        totals = resamples.aggregates["totnc_{R>0}"]
+        assert totals.dtype == np.int64
+        np.testing.assert_array_equal(
+            totals, np.sum(list(resamples.per_attribute["nc_{R>0}"].values()), 0))
+        # Totals over a subset from the resamples equal resampling the subset.
+        np.testing.assert_equal(
+            dc.asdict(select_metric_attributes(resamples, subset)),
+            dc.asdict(resample_model_metrics(select_result_attributes(model, subset),
+                                             num_resamples=20, seed=2)))
+    point = compute_method_metrics(models)
+    assert point.aggregates["totnc_{R>0}"] == pytest.approx(
+        np.mean([r.metrics.aggregates["totnc_{R>0}"] for r in models]))
+    intervals = compute_bootstrap_intervals(models, num_resamples=100)
+    for name in ["totnc_{R>0}", "totnc_supp1_{R=0}"]:
+        assert intervals.aggregates[name].low <= point.aggregates[name]
+        assert point.aggregates[name] <= intervals.aggregates[name].high
+    differences = compare_methods(models[:1], [with_model(models[1], "other", seed=1)],
+                                  ["totnc_{R>0}"], num_resamples=20)
+    assert differences.aggregates["totnc_{R>0}"].difference == (
+        models[0].metrics.aggregates["totnc_{R>0}"] - models[1].metrics.aggregates["totnc_{R>0}"])
 
 
 def test_resampled_method_values_add_the_model_term(metadata, reference_set):
@@ -144,16 +177,16 @@ def test_resampled_method_values_add_the_model_term(metadata, reference_set):
     # One t draw per resample, shared by the metrics of the method.
     attribute = models[0].attributes[0]
     np.testing.assert_allclose(compute_t_values(lambda v: v.per_attribute["mF1"][attribute]),
-                               compute_t_values(lambda v: v.averages["amF1"]))
+                               compute_t_values(lambda v: v.aggregates["amF1"]))
     np.testing.assert_array_equal(
-        combine_model_resamples(model_resamples, "m").averages["amF1"],
-        resampled.averages["amF1"])
-    assert not np.allclose(combine_model_resamples(model_resamples, "other").averages["amF1"],
-                           resampled.averages["amF1"])
+        combine_model_resamples(model_resamples, "m").aggregates["amF1"],
+        resampled.aggregates["amF1"])
+    assert not np.allclose(combine_model_resamples(model_resamples, "other").aggregates["amF1"],
+                           resampled.aggregates["amF1"])
     with pytest.raises(ValueError, match="At least one model"):
         combine_model_resamples([], "m")
     # Models without values, e.g. of metrics that hard predictions lack.
-    without_values = MetricValues(averages={}, per_attribute={})
+    without_values = MetricValues(aggregates={}, per_attribute={})
     assert combine_model_resamples([without_values] * 2, "m") == without_values
     with pytest.raises(ValueError, match="number of resamples"):
         combine_model_resamples(
@@ -161,10 +194,10 @@ def test_resampled_method_values_add_the_model_term(metadata, reference_set):
                                                         num_resamples=10)], "m")
 
     point = compute_method_metrics(models)
-    assert point.averages["amF1"] == pytest.approx(
-        np.mean([r.metrics.averages["amF1"] for r in models]))
-    interval = compute_bootstrap_intervals(models, num_resamples=200).averages["amF1"]
-    assert interval.low <= point.averages["amF1"] <= interval.high
+    assert point.aggregates["amF1"] == pytest.approx(
+        np.mean([r.metrics.aggregates["amF1"] for r in models]))
+    interval = compute_bootstrap_intervals(models, num_resamples=200).aggregates["amF1"]
+    assert interval.low <= point.aggregates["amF1"] <= interval.high
 
 
 def test_an_infinite_model_mean_stays_infinite(metadata, reference_set, predictions):
@@ -174,8 +207,8 @@ def test_an_infinite_model_mean_stays_infinite(metadata, reference_set, predicti
     certain = dc.replace(predictions, probs={**predictions.probs, "Lane width": probs})
     models = [with_model(evaluate_predictions(predictions, reference_set), "m", seed=0),
               with_model(evaluate_predictions(certain, reference_set), "m", seed=1)]
-    assert compute_method_metrics(models).averages["aNLL"] == np.inf
-    interval = compute_bootstrap_intervals(models, num_resamples=50).averages["aNLL"]
+    assert compute_method_metrics(models).aggregates["aNLL"] == np.inf
+    interval = compute_bootstrap_intervals(models, num_resamples=50).aggregates["aNLL"]
     assert (interval.low, interval.high) == (np.inf, np.inf)
 
 

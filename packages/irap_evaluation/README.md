@@ -45,6 +45,11 @@ irap-eval ensemble resnet.val.predictions.parquet vit.val.predictions.parquet \
 irap-eval evaluate $DATA resnet.val.predictions.parquet vit.val.predictions.parquet \
     resnet+vit.val.predictions.parquet --out results/ --bootstrap 1000 --table-metrics mF1 MCC
 
+# Score other metrics than the default ones, e.g. the total over attributes of the number of
+# classes with a recall above 0 (see docs/evaluation.md#metrics).
+irap-eval evaluate $DATA resnet.val.predictions.parquet --out results/ \
+    --metric-names amF1 amR amP amF1_supp1 'totnc_{R>0}' aminR aECE aNLL --table-metrics 'nc_{R>0}'
+
 # Compare two methods on the reference set. Each method has several models: files with the same
 # model.method_name in the header and distinct model.seed values.
 irap-eval compare $DATA resnet_seed*.val.predictions.parquet vit_seed*.val.predictions.parquet \
@@ -66,10 +71,10 @@ Models are labeled `<method>` or `<method>/seed<seed>`. Every output records `sp
 
 | File | Content |
 |---|---|
-| `summary_long.csv` | One row per model, evaluation set, attribute (or `average`) and metric, with the method, seed, `split_use`, null policy and confidence bounds. `ci_num_undefined` counts the undefined bootstrap resamples, which the bounds leave out. |
-| `averages_<dataset>_<split>_<set>.csv` | Model rows × `split_use` and attribute-average columns. |
-| `method_averages_<dataset>_<split>_<set>.csv` | Only with `--null-policy first_class` and methods with several models: method rows × the number of models, the null policy, `split_use` and the means of the attribute averages over models. The confidence bounds include the spread of the models. |
-| `per_attribute_<metric>_<dataset>_<split>_<set>.csv` | Attribute rows × model columns, with the average last. |
+| `summary_long.csv` | One row per model, evaluation set, attribute (or `average` or `total` for an [attribute aggregate](docs/evaluation.md#metrics), with the metric name without its `a` or `tot` prefix) and metric, with the method, seed, `split_use`, null policy and confidence bounds. `ci_num_undefined` counts the undefined bootstrap resamples, which the bounds leave out. |
+| `averages_<dataset>_<split>_<set>.csv` | Model rows × `split_use` and a column per attribute average or total, e.g. `amF1` and `totnc_{R>0}`. |
+| `method_averages_<dataset>_<split>_<set>.csv` | Only with `--null-policy first_class` and methods with several models: method rows × the number of models, the null policy, `split_use` and the means of the attribute averages and totals over models. The confidence bounds include the spread of the models. |
+| `per_attribute_<metric>_<dataset>_<split>_<set>.csv` | Attribute rows × model columns, with the attribute average and total last, if they are computed. |
 | `<model>/metrics_<dataset>_<split>_<set>.json` | All metrics and intervals, and for each attribute the iRAP codes of its classes, the per-class precision, recall, F1 and support, the confusion matrix (rows = ground truth), and for `probs` files the [review curve](docs/evaluation.md#manual-review-proportion). Undefined values are `null`. The directory name is the model's name in file names (`make_model_file_name`): `<method>` or `<method>_seed<seed>`, with characters other than letters, digits, `.` and `-` replaced by `_`, and a method name that would make the name longer than 255 bytes cut and followed by a hash of it, as in prediction file names. |
 
 ## Python use
@@ -85,17 +90,17 @@ predictions = ie.read_predictions("resnet.predictions.parquet")
 reference_set = ie.get_reference_set(metadata, "vietnam", "val")
 result = ie.evaluate_predictions(predictions, reference_set)
 intervals = ie.compute_bootstrap_intervals([result], num_resamples=1000)
-print(result.metrics.averages["amF1"], intervals.averages["amF1"])
+print(result.metrics.aggregates["amF1"], intervals.aggregates["amF1"])
 print(result.metrics.per_attribute["mF1"]["Lane width"])
 class_metrics = ie.compute_class_metrics(result)
 
 # Methods with several models: means over models, intervals and differences.
 results = [ie.evaluate_predictions(ie.read_predictions(path), reference_set) for path in paths]
 method_to_results = ie.group_models_by_method(results)
-print(ie.compute_method_metrics(method_to_results["resnet"]).averages["amF1"],
-      ie.compute_bootstrap_intervals(method_to_results["resnet"]).averages["amF1"])
+print(ie.compute_method_metrics(method_to_results["resnet"]).aggregates["amF1"],
+      ie.compute_bootstrap_intervals(method_to_results["resnet"]).aggregates["amF1"])
 differences = ie.compare_methods(method_to_results["resnet"], method_to_results["vit"], ["amF1"])
-print(differences.averages["amF1"])  # MetricDifference(difference, interval)
+print(differences.aggregates["amF1"])  # MetricDifference(difference, interval)
 
 # Other evaluation sets: the full set, the model-compatible set of some context offsets and
 # in-split offsets (here none), and a subset, e.g. one region.

@@ -13,7 +13,7 @@ Typical use::
     metadata = load_irap_metadata("/data/IRAP_Vietnam")
     reference_set = ie.get_reference_set(metadata, "vietnam", "val")
     result = ie.evaluate_predictions(predictions, reference_set)
-    print(result.metrics.averages["amF1"])
+    print(result.metrics.aggregates["amF1"])
 """
 
 from .bootstrap import (
@@ -40,6 +40,7 @@ from .evaluation import (
     MissingAttributePolicy,
     NullPolicy,
     align_to_evaluation_set,
+    check_metric_names,
     compute_class_metrics,
     compute_review_curves,
     evaluate_predictions,
@@ -76,18 +77,23 @@ from .methods import (
     group_models_by_method,
 )
 from .metric_names import (
+    ATTRIBUTE_TOTAL_METRICS,
     IRAP_ATTRIBUTE_METRIC_NAMES,
     IRAP_MAIN_METRIC,
     MANUAL_REVIEW_PROPORTION_METRIC,
     MANUAL_REVIEW_TARGET_MF1,
     NUM_CALIBRATION_BINS,
+    AttributeAggregation,
     ClassCondition,
     ParsedMetricName,
     add_per_attribute_metric_names,
-    describe_attribute_average,
+    can_compute_metric,
+    describe_attribute_aggregate,
     describe_metric,
+    get_attribute_aggregate_name,
     get_attribute_average_name,
     get_irap_metric_names,
+    is_count_metric,
     is_lower_better,
     parse_metric_name,
 )

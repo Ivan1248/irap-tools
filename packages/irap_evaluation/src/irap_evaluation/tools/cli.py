@@ -25,6 +25,7 @@ from ..evaluation import (
     EvaluationResult,
     MissingAttributePolicy,
     NullPolicy,
+    check_metric_names,
     evaluate_predictions,
     get_default_metric_names,
     select_evaluated_attributes,
@@ -39,7 +40,11 @@ from ..evaluation_sets import (
     select_evaluation_sets,
 )
 from ..methods import check_prediction_file_models
-from ..metric_names import IRAP_MAIN_METRIC, parse_metric_name
+from ..metric_names import (
+    IRAP_MAIN_METRIC,
+    add_per_attribute_metric_names,
+    parse_metric_name,
+)
 from ..metrics import MetricValues, map_metric_values
 from ..prediction_io import read_predictions, write_predictions
 from ..predictions import (
@@ -50,11 +55,6 @@ from ..predictions import (
     get_common_dataset_and_split,
 )
 from ..reports import coding_tables, evaluation_report
-
-#: The metrics that `--table-metrics` accepts: the per-attribute metrics that are computed by
-#: default for probs files.
-TABLE_METRICS = tuple(n for n in get_default_metric_names("probs")
-                      if not parse_metric_name(n).is_averaged)
 
 
 # Helpers ##########################################################################################
@@ -80,6 +80,46 @@ def _read_prediction_files(paths: T.Sequence[Path]) -> list[Predictions]:
     predictions_seq = [read_predictions(p) for p in paths]
     check_prediction_file_models([p.header for p in predictions_seq])
     return predictions_seq
+
+
+def _get_file_metric_names(metric_names: T.Sequence[str] | None, path: Path,
+                           predictions: Predictions) -> tuple[str, ...]:
+    """Returns the metrics to compute for a file: `metric_names` (`--metric-names`) with the
+    per-attribute values of their aggregates, which the reports and the aggregates over attribute
+    subsets need, or `get_default_metric_names` of its output kind if None.
+
+    Raises:
+        ValueError: As `check_metric_names` does, with the file and model in the message.
+    """
+    if metric_names is None:
+        return get_default_metric_names(predictions.output_kind)
+    file_metric_names = add_per_attribute_metric_names(metric_names)
+    try:
+        check_metric_names(file_metric_names, predictions.output_kind)
+    except ValueError as e:
+        raise ValueError(f"{path}, model {predictions.header.model.label!r}, --metric-names:"
+                         f" {e}") from e
+    return file_metric_names
+
+
+def _check_table_metrics(table_metrics: T.Sequence[str],
+                         file_metric_names: T.Iterable[T.Sequence[str]]) -> None:
+    """Checks that the metrics of the per-attribute tables (`--table-metrics`) are computed per
+    attribute for some file.
+
+    Args:
+        file_metric_names: The metrics that are computed for each file.
+
+    Raises:
+        ValueError: If one is not.
+    """
+    per_attribute = list(dict.fromkeys(
+        n for names in file_metric_names for n in names
+        if not parse_metric_name(n).is_attribute_aggregate))
+    if unknown := [n for n in table_metrics if n not in per_attribute]:
+        raise ValueError(f"--table-metrics {unknown} are not computed per attribute. The"
+                         f" per-attribute metrics of the files: {', '.join(per_attribute)}. Add"
+                         f" metrics with --metric-names.")
 
 
 def _explain_split_use(model: ModelInfo, split: str) -> str | None:
@@ -122,14 +162,15 @@ def run_validate(args: argparse.Namespace) -> None:
 def _score(predictions: Predictions, evaluation_set: EvaluationSet, *, null_policy: NullPolicy,
            attribute_selection: AttributeSelection,
            missing_attribute_policy: MissingAttributePolicy,
-           missing_segment_policy: MissingSegmentPolicy, num_resamples: int,
-           confidence: float, seed: int) -> EvaluationResult:
+           missing_segment_policy: MissingSegmentPolicy, metric_names: T.Sequence[str],
+           num_resamples: int, confidence: float, seed: int) -> EvaluationResult:
     """Scores predictions, with bootstrap intervals of the model if `num_resamples` > 0."""
     result = evaluate_predictions(
         predictions, evaluation_set, null_policy=null_policy,
         missing_attribute_policy=missing_attribute_policy,
         missing_segment_policy=missing_segment_policy,
-        attributes=select_evaluated_attributes(evaluation_set, attribute_selection))
+        attributes=select_evaluated_attributes(evaluation_set, attribute_selection),
+        metric_names=metric_names)
     if result.missing_attributes:
         print(f"Model {result.model.label!r}, {evaluation_set.name} set: scored as invalid, since"
               f" not predicted: {', '.join(result.missing_attributes)}.")
@@ -213,6 +254,9 @@ def run_evaluate(args: argparse.Namespace) -> None:
                                    ("--in-split-offsets", method_in_split_offsets)]:
         if unknown := set(method_offsets) - method_names:
             raise ValueError(f"{option} names unknown methods: {sorted(unknown)}.")
+    file_metric_names = [_get_file_metric_names(args.metric_names, path, p)
+                         for path, p in zip(args.files, predictions_seq, strict=True)]
+    _check_table_metrics(args.table_metrics, file_metric_names)
     metadata = load_irap_metadata(args.metadata_dir)
     for predictions in predictions_seq:
         check_split_names(predictions.header.model, metadata.splits)
@@ -225,8 +269,8 @@ def run_evaluate(args: argparse.Namespace) -> None:
         missing_segment_policy=args.missing_segment_policy, num_resamples=args.bootstrap,
         confidence=args.confidence, seed=args.seed)
     results = [
-        score(predictions, evaluation_set)
-        for predictions in predictions_seq
+        score(predictions, evaluation_set, metric_names=metric_names)
+        for predictions, metric_names in zip(predictions_seq, file_metric_names, strict=True)
         for evaluation_set in _select_model_evaluation_sets(
             predictions,
             method_context_offsets.get(predictions.header.model.method_name,
@@ -260,11 +304,11 @@ def run_evaluate(args: argparse.Namespace) -> None:
         evaluation_report.to_long_table(results), [metric])
     for key, name_to_table in evaluation_set_tables.items():
         dataset, split, evaluation_set = key
-        _print_table(f"Attribute averages per model, {dataset}/{split}, {evaluation_set} set",
-                     name_to_table["averages"])
+        _print_table(f"Attribute averages and totals per model, {dataset}/{split},"
+                     f" {evaluation_set} set", name_to_table["averages"])
         if key in method_average_tables:
-            _print_table(f"Attribute averages of the methods with several models (means over"
-                         f" models), {dataset}/{split}, {evaluation_set} set",
+            _print_table(f"Attribute averages and totals of the methods with several models"
+                         f" (means over models), {dataset}/{split}, {evaluation_set} set",
                          method_average_tables[key])
         _print_table(f"{metric} per attribute, {dataset}/{split}, {evaluation_set} set",
                      name_to_table[f"per_attribute_{metric}"])
@@ -381,11 +425,20 @@ def make_argument_parser() -> argparse.ArgumentParser:
                                " intervals of a model cover the road sequences, those of a method"
                                " with several models also the spread of its models."
                                " Default: 0 (no intervals).")
-    evaluate.add_argument("--table-metrics", nargs="+", choices=TABLE_METRICS,
-                          default=[IRAP_MAIN_METRIC], metavar="METRIC",
-                          help=f"Metrics of the per-attribute tables, which end with the attribute"
-                               f" average, from {', '.join(TABLE_METRICS)}. The metrics of"
-                               f" distributions need probs files. Default: {IRAP_MAIN_METRIC}.")
+    evaluate.add_argument("--metric-names", nargs="+", default=None, metavar="METRIC",
+                          help="Metrics to compute, e.g. amF1 aminR totnc_{R>0}, with the"
+                               " per-attribute values of their averages (prefix a) and totals"
+                               " (prefix tot) over attributes (see irap_evaluation.metric_names)."
+                               " Quote names with {}, < or >. The metrics of distributions need"
+                               " probs files. Default: for each file, the metrics of the iRAP"
+                               " protocol for its output kind and, for probs files, aMRP90"
+                               " (irap_evaluation.get_default_metric_names).")
+    evaluate.add_argument("--table-metrics", nargs="+", default=[IRAP_MAIN_METRIC],
+                          metavar="METRIC",
+                          help=f"Per-attribute metrics of the per-attribute tables, which end with"
+                               f" the attribute average and total of the metric if they are"
+                               f" computed. They must be computed (see --metric-names), e.g. mF1"
+                               f" for amF1. Default: {IRAP_MAIN_METRIC}.")
     evaluate.add_argument("--missing-attribute-policy", choices=MISSING_ATTRIBUTE_POLICIES,
                           default="error",
                           help="How a selected attribute that a file does not predict is scored."

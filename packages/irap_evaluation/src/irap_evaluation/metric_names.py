@@ -1,13 +1,23 @@
 """Metric names of the iRAP evaluation protocol: their form, parsing and descriptions.
 
-Metric names have the form `[a]<base>[_suppN][_{<condition>}]`:
+Metric names have the form `[a|tot]<base>[_suppN][_{<condition>}]`, with two levels of prefixes,
+at most one of each:
+
+1. Over attributes (`AttributeAggregation`): `a` averages a per-attribute metric, leaving out
+   attributes where it is undefined (NaN), and `tot` totals a count of `ATTRIBUTE_TOTAL_METRICS`
+   (`n`, `nc`), e.g. `amF1` and `totnc_{R>0}`. Without it, the metric is per attribute.
+2. Over classes inside an attribute, as part of `<base>`: `m`, `min`, `max` or `sum` aggregates a
+   per-class metric (`ClassAggregation`), e.g. `mF1` (mean), `minR` (minimum) and `sumR` (sum),
+   and `nc` counts classes.
+
+So `amF1`, `aminR`, `asumR`, `anc_{R>0}`, `totnc_{R>0}` and `totn` are valid names, while
+`atotnc` and `totamF1` (two aggregations over attributes) and `totmF1` (a total of a metric that
+is not a count) are not.
 
 - `<base>` is a per-attribute metric (see `CONFUSION_MATRIX_METRICS`, `PROBABILISTIC_METRICS`
-  and `MANUAL_REVIEW_METRICS`). An aggregation of a per-class metric over classes has a prefix
-  that names the aggregation (`ClassAggregation`), e.g. `mF1` (mean) and `minR` (minimum). `nc`
-  is the number of classes, and the per-class `supp` the number of ground-truth examples of a
-  class (its support).
-- The `a` prefix averages it over attributes, leaving out attributes where it is undefined (NaN).
+  and `MANUAL_REVIEW_METRICS`), e.g. an aggregation over classes, `nc`, the number of classes,
+  or the per-class `supp`, the number of ground-truth examples of a class (its support). No base
+  name starts with an attribute-level prefix, so names are parsed unambiguously.
 - The suffixes restrict the classes of an aggregation over classes or of `nc`
   (`CLASS_SELECTION_METRICS`): `_suppN` to the classes with at least N ≥ 1 ground-truth
   examples, and `_{<condition>}` to the classes that meet a condition on a per-class metric
@@ -24,9 +34,12 @@ from .predictions import OutputKind
 SUPPORT_SUFFIX = "_supp"
 
 #: Aggregations of a per-class metric over classes, by the prefix of their names: 'm' the mean,
-#: 'min' the minimum and 'max' the maximum, e.g. 'mF1', 'minR' and 'maxNLL'. All aggregations of
-#: a per-class metric are over the same classes (see `describe_metric`).
-ClassAggregation = T.Literal["m", "min", "max"]
+#: 'min' the minimum, 'max' the maximum and 'sum' the sum, e.g. 'mF1', 'minR', 'maxNLL' and
+#: 'sumR'. All aggregations of a per-class metric are over the same classes (see
+#: `describe_metric`). If no class is selected, the sum is 0, and the others are NaN. The classes
+#: of a per-class metric of predicted distributions, which is NaN for a class without examples,
+#: have examples (`ParsedMetricName.min_class_support`), so a sum has no NaN terms.
+ClassAggregation = T.Literal["m", "min", "max", "sum"]
 #: The name of a per-class metric in the names of its aggregations -> the per-class metric.
 _CONFUSION_MATRIX_CLASS_METRICS = {"P": "P", "R": "R", "F1": "F1", "IoU": "IoU"}
 _PROBABILISTIC_CLASS_METRICS = {"NLL": "cNLL", "Brier": "cBrier"}
@@ -82,6 +95,15 @@ CLASS_COUNT_METRICS = frozenset({"nc"})
 #: Metrics over a selection of classes, which a support threshold and a class condition restrict.
 CLASS_SELECTION_METRICS = frozenset(CLASS_AGGREGATE_METRICS) | CLASS_COUNT_METRICS
 KNOWN_BASE_METRICS = CONFUSION_MATRIX_METRICS | DISTRIBUTION_METRICS | CLASS_COUNT_METRICS
+#: Metrics that count something, so that neither higher nor lower values are better.
+COUNT_METRICS = frozenset({"n", "supp", *CLASS_COUNT_METRICS})
+#: Aggregations of a per-attribute metric over attributes, by the prefix of their names: 'a' the
+#: mean over the attributes where the metric is defined, and 'tot' the total (sum), e.g. 'amF1'
+#: and 'totnc_{R>0}'.
+AttributeAggregation = T.Literal["a", "tot"]
+#: The metrics that have totals over attributes: the counts of examples and classes. A total of
+#: other metrics, e.g. of F1 values, has no meaning.
+ATTRIBUTE_TOTAL_METRICS = frozenset({"n", *CLASS_COUNT_METRICS})
 
 # The iRAP protocol.
 IRAP_ATTRIBUTE_METRIC_NAMES = ("mF1", "mP", "mR", "MCC")
@@ -133,11 +155,16 @@ class ClassCondition(T.NamedTuple):
 
 
 class ParsedMetricName(T.NamedTuple):
-    is_averaged: bool  # has the 'a' prefix
-    name: str  # the per-attribute name, without the 'a' prefix
+    attribute_aggregation: AttributeAggregation | None  # the 'a' or 'tot' prefix, if any
+    name: str  # the per-attribute name, without the prefix
     base: str  # without the prefix and the suffixes, e.g. 'mF1'
     min_support: int | None  # the threshold of a '_suppN' suffix
     class_condition: ClassCondition | None  # the condition of a '_{<condition>}' suffix
+
+    @property
+    def is_attribute_aggregate(self) -> bool:
+        """Whether the metric is aggregated over attributes, e.g. 'amF1' and 'totnc_{R>0}'."""
+        return self.attribute_aggregation is not None
 
     @property
     def required_base_metrics(self) -> tuple[str, ...]:
@@ -145,6 +172,12 @@ class ParsedMetricName(T.NamedTuple):
         `class_condition`."""
         condition = self.class_condition
         return (self.base,) if condition is None else (self.base, condition.per_class_metric)
+
+    @property
+    def needs_distributions(self) -> bool:
+        """Whether the metric is computed from predicted distributions
+        (`DISTRIBUTION_METRICS`), so that hard predictions lack it."""
+        return not DISTRIBUTION_METRICS.isdisjoint(self.required_base_metrics)
 
     @property
     def min_class_support(self) -> int | None:
@@ -168,13 +201,20 @@ def _parse_class_condition(name: str, condition: str) -> ClassCondition:
     return ClassCondition(per_class_metric, operator, float(threshold))
 
 
+def _find_attribute_aggregation(head: str) -> AttributeAggregation | None:
+    """Returns the aggregation over attributes that a name starts with, or None."""
+    return next((p for p in T.get_args(AttributeAggregation) if head.startswith(p)), None)
+
+
 def parse_metric_name(name: str) -> ParsedMetricName:
-    """Parses an `[a]<base>[_suppN][_{<condition>}]` metric name.
+    """Parses an `[a|tot]<base>[_suppN][_{<condition>}]` metric name (see the module
+    docstring).
 
     Raises:
-        ValueError: For an unknown base name, a support threshold or class condition on a metric
-            that is not in `CLASS_SELECTION_METRICS`, a support threshold that is not a positive
-            integer, or an invalid class condition.
+        ValueError: For an unknown base name, two aggregations over attributes, a total over
+            attributes of a metric that is not in `ATTRIBUTE_TOTAL_METRICS`, a support threshold
+            or class condition on a metric that is not in `CLASS_SELECTION_METRICS`, a support
+            threshold that is not a positive integer, or an invalid class condition.
     """
     head, condition = name, None
     if name.endswith("}"):
@@ -186,31 +226,60 @@ def parse_metric_name(name: str) -> ParsedMetricName:
         raise ValueError(f"Metric {name!r} has a support threshold {threshold!r} that is not a"
                          f" positive integer.")
     min_support = int(threshold) if separator else None
-    is_averaged = False
-    if base not in KNOWN_BASE_METRICS and base.startswith("a"):
-        is_averaged, base = True, base[1:]
+    # No known base name starts with an attribute aggregation (see the module docstring).
+    attribute_aggregation = _find_attribute_aggregation(base)
+    base = base.removeprefix(attribute_aggregation or "")
     if base not in KNOWN_BASE_METRICS:
+        if (attribute_aggregation is not None
+                and (second := _find_attribute_aggregation(base)) is not None
+                and base.removeprefix(second) in KNOWN_BASE_METRICS):
+            raise ValueError(f"Metric {name!r} has two aggregations over attributes. A name has"
+                             f" only one aggregation over attributes (a or tot).")
         raise ValueError(f"Unknown metric {name!r}. Known base names:"
-                         f" {sorted(KNOWN_BASE_METRICS)}.")
+                         f" {sorted(KNOWN_BASE_METRICS)}, with an optional aggregation over"
+                         f" attributes, {' or '.join(T.get_args(AttributeAggregation))}.")
+    if attribute_aggregation == "tot" and base not in ATTRIBUTE_TOTAL_METRICS:
+        raise ValueError(f"Metric {name!r} is a total over attributes of {base!r}, which is not a"
+                         f" count. tot applies only to counts"
+                         f" ({', '.join(sorted(ATTRIBUTE_TOTAL_METRICS))}, with their suffixes),"
+                         f" e.g. totnc_{{R>0}}.")
     if (separator or condition is not None) and base not in CLASS_SELECTION_METRICS:
         raise ValueError(f"Metric {name!r} restricts the classes of {base!r}, which is neither an"
                          f" aggregation over classes nor a class count.")
     return ParsedMetricName(
-        is_averaged=is_averaged, name=name[1:] if is_averaged else name, base=base,
+        attribute_aggregation=attribute_aggregation,
+        name=name.removeprefix(attribute_aggregation or ""), base=base,
         min_support=min_support,
         class_condition=None if condition is None else _parse_class_condition(name, condition))
 
 
-def get_attribute_average_name(name: str) -> str:
-    """Returns the name of the attribute average of a per-attribute metric, e.g. 'amF1' for
-    'mF1'.
+def get_attribute_aggregate_name(name: str, aggregation: AttributeAggregation) -> str:
+    """Returns the name of an aggregate over attributes of a per-attribute metric, e.g. 'amF1'
+    for ('mF1', 'a') and 'totnc_{R>0}' for ('nc_{R>0}', 'tot').
 
     Raises:
-        ValueError: For an invalid name (`parse_metric_name`) or an attribute average.
+        ValueError: For an invalid name (`parse_metric_name`), an attribute aggregate, or a total
+            of a metric that is not in `ATTRIBUTE_TOTAL_METRICS`.
     """
-    if parse_metric_name(name).is_averaged:
-        raise ValueError(f"Metric {name!r} is already an attribute average.")
-    return "a" + name
+    if parse_metric_name(name).is_attribute_aggregate:
+        raise ValueError(f"Metric {name!r} is already an attribute aggregate.")
+    if aggregation not in T.get_args(AttributeAggregation):
+        raise ValueError(f"Unknown attribute aggregation {aggregation!r}. Aggregations:"
+                         f" {T.get_args(AttributeAggregation)}.")
+    parse_metric_name(aggregate_name := aggregation + name)  # Checks that a total is of a count.
+    return aggregate_name
+
+
+def get_attribute_average_name(name: str) -> str:
+    """Returns the name of the attribute average of a per-attribute metric, e.g. 'amF1' for
+    'mF1' (see `get_attribute_aggregate_name`)."""
+    return get_attribute_aggregate_name(name, "a")
+
+
+def is_count_metric(name: str) -> bool:
+    """Whether the metric is a count (`COUNT_METRICS`) or a total or average of counts over
+    attributes, e.g. 'nc_supp10' and 'totnc_{R>0}'."""
+    return parse_metric_name(name).base in COUNT_METRICS
 
 
 def is_per_class_metric(name: str) -> bool:
@@ -224,13 +293,20 @@ def is_lower_better(name: str) -> bool:
     return parse_metric_name(name).base in LOWER_IS_BETTER_METRICS
 
 
+def can_compute_metric(name: str, output_kind: OutputKind) -> bool:
+    """Whether predictions of an output kind have the metric: hard predictions lack those of
+    predicted distributions (`ParsedMetricName.needs_distributions`)."""
+    return output_kind == "probs" or not parse_metric_name(name).needs_distributions
+
+
 def add_per_attribute_metric_names(metric_names: T.Sequence[str]) -> tuple[str, ...]:
-    """`metric_names` followed by the per-attribute name of each attribute average that they
-    lack, e.g. 'NLL' for 'aNLL', so that `metrics.select_metric_attributes` can average the
-    results over a subset of the attributes."""
+    """`metric_names` followed by the per-attribute name of each attribute aggregate that they
+    lack, e.g. 'NLL' for 'aNLL' and 'nc_{R>0}' for 'totnc_{R>0}', so that
+    `metrics.select_metric_attributes` can aggregate the results over a subset of the
+    attributes."""
     names = dict.fromkeys(metric_names)
     for name in metric_names:
-        if (parsed := parse_metric_name(name)).is_averaged:
+        if (parsed := parse_metric_name(name)).is_attribute_aggregate:
             names.setdefault(parsed.name)
     return tuple(names)
 
@@ -255,6 +331,9 @@ def _describe_class_aggregation(aggregation: ClassAggregation, per_class: str) -
     words, mean_title = _PER_CLASS_METRIC_WORDS[per_class]
     if aggregation == "m":
         return f"{mean_title} ({{name}}): the mean of {words} over {{classes}}."
+    if aggregation == "sum":
+        return (f"Sum of {words} over classes ({{name}}): the sum of {words} over {{classes}}, 0"
+                f" if there are none.")
     kind, extreme = ("Minimum", "lowest") if aggregation == "min" else ("Maximum", "highest")
     return f"{kind} {words} over classes ({{name}}): the {extreme} {words} among {{classes}}."
 
@@ -297,8 +376,6 @@ _BASE_METRIC_DESCRIPTIONS = {
         " to correct, starting with the least confident predictions, until mF1 reaches"
         f" {MANUAL_REVIEW_TARGET_MF1}. 0 if mF1 already reaches it."),
 }
-#: Metrics that count something, so that neither higher nor lower values are better.
-_COUNT_METRICS = frozenset({"n", "supp", *CLASS_COUNT_METRICS})
 #: Per-class metric -> words for it in a class condition.
 _CLASS_CONDITION_WORDS = {
     "supp": "the number of labeled examples",
@@ -310,8 +387,8 @@ _COMPARISON_SYMBOLS: dict[ComparisonOperator, str] = {
 def describe_metric(name: str,
                     ignore_missing_classes: bool = IRAP_IGNORE_MISSING_CLASSES) -> str:
     """Describes a metric in words, e.g. 'Macro F1 (mF1): the mean of F1 over …', for a tooltip. An
-    attribute average gets a sentence about the average, then a line break and the description of
-    its per-attribute metric.
+    attribute aggregate gets a sentence about the aggregation (`describe_attribute_aggregate`),
+    then a line break and the description of its per-attribute metric.
 
     Args:
         ignore_missing_classes: The setting of `metrics.compute_classification_metrics` that the
@@ -333,18 +410,20 @@ def describe_metric(name: str,
         classes += (f", where {_CLASS_CONDITION_WORDS[condition.per_class_metric]}"
                     f" {_COMPARISON_SYMBOLS[condition.operator]} {condition.threshold:g}")
     description = _BASE_METRIC_DESCRIPTIONS[parsed.base].format(name=parsed.name, classes=classes)
-    if parsed.base not in _COUNT_METRICS:
+    if not is_count_metric(name):
         description += " Lower is better." if is_lower_better(name) else " Higher is better."
-    if not parsed.is_averaged:
+    if (aggregation := parsed.attribute_aggregation) is None:
         return description
-    return f"{describe_attribute_average(parsed.name)}\n{description}"
+    return f"{describe_attribute_aggregate(parsed.name, aggregation)}\n{description}"
 
 
-def describe_attribute_average(name: str) -> str:
-    """Describes the attribute average of a metric in a sentence, e.g. 'The mean over attributes of
-    mF1, …' for `name='mF1'`.
+def describe_attribute_aggregate(name: str, aggregation: AttributeAggregation) -> str:
+    """Describes an aggregate of a metric over attributes in a sentence, e.g. 'The mean over
+    attributes of mF1, …' for `name='mF1'` and `aggregation='a'`.
 
     Args:
         name: The name of the per-attribute metric, or words for it, e.g. 'the metric'.
     """
-    return f"The mean over attributes of {name}, leaving out those where it is undefined."
+    return {"a": f"The mean over attributes of {name}, leaving out those where it is undefined.",
+            "tot": f"The total over attributes of {name}: the sum of its values of the"
+                   f" attributes."}[aggregation]

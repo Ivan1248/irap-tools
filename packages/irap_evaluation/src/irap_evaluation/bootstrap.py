@@ -238,8 +238,8 @@ def compare_methods(
     Args:
         models_a: The results of the models of method a.
         models_b: The results of the models of method b.
-        metric_names: Metrics of both methods, attribute averages or per-attribute metrics.
-            None means the attribute averages that both have.
+        metric_names: Metrics of both methods, attribute aggregates or per-attribute metrics.
+            None means the attribute aggregates that both have.
 
     Raises:
         ValueError: If the models of a method are not valid for `methods.check_method_results`,
@@ -253,7 +253,7 @@ def compare_methods(
     check_results_are_comparable(models_a[0], models_b[0])
     metrics_a, metrics_b = models_a[0].metrics, models_b[0].metrics
     if metric_names is None:
-        metric_names = [n for n in metrics_a.averages if n in metrics_b.averages]
+        metric_names = [n for n in metrics_a.aggregates if n in metrics_b.aggregates]
     common_names = set(metrics_a.names) & set(metrics_b.names)
     if missing := [n for n in metric_names if n not in common_names]:
         raise ValueError(f"Metrics not in both methods: {missing}. Method a has"

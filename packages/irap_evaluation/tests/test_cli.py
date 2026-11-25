@@ -10,10 +10,11 @@ import pandas as pd
 import pytest
 
 from irap_data.metadata import MetaFiles, get_dataset_preset
+from irap_evaluation.file_names import to_valid_file_name
 from irap_evaluation.prediction_io import make_model_file_name, read_predictions, write_predictions
 from irap_evaluation.tools.cli import main
 
-from synthetic_vietnam import SPLIT, make_predictions
+from synthetic_vietnam import SPLIT, make_predictions, to_hard_predictions
 
 
 def _write_model_files(metadata, tmp_path):
@@ -90,8 +91,10 @@ def test_evaluate_ensemble_compare_export(metadata_dir, metadata, tmp_path, caps
     assert per_attribute.index[-1] == "average"
     report = json.loads((out / "a" / "metrics_vietnam_val_compatible.json").read_text())
     assert report["context_offsets"] == [0, -1]
-    assert report["intervals"]["averages"]["amF1"]["low"] <= report["metrics"]["averages"]["amF1"]
-    assert "Attribute averages per model, vietnam/val, reference set" in capsys.readouterr().out
+    assert (report["intervals"]["aggregates"]["amF1"]["low"]
+            <= report["metrics"]["aggregates"]["amF1"])
+    assert ("Attribute averages and totals per model, vietnam/val, reference set"
+            in capsys.readouterr().out)
 
     assert main(["compare", str(metadata_dir), *paths, "--a", "a", "--b", "b", "--bootstrap",
                  "50"]) == 0
@@ -183,8 +186,9 @@ def test_methods_with_several_models(metadata_dir, metadata, tmp_path, capsys):
     a_models = long_table[(long_table["method"] == "a") & (long_table["attribute"] == "average")
                           & (long_table["metric"] == "mF1")
                           & (long_table["evaluation_set"] == "reference")]
-    assert methods.loc["a", "mF1"] == pytest.approx(a_models["value"].mean())
-    assert methods.loc["a", "mF1 low"] <= methods.loc["a", "mF1"] <= methods.loc["a", "mF1 high"]
+    assert methods.loc["a", "amF1"] == pytest.approx(a_models["value"].mean())
+    assert (methods.loc["a", "amF1 low"] <= methods.loc["a", "amF1"]
+            <= methods.loc["a", "amF1 high"])
 
     assert main(["compare", str(metadata_dir), *paths[:5], "--a", "a", "--b", "b",
                  "--metrics", "amF1", "--bootstrap", "50"]) == 0
@@ -193,6 +197,72 @@ def test_methods_with_several_models(metadata_dir, metadata, tmp_path, capsys):
     assert "other methods than a and b: ['c']" in capsys.readouterr().err
     assert main(["compare", str(metadata_dir), *paths[:3], "--a", "a", "--b", "b"]) == 1
     assert "No files of the methods ['b']" in capsys.readouterr().err
+
+
+def test_evaluate_computes_the_given_metric_names(metadata_dir, metadata, tmp_path, capsys):
+    paths = _write_method_model_files(metadata, tmp_path, {"a": 2})
+    out = tmp_path / "results"
+    names = ["amF1", "amF1_supp1", "totnc_{R>0}", "aminR", "aECE"]
+    assert main(["evaluate", str(metadata_dir), *paths, "--out", str(out), "--bootstrap", "20",
+                 "--metric-names", *names, "--table-metrics", "nc_{R>0}", "minR"]) == 0
+    long_table = pd.read_csv(out / "summary_long.csv")
+    reference = long_table[long_table["evaluation_set"] == "reference"]
+    assert set(reference["metric"]) == {"mF1", "mF1_supp1", "nc_{R>0}", "minR", "ECE"}
+    for _, rows in reference.groupby("model"):
+        counts = rows[rows["metric"] == "nc_{R>0}"].set_index("attribute")["value"]
+        assert counts["total"] == counts.drop("total").sum()
+        assert "average" not in counts
+    averages = pd.read_csv(out / "averages_vietnam_val_reference.csv", index_col=0)
+    assert list(averages.columns) == ["split_use", *(f"{n}{suffix}" for n in names
+                                                    for suffix in ("", " low", " high"))]
+    per_attribute = pd.read_csv(
+        out / to_valid_file_name("per_attribute_nc_{R>0}_vietnam_val_reference.csv"), index_col=0)
+    assert per_attribute.index[-1] == "total"
+    assert (per_attribute.loc["total"] == per_attribute.drop("total").sum()).all()
+    methods = pd.read_csv(out / "method_averages_vietnam_val_reference.csv", index_col=0)
+    assert methods.loc["a", "totnc_{R>0}"] == pytest.approx(averages["totnc_{R>0}"].mean())
+    assert methods.loc["a", "aECE low"] <= methods.loc["a", "aECE"] <= methods.loc["a", "aECE high"]
+    report = json.loads((out / "a_seed0" / "metrics_vietnam_val_reference.json").read_text())
+    assert isinstance(report["metrics"]["aggregates"]["totnc_{R>0}"], int)
+    assert "nc_{R>0} per attribute" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("arguments, message", [
+    (["--metric-names", "totmF1"], "tot applies only to counts"),
+    (["--metric-names", "atotnc"], "only one aggregation over attributes"),
+    (["--metric-names", "F1"], "--metric-names: Per-class metrics ['F1'] are not kept"),
+    (["--metric-names", "amF1", "--table-metrics", "mF1_supp10"],
+     "--table-metrics ['mF1_supp10'] are not computed per attribute"),
+    (["--table-metrics", "amF1"], "--table-metrics ['amF1'] are not computed per attribute"),
+])
+def test_evaluate_refuses_invalid_metric_names(metadata_dir, metadata, tmp_path, capsys,
+                                               arguments, message):
+    paths = _write_model_files(metadata, tmp_path)
+    out = tmp_path / "results"
+    assert main(["evaluate", str(metadata_dir), *paths, "--out", str(out), *arguments]) == 1
+    assert message in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_evaluate_refuses_metrics_of_distributions_of_hard_files(metadata_dir, metadata, tmp_path,
+                                                                 capsys):
+    probs_path, hard_path = tmp_path / "p.predictions.parquet", tmp_path / "h.predictions.parquet"
+    predictions = make_predictions(metadata.vocabulary, list(metadata.splits[SPLIT]), name="p",
+                                   seed=0)
+    write_predictions(probs_path, predictions)
+    hard = to_hard_predictions(predictions)
+    write_predictions(hard_path, dc.replace(hard, header=dc.replace(
+        hard.header, model=dc.replace(hard.header.model, method_name="h"))))
+    out = tmp_path / "results"
+    assert main(["evaluate", str(metadata_dir), str(probs_path), str(hard_path), "--out",
+                 str(out), "--metric-names", "amF1", "aECE"]) == 1
+    assert (f"{hard_path}, model 'h', --metric-names: Metrics ['aECE', 'ECE'] need predicted"
+            f" distributions, but the predictions are hard" in capsys.readouterr().err)
+    # The default metrics of each file are those of its output kind.
+    assert main(["evaluate", str(metadata_dir), str(probs_path), str(hard_path), "--out",
+                 str(out), "--table-metrics", "NLL"]) == 0
+    long_table = pd.read_csv(out / "summary_long.csv")
+    assert set(long_table.loc[long_table["metric"] == "NLL", "model"]) == {"p"}
 
 
 def test_means_over_models_need_the_first_class_null_policy(metadata_dir, metadata, tmp_path,

@@ -9,8 +9,10 @@ from irap_evaluation.evaluation import evaluate_predictions
 from irap_evaluation.metrics import MetricValues
 from irap_evaluation.reports.evaluation_report import (
     get_partially_undefined_intervals,
+    to_average_table,
     to_json_dict,
     to_long_table,
+    to_method_average_table,
     to_per_attribute_table,
     write_evaluation_reports,
 )
@@ -19,7 +21,7 @@ from synthetic_vietnam import to_hard_predictions
 
 def test_only_partially_undefined_intervals_are_reported():
     intervals = MetricValues(
-        averages={"amF1": BootstrapInterval(0.1, 0.2, 0), "aNLL": BootstrapInterval(-1, 1, 3)},
+        aggregates={"amF1": BootstrapInterval(0.1, 0.2, 0), "aNLL": BootstrapInterval(-1, 1, 3)},
         per_attribute={"MCC": {"Lane width": BootstrapInterval(np.nan, np.nan, 10)}})
     assert get_partially_undefined_intervals(intervals) == {"aNLL": 3}
 
@@ -50,6 +52,21 @@ def test_per_attribute_tables_need_per_attribute_metrics(reference_set, predicti
     long_table = to_long_table([evaluate_predictions(predictions, reference_set)])
     with pytest.raises(ValueError, match="no per-attribute values of 'amF1'"):
         to_per_attribute_table(long_table, "amF1")
+
+
+def test_tables_of_attribute_totals(reference_set, predictions):
+    names = ["anc_{R>0}", "totnc_{R>0}", "amF1", "mF1", "nc_{R>0}"]
+    result = evaluate_predictions(predictions, reference_set, metric_names=names)
+    long_table = to_long_table([result])
+    counts = long_table[long_table["metric"] == "nc_{R>0}"].set_index("attribute")["value"]
+    assert counts["total"] == result.metrics.aggregates["totnc_{R>0}"]
+    assert counts["average"] == pytest.approx(result.metrics.aggregates["anc_{R>0}"])
+    per_attribute = to_per_attribute_table(long_table, "nc_{R>0}")
+    assert list(per_attribute.index) == [*result.attributes, "average", "total"]
+    assert list(to_average_table(long_table).columns) == [
+        "split_use", "anc_{R>0}", "totnc_{R>0}", "amF1"]
+    method_table = to_method_average_table({"m": [result]})
+    assert method_table.loc["m", "totnc_{R>0}"] == result.metrics.aggregates["totnc_{R>0}"]
 
 
 def test_reports_refuse_evaluation_sets_that_map_to_one_file(reference_set, predictions,
