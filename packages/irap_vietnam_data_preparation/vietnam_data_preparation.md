@@ -136,8 +136,18 @@ Module: `irap_vietnam_data_preparation/extract_images.py`
 - Stops if two archives contain the same path, and writes all copies to
   `_work/FRAMES_duplicates/`. With `--ignore-duplicates`, it continues, keeps
   one copy of each path, and warns about the paths whose copies differ.
-- Applies the patch archives last (name contains `missing_segments` or
-  `new files`). Their images replace or add files.
+- Applies the patch archives last, in the order of `PATCH_ARCHIVE_ORDER`, which
+  lists them by the dates of their files, from the oldest. Their images replace
+  the image of the same seg_id or add files, so a later patch archive wins. If
+  that image is in another folder than the patch file's name gives, it is
+  replaced in its folder, since a folder is a recording for `build_metadata.py`.
+  After `UpdatedData-24Nov2026.rar` was added, a folder without the `VID`
+  prefix, `_20241211_140925_00_004`, held images of seg_ids of
+  `VID_20241211_140925_00_004`. Name order would be wrong:
+  `missing_segments*` and `new files` would override the newer
+  `Corrected_sequences*`, which made 1827333 and 1827343 equal. An archive that
+  is neither `split<N>.rar` nor a listed patch archive, or a missing patch
+  archive, stops the script.
 
 Result: `FRAMES/<video_dir>/<video_dir>_seg<seg_id>.png`, e.g.
 `FRAMES/VID_20241211_135439_00_011/VID_20241211_135439_00_011_seg1814508.png`.

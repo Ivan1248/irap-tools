@@ -59,7 +59,6 @@ road sequences span is in both.
 import argparse
 import bisect
 import json
-import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -82,27 +81,6 @@ ADJACENCY_TOLERANCE_KM = 0.0025  # ±2.5 m
 # (see split_folders_into_recordings). 100 m allows for a few missing images;
 # the recordings of the Vietnam "nan" folder are 89 or more seg_ids apart.
 MAX_SEG_ID_STEP_WITHIN_RECORDING = 10
-
-# Captures the integer N in any "..._segN.png" filename.
-SEG_ID_FROM_FILENAME_RE = re.compile(r"_seg(\d+)\.png$", re.IGNORECASE)
-
-
-def index_images_by_seg_id(images_dir: Path) -> dict[str, list[Path]]:
-    """Walk ``images_dir`` recursively, indexing ``*.png`` files by seg_id.
-
-    Keys are decimal seg_id strings (matching the parquet's ``seg_id`` column).
-    Values are paths relative to ``images_dir.parent`` so they begin with
-    ``FRAMES/<video_dir>/<basename>.png``.
-    """
-    index: dict[str, list[Path]] = defaultdict(list)
-    data_root = images_dir.parent
-    for path in images_dir.rglob("*.png"):
-        m = SEG_ID_FROM_FILENAME_RE.search(path.name)
-        if m is None:
-            continue
-        seg_id = str(int(m.group(1)))  # normalize away leading zeros
-        index[seg_id].append(path.relative_to(data_root))
-    return index
 
 
 def choose_image_of_seg_id(image_paths: T.Iterable[Path]) -> Path:
@@ -497,7 +475,10 @@ def main(argv: list[str] | None = None) -> int:
 
     num_rows_in = len(df)
     print(f"Matching rows to images under {images} by seg_id...")
-    seg_id_to_all_image_paths = index_images_by_seg_id(images)
+    # Paths relative to the dataset root, so they begin with FRAMES/<video_dir>/.
+    seg_id_to_all_image_paths = {
+        seg_id: [p.relative_to(images.parent) for p in paths]
+        for seg_id, paths in layout.index_images_by_seg_id(images).items()}
     seg_id_to_image_paths, excluded_images_report = exclude_repeated_images(
         seg_id_to_all_image_paths, images.parent)
     is_excluded_row = df["seg_id"].astype(str).isin(

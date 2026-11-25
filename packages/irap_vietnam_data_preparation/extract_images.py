@@ -10,11 +10,14 @@ By default the script aborts on any such duplicate path. With
 not necessarily the one of the first archive. It warns about the paths whose
 copies differ in size or CRC32.
 
-Patch archives hold corrected or additional segment images. They are the
-archives whose name contains ``missing_segments`` or ``new files`` (see
-:data:`PATCH_ARCHIVE_NAME_RE`). They are applied after the regular archives,
-unconditionally replacing same-named files, and do not participate in the
-duplicate check (see :func:`_apply_patch_archives`).
+Regular archives are named ``split<N>.rar``. Patch archives hold corrected or
+additional segment images. They are listed in :data:`PATCH_ARCHIVE_ORDER`, in the
+order in which they are applied, after the regular archives, unconditionally
+replacing the image of the same seg_id, so that a later patch archive wins. If
+that image is in another folder than the patch file's name gives, it is
+replaced there (see :func:`plan_patch_merge`). They do not participate in the
+duplicate check (see :func:`_apply_patch_archives`). An
+archive with another name, or a missing patch archive, stops the script.
 
 The images output directory is wiped before extraction so that no stale or
 partially-written files from a previous run survive. The script prompts for
@@ -37,9 +40,11 @@ import re
 import shutil
 import subprocess
 import sys
-from collections import defaultdict
+import typing as T
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 from tqdm import tqdm
@@ -50,12 +55,20 @@ import layout
 SPLIT_DIR_NAME_RE = re.compile(r"split\d+", re.IGNORECASE)
 SPLIT_WRAPPER_RE = re.compile(rf"^{SPLIT_DIR_NAME_RE.pattern}/", re.IGNORECASE)
 
-# Captures the video_dir prefix of a "<video_dir>_segN.png" filename.
-SEG_VIDEO_DIR_RE = re.compile(r"^(.*)_seg\d+\.png$", re.IGNORECASE)
+# Matches the name of a regular archive.
+REGULAR_ARCHIVE_NAME_RE = re.compile(rf"{SPLIT_DIR_NAME_RE.pattern}\.rar", re.IGNORECASE)
 
-# Matches the name of a patch archive, whose images replace or add to those of the
-# regular archives.
-PATCH_ARCHIVE_NAME_RE = re.compile(r"missing_segments|new[ _]files", re.IGNORECASE)
+# The patch archives, whose images replace or add to those of the regular archives, in
+# the order in which they are applied: for a file in several patch archives, the last
+# one wins.
+PATCH_ARCHIVE_ORDER = (
+    "missing_segments1_4.rar",  # 2026-06-04
+    "missing_segments5_7.rar",  # 2026-06-05
+    "new files.rar",  # 2026-11-06
+    "Corrected_sequences.rar",  # 2026-11-10
+    "Corrected_sequences2.rar",  # 2026-11-10, later in the day
+    "UpdatedData-24Nov2026.rar",  # 2026-11-24
+)
 
 
 def strip_split_wrapper(internal_path: str) -> str:
@@ -63,20 +76,24 @@ def strip_split_wrapper(internal_path: str) -> str:
     return SPLIT_WRAPPER_RE.sub("", internal_path, count=1)
 
 
-def video_dir_from_filename(filename: str) -> str | None:
-    """Return the owning ``<video_dir>`` for a ``<video_dir>_segN.png`` file.
+def split_regular_and_patch_archives(archives: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Returns the regular archives and the patch archives in `PATCH_ARCHIVE_ORDER`.
 
-    Segment files are named ``<video_dir>_seg<N>.png``, so the video folder a
-    file belongs in is recoverable from the filename alone – independent of how
-    deeply the file was wrapped inside its source archive. Returns ``None`` when
-    the name does not match the convention.
+    Raises ValueError if an archive is neither a regular nor a patch archive, or if a
+    patch archive is missing, as both would silently change which images are kept.
     """
-    m = SEG_VIDEO_DIR_RE.match(filename)
-    return m.group(1) if m else None
-
-
-def is_patch_archive(archive: Path) -> bool:
-    return PATCH_ARCHIVE_NAME_RE.search(archive.name) is not None
+    name_to_archive = {a.name: a for a in archives}
+    regular = [a for a in archives if REGULAR_ARCHIVE_NAME_RE.fullmatch(a.name)]
+    unknown = [a.name for a in archives
+               if a not in regular and a.name not in PATCH_ARCHIVE_ORDER]
+    if unknown:
+        raise ValueError(f"Unknown archives {unknown}: a regular archive is named"
+                         f" split<N>.rar, and a patch archive must be added to"
+                         f" PATCH_ARCHIVE_ORDER.")
+    missing = [name for name in PATCH_ARCHIVE_ORDER if name not in name_to_archive]
+    if missing:
+        raise ValueError(f"Missing patch archives {missing}.")
+    return regular, [name_to_archive[name] for name in PATCH_ARCHIVE_ORDER]
 
 
 def find_extractor() -> tuple[str, str]:
@@ -415,6 +432,73 @@ def _print_path_examples(paths: list[Path], root: Path) -> None:
         print(f"    ... and {len(paths) - 20} more", file=sys.stderr)
 
 
+@dataclass(frozen=True)
+class PatchMerge:
+    """How the extracted patch files are merged into the images directory."""
+
+    moves: list[tuple[Path, Path]]  # (extracted patch file, destination), in merge order
+    # (path given by the patch file's name, destination in another folder) of the patch
+    # files whose seg_id already has an image in another folder.
+    redirections: list[tuple[Path, Path]]
+    # Images at the path given by a redirected patch file's name, e.g. merged there by
+    # an earlier run, which are removed so that their seg_id has one image.
+    removals: list[Path]
+    unmatched: list[Path]  # patch files not named <video_dir>_seg<seg_id>.png
+
+
+def plan_patch_merge(
+        patch_files: T.Sequence[Path], out: Path,
+        seg_id_to_images: T.Mapping[str, T.Collection[Path]],
+) -> PatchMerge:
+    """Plans the merge of the extracted *patch_files*, in order, into the images directory *out*.
+
+    A patch file replaces the image of its seg_id, so that every seg_id keeps a
+    single image. Its destination is ``out/<video_dir>/<file name>``, unless its
+    seg_id has an image at another path (in *seg_id_to_images*, the images in
+    *out*, or from an earlier patch file). The patch file then replaces that
+    image, and an image at the path given by its name is removed. This keeps
+    the existing folder, which is a recording for ``build_metadata.py``, when a
+    patch archive names it differently, e.g. ``_20241211_140925_00_004``
+    instead of ``VID_20241211_140925_00_004``.
+
+    Raises ValueError if the seg_id of a patch file has images at several other
+    paths, since it is then unknown which one the patch file replaces.
+    """
+    seg_id_to_current_images = {s: set(paths) for s, paths in seg_id_to_images.items()}
+    moves: list[tuple[Path, Path]] = []
+    redirections: list[tuple[Path, Path]] = []
+    removals: list[Path] = []
+    unmatched: list[Path] = []
+    ambiguous: dict[Path, list[Path]] = {}
+    for patch_file in patch_files:
+        seg_id = layout.seg_id_from_image_name(patch_file.name)
+        if seg_id is None:
+            unmatched.append(patch_file)
+            continue
+        named_path = out / layout.video_dir_from_image_name(patch_file.name) / patch_file.name
+        current_images = seg_id_to_current_images.get(seg_id, set())
+        other_images = current_images - {named_path}
+        if len(other_images) > 1:
+            ambiguous[patch_file] = sorted(other_images)
+            continue
+        if other_images:
+            (destination,) = other_images
+            redirections.append((named_path, destination))
+            if named_path in current_images:
+                removals.append(named_path)
+        else:
+            destination = named_path
+        moves.append((patch_file, destination))
+        seg_id_to_current_images[seg_id] = {destination}
+    if ambiguous:
+        examples = "; ".join(f"{f.name}: {', '.join(str(p) for p in paths)}"
+                             for f, paths in list(ambiguous.items())[:5])
+        raise ValueError(f"{len(ambiguous)} patch file(s) have a seg_id with images in "
+                         f"several other folders, so it is unknown which one they "
+                         f"replace, e.g. {examples}")
+    return PatchMerge(moves, redirections, removals, unmatched)
+
+
 def _apply_patch_archives(
         binary: str, kind: str, archives: list[Path], out: Path, tmp: Path,
         *, jobs: int | None,
@@ -424,24 +508,28 @@ def _apply_patch_archives(
     Each archive is extracted into its own fresh subdirectory of the scratch
     directory ``tmp`` (fresh, so the extractor's skip-if-exists mode never
     triggers and concurrent extractions cannot race). Every
-    ``<video_dir>_segN.png`` file is then moved to ``out/<video_dir>/<file>``,
-    unconditionally replacing what the regular archives produced. The owning
-    ``<video_dir>`` is recovered from the filename because some patch archives
-    wrap the video folders in arbitrary (sometimes nested) folders, so the
-    extracted directory structure cannot be trusted the way the regular
+    ``<video_dir>_segN.png`` file then replaces the image of its seg_id: it is
+    moved to ``out/<video_dir>/<file>``, or to the existing image of its seg_id
+    in another folder (see :func:`plan_patch_merge`), whose folders are reported.
+    The owning ``<video_dir>`` is recovered from the filename because some patch
+    archives wrap the video folders in arbitrary (sometimes nested) folders, so
+    the extracted directory structure cannot be trusted the way the regular
     ``splitN/`` archives' can. Files not matching the naming convention are
-    reported and skipped. Archive subdirectories are merged in sorted order, so
-    for a file in several patch archives the lexicographically last archive
-    wins. Such files are reported.
+    reported and skipped. The archives are merged in the order of *archives*, so
+    for a seg_id in several patch archives the last archive wins. Such files are
+    reported.
     """
     print(f"\nIndexing {len(archives)} patch archive(s)...")
     entries = _index_archives(binary, kind, archives)
 
+    def get_extraction_dir(archive: Path) -> Path:
+        return tmp / archive.stem
+
     if tmp.exists():
         shutil.rmtree(tmp)
     try:
-        _extract_parallel(binary, kind, archives, entries,
-                          lambda a: tmp / a.stem, jobs=jobs, label="patch")
+        _extract_parallel(binary, kind, archives, entries, get_extraction_dir, jobs=jobs,
+                          label="patch")
 
         # Moving a file whose data is not on the disk yet can wait for that data, which
         # takes much longer file by file than for all the files at once.
@@ -450,19 +538,15 @@ def _apply_patch_archives(
             os.sync()
 
         print("Merging patch files into the images directory...")
+        src_files = [f for a in archives for f in sorted(get_extraction_dir(a).rglob("*"))
+                     if f.is_file()]
+        merge = plan_patch_merge(src_files, out, layout.index_images_by_seg_id(out))
         replaced = 0  # overwrote a file the regular archives produced
         added = 0      # brand-new file
-        unmatched: list[Path] = []
         patched_files: set[Path] = set()
         files_in_several_archives: set[Path] = set()
-        src_files = [f for sub in sorted(tmp.iterdir()) for f in sub.rglob("*")
-                     if f.is_file()]
-        for src_file in tqdm(src_files, unit="file", desc="Merging", dynamic_ncols=True):
-            video_dir = video_dir_from_filename(src_file.name)
-            if video_dir is None:
-                unmatched.append(src_file)
-                continue
-            dst_file = out / video_dir / src_file.name
+        for src_file, dst_file in tqdm(merge.moves, unit="file", desc="Merging",
+                                       dynamic_ncols=True):
             dst_file.parent.mkdir(parents=True, exist_ok=True)
             if dst_file in patched_files:
                 files_in_several_archives.add(dst_file)
@@ -472,16 +556,35 @@ def _apply_patch_archives(
                 added += 1
             patched_files.add(dst_file)
             src_file.replace(dst_file)
+        for path in merge.removals:
+            path.unlink()
+        for folder in {path.parent for path in merge.removals}:
+            if not any(folder.iterdir()):
+                folder.rmdir()
 
-        if unmatched:
-            print(f"WARN: {len(unmatched)} patch file(s) did not match "
+        if merge.unmatched:
+            print(f"WARN: {len(merge.unmatched)} patch file(s) did not match "
                   f"the <video_dir>_segN.png naming convention and were skipped:",
                   file=sys.stderr)
-            _print_path_examples(unmatched, tmp)
+            _print_path_examples(merge.unmatched, tmp)
+
+        if merge.redirections:
+            folder_pair_counts = Counter((named.parent.name, dst.parent.name)
+                                         for named, dst in merge.redirections)
+            print(f"WARN: {len(merge.redirections)} patch file(s) replaced the image of "
+                  f"their seg_id in another folder than their name gives "
+                  f"(folder in the name -> folder kept: number of files):",
+                  file=sys.stderr)
+            for (named_folder, kept_folder), n in sorted(folder_pair_counts.items()):
+                print(f"    {named_folder} -> {kept_folder}: {n}", file=sys.stderr)
+            if merge.removals:
+                print(f"  Removed {len(merge.removals)} image(s) at the paths given by "
+                      f"these names, e.g. from an earlier run.", file=sys.stderr)
 
         if files_in_several_archives:
-            print(f"WARN: {len(files_in_several_archives)} file(s) are in more than one "
-                  f"patch archive (the last archive in name order wins):", file=sys.stderr)
+            print(f"WARN: {len(files_in_several_archives)} image(s) are replaced by more "
+                  f"than one patch archive (the last archive in PATCH_ARCHIVE_ORDER wins):",
+                  file=sys.stderr)
             _print_path_examples(sorted(files_in_several_archives), out)
 
         print(f"  {replaced + added} file(s) merged: {replaced} replaced "
@@ -515,25 +618,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No .rar archives found in {rars}", file=sys.stderr)
         return 1
 
-    regular_archives = [a for a in all_archives if not is_patch_archive(a)]
-    patch_archives = [a for a in all_archives if is_patch_archive(a)]
+    try:
+        regular_archives, patch_archives = split_regular_and_patch_archives(all_archives)
+    except ValueError as e:
+        print(f"{e} The archives are in {rars}.", file=sys.stderr)
+        return 1
 
     binary, kind = find_extractor()
     print(f"Using extractor: {binary} ({kind})")
     print(f"Found {len(all_archives)} archive(s):")
-    if regular_archives:
-        print(f"  Regular archives ({len(regular_archives)}):")
-        for a in regular_archives:
-            print(f"    {a.name}  ({a.stat().st_size / 1e9:.2f} GB)")
-    if patch_archives:
-        print(f"  Patch archives ({len(patch_archives)}):")
-        for a in patch_archives:
+    for kind_name, archives in (("Regular", regular_archives), ("Patch", patch_archives)):
+        print(f"  {kind_name} archives ({len(archives)}):")
+        for a in archives:
             print(f"    {a.name}  ({a.stat().st_size / 1e9:.2f} GB)")
 
     if args.patches_only:
-        if not patch_archives:
-            print(f"No patch archives found in {rars}", file=sys.stderr)
-            return 1
         if not (out.is_dir() and any(out.iterdir())):
             print(f"--patches-only needs the extracted images, but {out} is empty or "
                   f"missing.", file=sys.stderr)
@@ -581,10 +680,12 @@ def main(argv: list[str] | None = None) -> int:
         print("Flattening splitN/ wrappers...")
         _flatten_split_wrappers(out)
 
-    if patch_archives:
+    try:
         _apply_patch_archives(binary, kind, patch_archives, out,
-                              layout.patch_archives_tmp_dir(args.data_dir),
-                              jobs=args.jobs)
+                              layout.patch_archives_tmp_dir(args.data_dir), jobs=args.jobs)
+    except ValueError as e:  # from plan_patch_merge, before any file is merged
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
     print(f"\nDone. {sum(1 for p in out.rglob('*') if p.is_file())} file(s) in {out}")
     return 0

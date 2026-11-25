@@ -53,7 +53,7 @@ python extract_images.py $DATA_DIR --ignore-duplicates
 
 - Writes the images to `FRAMES/<video_dir>/`, without the `splitN/` directory that wraps them in the archives. If `FRAMES/` is not empty, it asks for confirmation before it deletes it (`--yes` skips the question).
 - Stops if two archives contain the same path, and writes all copies to `_work/FRAMES_duplicates/` for review. With `--ignore-duplicates`, it continues, keeps one copy of each path, and warns about the paths whose copies differ.
-- Applies the patch archives last: the archives whose name contains `missing_segments` or `new files`. Their images replace or add files in `FRAMES/`, and they are not part of the duplicate check. `--patches-only` applies only them to the existing `FRAMES/`, e.g. after an interrupted patch step.
+- Applies the patch archives last, in the order of `PATCH_ARCHIVE_ORDER` in `extract_images.py`. Their images replace the image of the same seg_id or add files in `FRAMES/`, so a later patch archive wins, and they are not part of the duplicate check. A patch image whose seg_id already has an image in another folder than its name gives (e.g. `_20241211_140925_00_004/` instead of `VID_20241211_140925_00_004/`) replaces that image in its folder, and the script warns about such folder pairs. `--patches-only` applies only them to the existing `FRAMES/`, e.g. after an interrupted patch step or when a patch archive is added. An archive that is neither `split<N>.rar` nor a listed patch archive, or a missing patch archive, stops the script; add a new patch archive to `PATCH_ARCHIVE_ORDER`.
 
 ### 3. Parse the coding tables
 

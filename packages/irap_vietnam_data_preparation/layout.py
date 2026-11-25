@@ -4,7 +4,12 @@ All Vietnam pipeline scripts take a single positional ``<data_dir>`` argument (t
 dataset root) and derive their inputs/outputs from these constants.
 """
 
+import re
 from pathlib import Path
+
+# The file name of a segment image, ``<video_dir>_seg<seg_id>.png``, with the groups
+# video_dir and seg_id.
+SEG_IMAGE_NAME_RE = re.compile(r"^(?P<video_dir>.*)_seg(?P<seg_id>\d+)\.png$", re.IGNORECASE)
 
 RAW_SUBDIR = "_raw"
 WORK_SUBDIR = "_work"
@@ -27,6 +32,32 @@ SEGMENT_ID_TO_DATA_PATHS_REL_FILENAME = "segment_id_to_data_paths_rel.json"
 SEGMENT_ID_TO_ROAD_DATA_FILENAME = "segment_id_to_road_data.json"
 ROAD_ID_TO_SEGMENT_ID_SEQUENCE_FILENAME = "road_id_to_segment_id_sequence.json"
 SPLITS_FILENAME = "splits.json"
+
+
+def seg_id_from_image_name(file_name: str) -> str | None:
+    """Returns the seg_id of a segment image file name without leading zeros, or None."""
+    m = SEG_IMAGE_NAME_RE.match(file_name)
+    return str(int(m["seg_id"])) if m else None
+
+
+def video_dir_from_image_name(file_name: str) -> str | None:
+    """Returns the video_dir of a segment image file name, or None.
+
+    The video folder an image belongs in is recoverable from its name alone,
+    independent of how deeply the image was wrapped inside its source archive.
+    """
+    m = SEG_IMAGE_NAME_RE.match(file_name)
+    return m["video_dir"] if m else None
+
+
+def index_images_by_seg_id(images_dir: Path) -> dict[str, list[Path]]:
+    """Indexes the segment images under *images_dir*, at any depth, by seg_id."""
+    index: dict[str, list[Path]] = {}
+    for path in sorted(images_dir.rglob("*.png")):
+        seg_id = seg_id_from_image_name(path.name)
+        if seg_id is not None:
+            index.setdefault(seg_id, []).append(path)
+    return index
 
 
 def raw_dir(data_dir: Path) -> Path:
