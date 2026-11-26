@@ -138,16 +138,22 @@ Module: `irap_vietnam_data_preparation/extract_images.py`
   one copy of each path, and warns about the paths whose copies differ.
 - Applies the patch archives last, in the order of `PATCH_ARCHIVE_ORDER`, which
   lists them by the dates of their files, from the oldest. Their images replace
-  the image of the same seg_id or add files, so a later patch archive wins. If
-  that image is in another folder than the patch file's name gives, it is
-  replaced in its folder, since a folder is a recording for `build_metadata.py`.
-  After `UpdatedData-24Nov2026.rar` was added, a folder without the `VID`
-  prefix, `_20241211_140925_00_004`, held images of seg_ids of
-  `VID_20241211_140925_00_004`. Name order would be wrong:
-  `missing_segments*` and `new files` would override the newer
-  `Corrected_sequences*`, which made 1827333 and 1827343 equal. An archive that
-  is neither `split<N>.rar` nor a listed patch archive, or a missing patch
-  archive, stops the script.
+  the image of the same seg_id or add files, so a later patch archive wins.
+  Name order would be wrong: `missing_segments*` and `new files` would override
+  the newer `Corrected_sequences*`. For example, `new files` has the same image
+  for 1827333 and 1827343, and `Corrected_sequences*` replace both.
+- A patch image is written to the folder that its name gives, and an image of
+  its seg_id in another folder is removed, so that each seg_id keeps one image
+  and the result does not depend on an earlier run. A patch archive can thereby
+  rename the folder of a recording. `UpdatedData-24Nov2026.rar` renames 4
+  recordings of the regular archives, each as a whole:
+  `_20241211_140925_00_004` to `VID_20241211_140925_00_004`, one recording in
+  `nan` to `VID_20241211_132012_00_001`, `Road_1` to
+  `VID_20241210_130912_00_021_20251019055055`, and
+  `VID_20241213_111121_00_052` to `VID_20241213_111121_00_052_20251122152605`.
+  Of their 237 images, 234 are equal to the images that they replace.
+- An archive that is neither `split<N>.rar` nor a listed patch archive, or a
+  missing patch archive, stops the script.
 
 Result: `FRAMES/<video_dir>/<video_dir>_seg<seg_id>.png`, e.g.
 `FRAMES/VID_20241211_135439_00_011/VID_20241211_135439_00_011_seg1814508.png`.
@@ -207,13 +213,16 @@ suffix of the images under `FRAMES/`.
   images are those that `repeated_images.find_images_to_exclude` finds by equal
   files, printed as warnings and listed in the build report. They are found
   automatically, so that the rule, not a list, is the source of truth, and it
-  applies to new images too. An image folder with a frozen frame at its start or
+  applies to new images too. A recording with a frozen frame at its start or
   end (at least `MIN_NUM_FROZEN_IMAGES` = 3 equal images) is left out whole: the
   GNSS coordinates used to sample its frames are time-shifted, so all its images
-  are offset from the labels, whose coordinates are better aligned. Of the other
-  equal images, the one with the lowest seg_id is kept: in a short run at the
-  end of a folder the others repeat it, and elsewhere they were frames from the
-  wrong time in the checked cases (2026-11-11). Near-copies of frames (e.g.
+  are offset from the labels, whose coordinates are better aligned. The rule
+  applies to a recording and not to its image folder, since `nan` holds several
+  recordings, and a frozen frame in the recording that
+  `UpdatedData-24Nov2026.rar` added to it would leave out the others. Of the
+  other equal images, the one with the lowest seg_id is kept: in a short run at
+  the end of a recording the others repeat it, and elsewhere they were frames
+  from the wrong time in the checked cases (2026-11-11). Near-copies of frames (e.g.
   1817093 of 1817061, and 1817124/1817131), which are not equal files, stay in:
   they are few, and finding them needs every image decoded.
 - If no image matches, drop the row and log it (count + first N examples).
@@ -295,6 +304,16 @@ already when parsing.
   different recording session); blocking the pipeline would make iteration
   on the rest of the dataset awkward. Loaders skip split-boundary segments
   as context centres automatically because no offset window fits.
+- A recording is an image folder, or a part of a folder that holds several.
+  A folder is split where consecutive seg_ids are more than 10 apart
+  (`MAX_SEG_ID_STEP_WITHIN_RECORDING`), as in `nan`, and where two consecutive
+  labeled segments are over 100 m farther apart than their seg_id step gives
+  (`MAX_POSITION_JUMP_WITHIN_RECORDING_KM`). The second rule separates
+  recordings whose seg_ids follow each other without a step. In the checked
+  rows (2026-11-26), there are 3 such places, each with a jump of 847 m or
+  more: two in `nan` (at 1950816 and 1950886) and one in
+  `VID_20241213_160440_00_048_2` (at 1919842). A change of section does not
+  delimit recordings, as a recording often continues into the next section.
 - Insert each unlabeled segment that lies between two adjacent labeled
   segments of the same recording into that section road sequence. A segment
   that several road sequences span goes into each of them (reported as
@@ -311,6 +330,15 @@ sufficient (Decision 11): `split_editor.py` assigns whole road sequences to
 splits by drawing rectangles on a map. Done as the **last** step of the
 pipeline so we can iterate on splits independently of the heavy parsing
 work.
+
+`assign_nearest_splits.py` assigns the sequences that a rebuild added to the
+split of the nearest assigned sequence, so that the editor is not needed for
+them. This follows from the splits being separate regions. In the checked data
+(2026-11-26), the nearest other sequence of each of the 1056 assigned labeled
+sequences is in the same split, sequences of different splits are at least
+2.7 km apart, and each of the 108 unassigned labeled sequences is within 4.7 km
+of an assigned sequence and more than 3 times as far from a second split. A
+sequence that is less than twice as far from a second split stays unassigned.
 
 ### Step 3.7 – Output layout
 

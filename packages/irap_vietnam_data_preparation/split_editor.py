@@ -145,7 +145,7 @@ def _load_json(path: Path) -> T.Any:
 def compute_metadata_fingerprint(data_dir: Path) -> tuple:
     """Returns the (name, mtime, size) of each file of :data:`METADATA_PATH_FUNCTIONS`.
 
-    It is the cache key of :func:`load_metadata` and of the assignments in the
+    It is the cache key of :func:`load_cached_metadata` and of the assignments in the
     session state, so that both are rebuilt after ``build_metadata.py`` was
     re-run. Otherwise a Save would write splits.json from obsolete sequence
     membership.
@@ -265,14 +265,8 @@ def invert_sequence_segments(sequence_data: dict[str, dict]) -> dict[str, str]:
     return {seg_id: seq for seq, entry in sequence_data.items() for seg_id in entry["segs"]}
 
 
-@st.cache_data
-def load_metadata(data_dir: Path, fingerprint: tuple) -> EditorMetadata:
-    """Loads the files of :data:`METADATA_PATH_FUNCTIONS`.
-
-    ``st.cache_data`` caches for the whole server process and keys on the
-    argument values. ``fingerprint`` (:func:`compute_metadata_fingerprint`) is
-    only a part of that key.
-    """
+def load_metadata(data_dir: Path) -> EditorMetadata:
+    """Loads the files of :data:`METADATA_PATH_FUNCTIONS`."""
     sequence_data = load_sequence_data(data_dir)
     unlabeled_sequence_data = load_unlabeled_sequence_data(data_dir)
     unlocated_seg_ids_in_file = load_unlocated_seg_ids(data_dir)
@@ -286,6 +280,36 @@ def load_metadata(data_dir: Path, fingerprint: tuple) -> EditorMetadata:
         num_stale_unlocated_seg_ids=len(unlocated_seg_ids_in_file) - len(unlocated_seg_ids),
         class_names=load_class_names(data_dir),
     )
+
+
+@st.cache_data
+def load_cached_metadata(data_dir: Path, fingerprint: tuple) -> EditorMetadata:
+    """Loads the metadata as :func:`load_metadata`, once per ``fingerprint``.
+
+    ``st.cache_data`` caches for the whole server process and keys on the
+    argument values. ``fingerprint`` (:func:`compute_metadata_fingerprint`) is
+    only a part of that key.
+    """
+    return load_metadata(data_dir)
+
+
+def make_layers(metadata: EditorMetadata) -> tuple[Layer, Layer]:
+    """Makes the layers of the labeled and of the unlabeled sequences."""
+    labeled = Layer(
+        name="labeled",
+        data=metadata.sequence_data,
+        colors=COLORS,
+        marker_size=8,
+        split_key_prefix="",
+    )
+    unlabeled = Layer(
+        name="unlabeled",
+        data=metadata.unlabeled_sequence_data,
+        colors=UNLABELED_COLORS,
+        marker_size=6,
+        split_key_prefix=UNLABELED_SPLIT_PREFIX,
+    )
+    return labeled, unlabeled
 
 
 # Class coverage ###################################################################################
@@ -879,22 +903,8 @@ def main() -> None:
     splits_path = layout.splits_path(data_dir)
 
     fingerprint = compute_metadata_fingerprint(data_dir)
-    metadata = load_metadata(data_dir, fingerprint)
-    labeled = Layer(
-        name="labeled",
-        data=metadata.sequence_data,
-        colors=COLORS,
-        marker_size=8,
-        split_key_prefix="",
-    )
-    unlabeled = Layer(
-        name="unlabeled",
-        data=metadata.unlabeled_sequence_data,
-        colors=UNLABELED_COLORS,
-        marker_size=6,
-        split_key_prefix=UNLABELED_SPLIT_PREFIX,
-    )
-    layers = (labeled, unlabeled)
+    metadata = load_cached_metadata(data_dir, fingerprint)
+    layers = labeled, unlabeled = make_layers(metadata)
 
     # Session state init. Keyed on the metadata fingerprint rather than mere
     # presence, so that re-running build_metadata.py under a live session
