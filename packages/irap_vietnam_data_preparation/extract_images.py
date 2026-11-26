@@ -10,13 +10,13 @@ By default the script aborts on any such duplicate path. With
 not necessarily the one of the first archive. It warns about the paths whose
 copies differ in size or CRC32.
 
-Regular archives are named ``split<N>.rar``. Patch archives hold corrected or
-additional segment images. They are listed in :data:`PATCH_ARCHIVE_ORDER`, in the
-order in which they are applied, after the regular archives, unconditionally
-replacing the image of the same seg_id, so that a later patch archive wins. If
-that image is in another folder than the patch file's name gives, it is
-replaced there (see :func:`plan_patch_merge`). They do not participate in the
-duplicate check (see :func:`_apply_patch_archives`). An
+Regular archives are named ``split<N>.rar``. Patch archives hold corrected,
+renamed or additional segment images. They are listed in
+:data:`PATCH_ARCHIVE_ORDER`, in the order in which they are applied, after the
+regular archives, unconditionally replacing the image of the same seg_id, so
+that a later patch archive wins. An image of that seg_id at another path than
+the patch file's name gives is removed (see :func:`plan_patch_merge`). They do
+not participate in the duplicate check (see :func:`_apply_patch_archives`). An
 archive with another name, or a missing patch archive, stops the script.
 
 The images output directory is wiped before extraction so that no stale or
@@ -437,12 +437,9 @@ class PatchMerge:
     """How the extracted patch files are merged into the images directory."""
 
     moves: list[tuple[Path, Path]]  # (extracted patch file, destination), in merge order
-    # (path given by the patch file's name, destination in another folder) of the patch
-    # files whose seg_id already has an image in another folder.
-    redirections: list[tuple[Path, Path]]
-    # Images at the path given by a redirected patch file's name, e.g. merged there by
-    # an earlier run, which are removed so that their seg_id has one image.
-    removals: list[Path]
+    # The images that are removed after the moves, each with the destination of the
+    # last patch file of its seg_id, which is another path.
+    superseded: dict[Path, Path]
     unmatched: list[Path]  # patch files not named <video_dir>_seg<seg_id>.png
 
 
@@ -452,51 +449,34 @@ def plan_patch_merge(
 ) -> PatchMerge:
     """Plans the merge of the extracted *patch_files*, in order, into the images directory *out*.
 
-    A patch file replaces the image of its seg_id, so that every seg_id keeps a
-    single image. Its destination is ``out/<video_dir>/<file name>``, unless its
-    seg_id has an image at another path (in *seg_id_to_images*, the images in
-    *out*, or from an earlier patch file). The patch file then replaces that
-    image, and an image at the path given by its name is removed. This keeps
-    the existing folder, which is a recording for ``build_metadata.py``, when a
-    patch archive names it differently, e.g. ``_20241211_140925_00_004``
-    instead of ``VID_20241211_140925_00_004``.
-
-    Raises ValueError if the seg_id of a patch file has images at several other
-    paths, since it is then unknown which one the patch file replaces.
+    A patch file becomes the image of its seg_id at ``out/<video_dir>/<file name>``,
+    with a lowercase extension. Every other image of that seg_id is superseded:
+    those in *seg_id_to_images* (the images in *out*) and those of earlier patch
+    files with another name. Each seg_id of a patch file thus keeps a single
+    image, at the path given by its last patch file, so the result does not
+    depend on the patch files that an earlier run merged. A patch archive that
+    names the folder of a recording differently renames it, e.g.
+    ``_20241211_140925_00_004`` to ``VID_20241211_140925_00_004``.
     """
-    seg_id_to_current_images = {s: set(paths) for s, paths in seg_id_to_images.items()}
+    seg_id_to_paths = {s: set(paths) for s, paths in seg_id_to_images.items()}
+    seg_id_to_destination: dict[str, Path] = {}
     moves: list[tuple[Path, Path]] = []
-    redirections: list[tuple[Path, Path]] = []
-    removals: list[Path] = []
     unmatched: list[Path] = []
-    ambiguous: dict[Path, list[Path]] = {}
     for patch_file in patch_files:
         seg_id = layout.seg_id_from_image_name(patch_file.name)
         if seg_id is None:
             unmatched.append(patch_file)
             continue
-        named_path = out / layout.video_dir_from_image_name(patch_file.name) / patch_file.name
-        current_images = seg_id_to_current_images.get(seg_id, set())
-        other_images = current_images - {named_path}
-        if len(other_images) > 1:
-            ambiguous[patch_file] = sorted(other_images)
-            continue
-        if other_images:
-            (destination,) = other_images
-            redirections.append((named_path, destination))
-            if named_path in current_images:
-                removals.append(named_path)
-        else:
-            destination = named_path
+        video_dir = layout.video_dir_from_image_name(patch_file.name)
+        # The images are found by "*.png", which does not match ".PNG" on Linux.
+        destination = out / video_dir / patch_file.with_suffix(".png").name
         moves.append((patch_file, destination))
-        seg_id_to_current_images[seg_id] = {destination}
-    if ambiguous:
-        examples = "; ".join(f"{f.name}: {', '.join(str(p) for p in paths)}"
-                             for f, paths in list(ambiguous.items())[:5])
-        raise ValueError(f"{len(ambiguous)} patch file(s) have a seg_id with images in "
-                         f"several other folders, so it is unknown which one they "
-                         f"replace, e.g. {examples}")
-    return PatchMerge(moves, redirections, removals, unmatched)
+        seg_id_to_paths.setdefault(seg_id, set()).add(destination)
+        seg_id_to_destination[seg_id] = destination
+    superseded = {image: destination
+                  for seg_id, destination in seg_id_to_destination.items()
+                  for image in sorted(seg_id_to_paths[seg_id] - {destination})}
+    return PatchMerge(moves, superseded, unmatched)
 
 
 def _apply_patch_archives(
@@ -509,8 +489,8 @@ def _apply_patch_archives(
     directory ``tmp`` (fresh, so the extractor's skip-if-exists mode never
     triggers and concurrent extractions cannot race). Every
     ``<video_dir>_segN.png`` file then replaces the image of its seg_id: it is
-    moved to ``out/<video_dir>/<file>``, or to the existing image of its seg_id
-    in another folder (see :func:`plan_patch_merge`), whose folders are reported.
+    moved to ``out/<video_dir>/<file>``, and the images of its seg_id at other
+    paths are removed (see :func:`plan_patch_merge`). Their folders are reported.
     The owning ``<video_dir>`` is recovered from the filename because some patch
     archives wrap the video folders in arbitrary (sometimes nested) folders, so
     the extracted directory structure cannot be trusted the way the regular
@@ -541,8 +521,8 @@ def _apply_patch_archives(
         src_files = [f for a in archives for f in sorted(get_extraction_dir(a).rglob("*"))
                      if f.is_file()]
         merge = plan_patch_merge(src_files, out, layout.index_images_by_seg_id(out))
-        replaced = 0  # overwrote a file the regular archives produced
-        added = 0      # brand-new file
+        replaced = 0  # overwrote the file at its destination
+        added = 0     # its destination is a new path
         patched_files: set[Path] = set()
         files_in_several_archives: set[Path] = set()
         for src_file, dst_file in tqdm(merge.moves, unit="file", desc="Merging",
@@ -556,9 +536,9 @@ def _apply_patch_archives(
                 added += 1
             patched_files.add(dst_file)
             src_file.replace(dst_file)
-        for path in merge.removals:
-            path.unlink()
-        for folder in {path.parent for path in merge.removals}:
+        for image in merge.superseded:
+            image.unlink()
+        for folder in {image.parent for image in merge.superseded}:
             if not any(folder.iterdir()):
                 folder.rmdir()
 
@@ -568,18 +548,17 @@ def _apply_patch_archives(
                   file=sys.stderr)
             _print_path_examples(merge.unmatched, tmp)
 
-        if merge.redirections:
-            folder_pair_counts = Counter((named.parent.name, dst.parent.name)
-                                         for named, dst in merge.redirections)
-            print(f"WARN: {len(merge.redirections)} patch file(s) replaced the image of "
-                  f"their seg_id in another folder than their name gives "
-                  f"(folder in the name -> folder kept: number of files):",
-                  file=sys.stderr)
-            for (named_folder, kept_folder), n in sorted(folder_pair_counts.items()):
-                print(f"    {named_folder} -> {kept_folder}: {n}", file=sys.stderr)
-            if merge.removals:
-                print(f"  Removed {len(merge.removals)} image(s) at the paths given by "
-                      f"these names, e.g. from an earlier run.", file=sys.stderr)
+        if merge.superseded:
+            folder_pair_counts = Counter((image.parent, dst.parent)
+                                         for image, dst in merge.superseded.items())
+            print(f"WARN: {len(merge.superseded)} image(s) were removed, since a patch "
+                  f"file replaced them at another path (folder of the removed images -> "
+                  f"folder of the patch files: number of images, files left in the "
+                  f"former):", file=sys.stderr)
+            for (old_folder, new_folder), n in sorted(folder_pair_counts.items()):
+                num_left = sum(1 for _ in old_folder.iterdir()) if old_folder.is_dir() else 0
+                print(f"    {old_folder.name} -> {new_folder.name}: {n}, {num_left} left",
+                      file=sys.stderr)
 
         if files_in_several_archives:
             print(f"WARN: {len(files_in_several_archives)} image(s) are replaced by more "
@@ -587,8 +566,8 @@ def _apply_patch_archives(
                   file=sys.stderr)
             _print_path_examples(sorted(files_in_several_archives), out)
 
-        print(f"  {replaced + added} file(s) merged: {replaced} replaced "
-              f"existing, {added} newly added.")
+        print(f"  {replaced + added} file(s) merged: {replaced} replaced the file at "
+              f"their path, {added} have a new path.")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -680,12 +659,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Flattening splitN/ wrappers...")
         _flatten_split_wrappers(out)
 
-    try:
-        _apply_patch_archives(binary, kind, patch_archives, out,
-                              layout.patch_archives_tmp_dir(args.data_dir), jobs=args.jobs)
-    except ValueError as e:  # from plan_patch_merge, before any file is merged
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+    _apply_patch_archives(binary, kind, patch_archives, out,
+                          layout.patch_archives_tmp_dir(args.data_dir), jobs=args.jobs)
 
     print(f"\nDone. {sum(1 for p in out.rglob('*') if p.is_file())} file(s) in {out}")
     return 0
