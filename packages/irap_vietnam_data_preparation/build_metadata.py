@@ -28,7 +28,7 @@ Writes (into <data_dir>/_work/):
     build_report.json                     (counts, warnings)
 
 Images that do not show their segment are left out as if their files were missing,
-and the rows of their segments are dropped (``exclude_images``). They are the images
+and the rows of their segments are dropped (``exclude_repeated_images``). They are the images
 that ``repeated_images.find_images_to_exclude`` finds by their equal files. Each is
 printed as a warning and listed in the build report.
 
@@ -60,7 +60,7 @@ import argparse
 import bisect
 import json
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 import typing as T
 
@@ -69,7 +69,7 @@ import pandas as pd
 
 import layout
 from parse_coding_tables import ordered_attribute_names
-from repeated_images import find_equal_file_groups, find_images_to_exclude, get_folder_to_seg_ids
+from repeated_images import find_equal_file_groups, find_images_to_exclude
 
 
 # Each unit of seg_id step corresponds to 10 m along a section. A 20 m labeled
@@ -81,6 +81,12 @@ ADJACENCY_TOLERANCE_KM = 0.0025  # ±2.5 m
 # (see split_folders_into_recordings). 100 m allows for a few missing images;
 # the recordings of the Vietnam "nan" folder are 89 or more seg_ids apart.
 MAX_SEG_ID_STEP_WITHIN_RECORDING = 10
+# Two consecutive labeled segments that are farther apart than their seg_id step gives by
+# more than this are in different recordings (see split_run_at_position_jumps). In the
+# checked rows (2026-11-26), they are farther apart by less than 30 m within a recording,
+# and by 847 m or more at the 3 places where a run of seg_ids holds several recordings.
+MAX_POSITION_JUMP_WITHIN_RECORDING_KM = 0.1
+EARTH_RADIUS_KM = 6371.0
 
 
 def choose_image_of_seg_id(image_paths: T.Iterable[Path]) -> Path:
@@ -88,54 +94,48 @@ def choose_image_of_seg_id(image_paths: T.Iterable[Path]) -> Path:
     return min(image_paths)
 
 
-def exclude_images(
-    seg_id_to_image_paths: T.Mapping[str, list[Path]],
-    excluded_folders: T.Collection[str],
-    excluded_seg_ids: T.Collection[str],
-) -> dict[str, list[Path]]:
-    """Leaves out the images of the excluded folders and seg_ids.
-
-    The build then treats them as if their files were missing.
-    """
-    kept = {seg_id: [path for path in paths if path.parent.name not in excluded_folders]
-            for seg_id, paths in seg_id_to_image_paths.items()
-            if seg_id not in excluded_seg_ids}
-    return {seg_id: paths for seg_id, paths in kept.items() if paths}
-
-
 def exclude_repeated_images(
     seg_id_to_image_paths: T.Mapping[str, list[Path]],
     root: Path,
+    seg_to_latlon: T.Mapping[str, tuple[float, float]],
 ) -> tuple[dict[str, list[Path]], dict[str, T.Any]]:
-    """Leaves out images because of equal images (`repeated_images.find_images_to_exclude`),
-    as `exclude_images`, and warns of them.
+    """Leaves out the seg_ids of the recordings and images that
+    `repeated_images.find_images_to_exclude` finds by equal images, and warns of them.
+
+    The build then treats their images as if the files were missing.
 
     Args:
         seg_id_to_image_paths: The images of each seg_id, relative to ``root``.
+        seg_to_latlon: The position of each labeled segment, which delimits the
+            recordings (see `split_folders_into_recordings`).
 
     Returns:
-        The kept images of each seg_id, and a report of the left-out ones.
+        The images of the kept seg_ids, and a report of the left-out ones.
     """
     seg_id_to_image_path = {sid: root / choose_image_of_seg_id(paths)
                             for sid, paths in seg_id_to_image_paths.items()}
-    excluded_folders, excluded_seg_ids = find_images_to_exclude(
-        get_folder_to_seg_ids(seg_id_to_image_path), find_equal_file_groups(seg_id_to_image_path))
-    kept = exclude_images(seg_id_to_image_paths, excluded_folders, excluded_seg_ids)
-    folder_to_num_images = Counter(
-        path.parent.name for paths in seg_id_to_image_paths.values() for path in paths)
-    excluded_folder_to_num_images = {f: folder_to_num_images[f] for f in excluded_folders}
-    num_excluded_images = folder_to_num_images.total() - sum(map(len, kept.values()))
+    recording_to_seg_ids = get_recording_to_seg_ids(seg_id_to_image_path, seg_to_latlon)
+    excluded_recordings, excluded_seg_ids = find_images_to_exclude(
+        recording_to_seg_ids, find_equal_file_groups(seg_id_to_image_path))
+    excluded_recording_to_num_images = {recording: len(recording_to_seg_ids[recording])
+                                        for recording in excluded_recordings}
+    all_excluded_seg_ids = excluded_seg_ids.keys() | {
+        sid for recording in excluded_recordings for sid in recording_to_seg_ids[recording]}
+    kept = {sid: paths for sid, paths in seg_id_to_image_paths.items()
+            if sid not in all_excluded_seg_ids}
+    num_excluded_images = (sum(map(len, seg_id_to_image_paths.values()))
+                           - sum(map(len, kept.values())))
     if num_excluded_images:
         print(f"WARNING: left out {num_excluded_images} images because of equal images "
               f"(see repeated_images.find_images_to_exclude):", file=sys.stderr)
-        for folder, reason in excluded_folders.items():
-            print(f"  folder {folder} ({excluded_folder_to_num_images[folder]} images): "
-                  f"{reason}", file=sys.stderr)
+        for recording, reason in excluded_recordings.items():
+            print(f"  recording {recording} ({excluded_recording_to_num_images[recording]} "
+                  f"images): {reason}", file=sys.stderr)
         for sid, reason in excluded_seg_ids.items():
             print(f"  {sid}: {reason}", file=sys.stderr)
     return kept, {"num_images": num_excluded_images,
-                  "folder_to_reason": excluded_folders,
-                  "folder_to_num_images": excluded_folder_to_num_images,
+                  "recording_to_reason": excluded_recordings,
+                  "recording_to_num_images": excluded_recording_to_num_images,
                   "seg_id_to_reason": excluded_seg_ids}
 
 
@@ -319,7 +319,48 @@ def split_into_runs(sorted_ids: list[int], max_step: int) -> list[list[int]]:
     return runs
 
 
-def split_folders_into_recordings(seg_to_folder: dict[str, str]) -> dict[str, str]:
+def compute_distance_km(latlon_a: T.Any, latlon_b: T.Any) -> T.Any:
+    """Computes the great-circle distance of (latitude, longitude) points in degrees.
+
+    Args:
+        latlon_a: An array-like of shape ``(..., 2)``, e.g. one point or ``(N, 1, 2)``.
+        latlon_b: An array-like that broadcasts against `latlon_a`, e.g. ``(M, 2)``.
+
+    Returns:
+        The distances, with the broadcast shape without its last dimension.
+    """
+    a, b = np.radians(latlon_a), np.radians(latlon_b)
+    haversine = (np.sin((b[..., 0] - a[..., 0]) / 2) ** 2
+                 + np.cos(a[..., 0]) * np.cos(b[..., 0]) * np.sin((b[..., 1] - a[..., 1]) / 2) ** 2)
+    return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(haversine))
+
+
+def split_run_at_position_jumps(
+    run: list[int], seg_to_latlon: T.Mapping[str, tuple[float, float]],
+) -> list[list[int]]:
+    """Splits a non-empty run of sorted seg_ids before each labeled segment that is too far
+    from the labeled segment before it.
+
+    Too far is more than ``MAX_POSITION_JUMP_WITHIN_RECORDING_KM`` beyond the distance
+    that their seg_id step gives. The unlabeled segments between the two stay in the
+    earlier part, as there is nothing to place them by.
+    """
+    labeled_seg_ids = [sid for sid in run if str(sid) in seg_to_latlon]
+    part_starts = {
+        curr for prev, curr in zip(labeled_seg_ids, labeled_seg_ids[1:])
+        if compute_distance_km(seg_to_latlon[str(prev)], seg_to_latlon[str(curr)])
+        > (curr - prev) * SEG_ID_STEP_TO_KM + MAX_POSITION_JUMP_WITHIN_RECORDING_KM}
+    parts: list[list[int]] = [[]]
+    for sid in run:
+        if sid in part_starts:
+            parts.append([])
+        parts[-1].append(sid)
+    return parts
+
+
+def split_folders_into_recordings(
+    seg_to_folder: dict[str, str], seg_to_latlon: T.Mapping[str, tuple[float, float]],
+) -> dict[str, str]:
     """Map each seg_id to its recording: its image folder, or a run of it.
 
     seg_ids count up by 1 every 10 m within a recording and jump between
@@ -328,6 +369,14 @@ def split_folders_into_recordings(seg_to_folder: dict[str, str]) -> dict[str, st
     from different roads. Such a folder is split wherever consecutive seg_ids
     are more than ``MAX_SEG_ID_STEP_WITHIN_RECORDING`` apart, so that each
     recording is placed on the map and assigned to a split on its own.
+
+    Some recordings follow each other without such a step in the seg_ids. A run
+    is therefore also split where the positions of its labeled segments jump
+    (`split_run_at_position_jumps`).
+
+    Args:
+        seg_to_folder: The image folder of each seg_id.
+        seg_to_latlon: The (latitude, longitude) of each labeled segment.
 
     Returns:
         ``seg_id -> recording``, where the recording is the folder name for a
@@ -339,11 +388,26 @@ def split_folders_into_recordings(seg_to_folder: dict[str, str]) -> dict[str, st
         folder_to_seg_ids[folder].append(int(sid))
     seg_to_recording: dict[str, str] = {}
     for folder, seg_ids in folder_to_seg_ids.items():
-        runs = split_into_runs(sorted(seg_ids), MAX_SEG_ID_STEP_WITHIN_RECORDING)
+        runs = [part
+                for run in split_into_runs(sorted(seg_ids), MAX_SEG_ID_STEP_WITHIN_RECORDING)
+                for part in split_run_at_position_jumps(run, seg_to_latlon)]
         for run in runs:
             recording = folder if len(runs) == 1 else f"{folder}@{run[0]}"
             seg_to_recording.update((str(sid), recording) for sid in run)
     return seg_to_recording
+
+
+def get_recording_to_seg_ids(
+    seg_id_to_image_path: T.Mapping[str, Path],
+    seg_to_latlon: T.Mapping[str, tuple[float, float]],
+) -> dict[str, list[str]]:
+    """Returns the seg_ids of each recording (`split_folders_into_recordings`), in seg_id order."""
+    seg_to_recording = split_folders_into_recordings(
+        {sid: path.parent.name for sid, path in seg_id_to_image_path.items()}, seg_to_latlon)
+    recording_to_seg_ids: dict[str, list[str]] = defaultdict(list)
+    for sid in sorted(seg_to_recording, key=int):
+        recording_to_seg_ids[seg_to_recording[sid]].append(sid)
+    return dict(recording_to_seg_ids)
 
 
 def interleave_unlabeled_into_road_sequences(
@@ -479,8 +543,12 @@ def main(argv: list[str] | None = None) -> int:
     seg_id_to_all_image_paths = {
         seg_id: [p.relative_to(images.parent) for p in paths]
         for seg_id, paths in layout.index_images_by_seg_id(images).items()}
+    seg_to_latlon = dict(zip(
+        df["seg_id"].astype(str),
+        zip(df["lat"].astype(float), df["lon"].astype(float)),
+    ))
     seg_id_to_image_paths, excluded_images_report = exclude_repeated_images(
-        seg_id_to_all_image_paths, images.parent)
+        seg_id_to_all_image_paths, images.parent, seg_to_latlon)
     is_excluded_row = df["seg_id"].astype(str).isin(
         seg_id_to_all_image_paths.keys() - seg_id_to_image_paths.keys())
     num_excluded_rows = int(is_excluded_row.sum())
@@ -501,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     all_seg_to_path = {**seg_to_path, **unlabeled_seg_to_path}
     seg_to_folder = {sid: Path(rel).parent.name for sid, rel in all_seg_to_path.items()}
-    seg_to_recording = split_folders_into_recordings(seg_to_folder)
+    seg_to_recording = split_folders_into_recordings(seg_to_folder, seg_to_latlon)
     print(f"  Images under FRAMES: {num_images_total} total = "
           f"{len(seg_to_path)} labeled (matched to a parquet row) + "
           f"{len(unlabeled_seg_ids)} unlabeled (no parquet row).")
@@ -514,7 +582,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     if folders_split_into_recordings:
         print(f"  Split {len(folders_split_into_recordings)} image folder(s) holding several "
-              f"recordings (seg_id steps > {MAX_SEG_ID_STEP_WITHIN_RECORDING}): "
+              f"recordings (seg_id steps > {MAX_SEG_ID_STEP_WITHIN_RECORDING} or position "
+              f"jumps > {MAX_POSITION_JUMP_WITHIN_RECORDING_KM * 1000:.0f} m): "
               + ", ".join(f"{folder!r} into {len(recordings)}"
                           for folder, recordings in folders_split_into_recordings.items())
               + ".")
@@ -525,10 +594,6 @@ def main(argv: list[str] | None = None) -> int:
     labeled_recording_to_seg_ids: dict[str, list[str]] = defaultdict(list)
     for sid in seg_to_path:
         labeled_recording_to_seg_ids[seg_to_recording[sid]].append(sid)
-    labeled_seg_to_latlon = dict(zip(
-        df["seg_id"].astype(str),
-        zip(df["lat"].astype(float), df["lon"].astype(float)),
-    ))
     unlabeled_recording_to_seg_ids: dict[str, list[str]] = defaultdict(list)
     for sid in unlabeled_seg_ids:
         unlabeled_recording_to_seg_ids[seg_to_recording[sid]].append(sid)
@@ -537,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
     unplaceable_unlabeled_seg_ids: list[str] = []
     for recording, segs in unlabeled_recording_to_seg_ids.items():
         labeled_siblings = labeled_recording_to_seg_ids.get(recording, [])
-        sibling_coords = [labeled_seg_to_latlon[s] for s in labeled_siblings]
+        sibling_coords = [seg_to_latlon[s] for s in labeled_siblings]
         if not sibling_coords:
             unplaceable_unlabeled_seg_ids.extend(segs)
             continue
