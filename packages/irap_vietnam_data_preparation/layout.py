@@ -33,6 +33,17 @@ SEGMENT_ID_TO_ROAD_DATA_FILENAME = "segment_id_to_road_data.json"
 ROAD_ID_TO_SEGMENT_ID_SEQUENCE_FILENAME = "road_id_to_segment_id_sequence.json"
 SPLITS_FILENAME = "splits.json"
 
+# The keys of splits.json: the names of the labeled splits, the names of the unlabeled splits,
+# which are the names of the labeled splits with the prefix, and UNLOCATED_SPLIT for the
+# unlabeled segments without a location.
+LABELED_SPLIT_NAMES = ("train", "val", "test")
+UNLABELED_SPLIT_PREFIX = "unlabeled_"
+UNLOCATED_SPLIT = "unlabeled_unlocated"
+
+
+def is_unlabeled_split(split: str) -> bool:
+    return split.startswith(UNLABELED_SPLIT_PREFIX)
+
 
 def seg_id_from_image_name(file_name: str) -> str | None:
     """Returns the seg_id of a segment image file name without leading zeros, or None."""

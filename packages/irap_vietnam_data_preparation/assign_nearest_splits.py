@@ -33,7 +33,8 @@ import numpy as np
 import layout
 import split_editor
 from build_metadata import compute_distance_km
-from split_editor import REAL_SPLITS, UNASSIGNED
+from layout import LABELED_SPLIT_NAMES
+from split_editor import UNASSIGNED
 
 # A sequence is clearly nearest to one split if the nearest segment of every other split is
 # more than this many times as far as the nearest segment. In the checked data (2026-11-26),
@@ -143,7 +144,7 @@ def print_assignment_report(layer: split_editor.Layer,
             still_unassigned_sequences.append(seq)
     summary = ", ".join(
         f"{layer.split_key(split)}: {split_to_num_sequences[split]} sequences"
-        f" ({split_to_num_segments[split]} segments)" for split in REAL_SPLITS)
+        f" ({split_to_num_segments[split]} segments)" for split in LABELED_SPLIT_NAMES)
     print(f"Assigned {split_to_num_sequences.total()} of {len(sequence_to_nearest_split)}"
           f" unassigned {layer.name} sequences: {summary}.")
     if still_unassigned_sequences:
@@ -171,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     assignments, warnings = split_editor.make_initial_assignments(splits, layers)
     for warning in warnings:
         print(f"WARNING: {warning}", file=sys.stderr)
-    if not any(split in REAL_SPLITS for split in assignments[labeled.name].values()):
+    if not any(split in LABELED_SPLIT_NAMES for split in assignments[labeled.name].values()):
         print(f"ERROR: {splits_path} assigns no labeled sequence.", file=sys.stderr)
         return 1
 

@@ -42,18 +42,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import layout
+from layout import LABELED_SPLIT_NAMES, UNLABELED_SPLIT_PREFIX, UNLOCATED_SPLIT
 from parse_coding_tables import is_real_attribute_code
 
 
 # Splits ###########################################################################################
 
-REAL_SPLITS = ("train", "val", "test")
 UNASSIGNED = "none"
-SPLITS = (*REAL_SPLITS, UNASSIGNED)
-
-# Keys of splits.json other than the names of REAL_SPLITS.
-UNLABELED_SPLIT_PREFIX = "unlabeled_"
-UNLOCATED_SPLIT = "unlabeled_unlocated"
+SPLITS = (*LABELED_SPLIT_NAMES, UNASSIGNED)
 
 COLORS: dict[str, str] = {
     "train": "#4477AA",
@@ -108,7 +104,7 @@ MIN_NUM_SEQUENCES_KEY = "min_num_sequences"  # in st.session_state
 # assignment of whole sequences can cover it everywhere. Such classes are
 # reported separately rather than counted against the current assignment, which
 # would otherwise show a floor that no amount of redrawing can bring down.
-STRATIFIABLE_FACTOR = len(REAL_SPLITS)
+STRATIFIABLE_FACTOR = len(LABELED_SPLIT_NAMES)
 
 
 # Metadata loading #################################################################################
@@ -397,7 +393,7 @@ def compute_class_coverage(
 
     absent: dict[str, set] = {}
     short: dict[str, list] = {}
-    for split in REAL_SPLITS:
+    for split in LABELED_SPLIT_NAMES:
         absent[split] = {c for c in num_sequences if split_num_sequences[split][c] == 0}
         # Worst first: no sequences at all before merely thin, and among equals
         # the classes with most to draw from, which are the easiest to fix.
@@ -422,7 +418,7 @@ def compute_class_coverage(
     for cls in num_segments:
         attr_to_classes[cls[0]].append(cls)
     max_tvd: dict[str, float | None] = {}
-    for split in REAL_SPLITS:
+    for split in LABELED_SPLIT_NAMES:
         tvds = []
         for classes in attr_to_classes.values():
             total = sum(num_segments[c] for c in classes)
@@ -540,7 +536,7 @@ def make_initial_assignments(
     warnings: list[str] = []
     for layer in layers:
         assignment = assign_sequences_from_splits(
-            {split: splits.get(layer.split_key(split), []) for split in REAL_SPLITS},
+            {split: splits.get(layer.split_key(split), []) for split in LABELED_SPLIT_NAMES},
             invert_sequence_segments(layer.data),
         )
         assignments[layer.name] = {
@@ -556,7 +552,7 @@ def make_splits(
     unlocated_seg_ids: list[str],
 ) -> dict[str, list[str]]:
     """Makes the content of splits.json (format documented in README.md, "`splits.json` format")."""
-    splits: dict[str, list[str]] = {split: [] for split in REAL_SPLITS}
+    splits: dict[str, list[str]] = {split: [] for split in LABELED_SPLIT_NAMES}
     for layer in layers:
         for seq, split in assignments[layer.name].items():
             if split != UNASSIGNED:
@@ -831,7 +827,7 @@ def _render_coverage_panel(
             "<th>split</th><th>absent</th><th>fixable</th><th>short</th><th>TVD</th></tr>"
         )
         rows = ""
-        for split in REAL_SPLITS:
+        for split in LABELED_SPLIT_NAMES:
             # An unassigned split has no distribution to compare, and printing
             # 0.000 there would read as a perfect match rather than "no data".
             max_tvd = coverage.max_tvd[split]
@@ -847,7 +843,7 @@ def _render_coverage_panel(
             unsafe_allow_html=True,
         )
 
-        for split in REAL_SPLITS:
+        for split in LABELED_SPLIT_NAMES:
             entries = [
                 f"{num_sequences} seq / {num_segments} seg — {get_class_name(cls, class_names)} "
                 f"[{coverage.class_to_num_sequences[cls]} seq total]"
@@ -951,7 +947,7 @@ def main() -> None:
             _sidebar_row(labeled, assignments[labeled.name], split, use_small_style=False),
             unsafe_allow_html=True,
         )
-        if split in REAL_SPLITS and coverage.num_classes:
+        if split in LABELED_SPLIT_NAMES and coverage.num_classes:
             st.sidebar.markdown(_coverage_row_html(coverage, split), unsafe_allow_html=True)
         if unlabeled.data:
             st.sidebar.markdown(
