@@ -568,6 +568,7 @@ def parse_row_attributes(
 
 def process_file(
     df: pd.DataFrame,
+    cols: T.Mapping[str, str],
     path: Path,
     inputs: ParseInputs,
     report: ParseReport,
@@ -575,6 +576,8 @@ def process_file(
     drop_missing_attrs: bool = False,
 ) -> list[dict]:
     """Parse one coding-table sheet (``df``, read from ``path``) into normalized row dicts.
+
+    ``cols`` is the column of each required column (see :func:`validate_columns`).
 
     Records are dicts with keys:
         section, distance, length, lat, lon, seg_id, comments, source_file,
@@ -587,14 +590,6 @@ def process_file(
     file are reported once, as EMPTY_ATTRIBUTE.
     """
     attribute_names = inputs.attribute_names
-    cols, ignored_with_values = validate_columns(
-        df, attribute_names, file=path,
-        ignored_attributes=inputs.ignored_attributes,
-        name_mapping=inputs.name_mapping,
-    )
-
-    report.issues.extend(Issue(IssueKind.IGNORED_COLUMN_WITH_VALUES, path.name, column=attr)
-                         for attr in ignored_with_values)
 
     # Optional FPZ-to-annotation offset column (not a required column).
     norm_to_actual = {normalize_header(c).lower(): c for c in df.columns}
@@ -689,7 +684,6 @@ def process_file(
             "seg_id": str(seg_id),
             "comments": comments,
             "source_file": path.name,
-            # Provenance for downstream tooling. Dropped before rows.parquet.
             "source_row": row,
         }
         rec.update(attrs)
@@ -812,6 +806,55 @@ def prepare_parse_inputs(data_dir: Path) -> ParseInputs:
     )
 
 
+def read_coding_tables(
+    inputs: ParseInputs,
+    report: ParseReport,
+) -> T.Iterator[tuple[Path, pd.DataFrame, dict[str, str]]]:
+    """Reads the coding-table files, and yields each file with its sheet and required columns.
+
+    The columns are those of :func:`validate_columns`. Skips the other files
+    with a message: empty sheets, files that are not coding tables, and files
+    that fail the column validation. Records the skipped files, the ignored
+    extra sheets and the ignored columns with values in ``report``.
+    """
+    for path in tqdm(inputs.files, desc="Parsing", unit="file"):
+        try:
+            df, ignored_sheets = read_sheet(path)
+        except Exception as e:
+            print(f"ERROR reading {path}: {e}", file=sys.stderr)
+            raise
+        if ignored_sheets:
+            report.issues.append(Issue(IssueKind.EXTRA_SHEETS_IGNORED, path.name,
+                                       value=tuple(ignored_sheets)))
+        if df.empty:
+            print(f"INFO: {path.name}: skipping – empty sheet", file=sys.stderr)
+            report.skipped_files[path.name] = "empty sheet"
+            continue
+        if not file_is_coding_table(df, inputs.attribute_names):
+            print(f"INFO: {path.name}: skipping – not a coding table "
+                  f"(no 'Section' column or no recognizable attribute column)",
+                  file=sys.stderr)
+            report.skipped_files[path.name] = (
+                "not a coding table (no 'Section' column or no recognizable "
+                "attribute column)"
+            )
+            continue
+        try:
+            cols, ignored_with_values = validate_columns(
+                df, inputs.attribute_names, file=path,
+                ignored_attributes=inputs.ignored_attributes,
+                name_mapping=inputs.name_mapping,
+            )
+        except ValueError as e:
+            print(f"WARN: {path.name}: skipping – column validation failed:\n{e}",
+                  file=sys.stderr)
+            report.skipped_files[path.name] = f"column validation failed: {e}"
+            continue
+        report.issues.extend(Issue(IssueKind.IGNORED_COLUMN_WITH_VALUES, path.name, column=attr)
+                             for attr in ignored_with_values)
+        yield path, df, cols
+
+
 def collect_all_rows(
     inputs: ParseInputs,
     *,
@@ -827,36 +870,8 @@ def collect_all_rows(
     """
     rep = report if report is not None else ParseReport()
     all_rows: list[dict] = []
-    for path in tqdm(inputs.files, desc="Parsing", unit="file"):
-        try:
-            df, ignored_sheets = read_sheet(path)
-        except Exception as e:
-            print(f"ERROR reading {path}: {e}", file=sys.stderr)
-            raise
-        if ignored_sheets:
-            rep.issues.append(Issue(IssueKind.EXTRA_SHEETS_IGNORED, path.name,
-                                    value=tuple(ignored_sheets)))
-        if df.empty:
-            print(f"INFO: {path.name}: skipping – empty sheet", file=sys.stderr)
-            rep.skipped_files[path.name] = "empty sheet"
-            continue
-        if not file_is_coding_table(df, inputs.attribute_names):
-            print(f"INFO: {path.name}: skipping – not a coding table "
-                  f"(no 'Section' column or no recognizable attribute column)",
-                  file=sys.stderr)
-            rep.skipped_files[path.name] = (
-                "not a coding table (no 'Section' column or no recognizable "
-                "attribute column)"
-            )
-            continue
-        try:
-            rows = process_file(df, path, inputs, rep,
-                                drop_missing_attrs=drop_missing_attrs)
-        except ValueError as e:
-            print(f"WARN: {path.name}: skipping – column validation failed:\n{e}",
-                  file=sys.stderr)
-            rep.skipped_files[path.name] = f"column validation failed: {e}"
-            continue
+    for path, df, cols in read_coding_tables(inputs, rep):
+        rows = process_file(df, cols, path, inputs, rep, drop_missing_attrs=drop_missing_attrs)
         rep.processed_files.append(path.name)
         rep.rows_kept_per_file[path.name] = len(rows)
         all_rows.extend(rows)
@@ -1075,9 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
     print_issue_summary(issues)
 
     layout.work_dir(args.data_dir).mkdir(parents=True, exist_ok=True)
-    # ``source_row`` is provenance for other tools (e.g. cross-annotator eval);
-    # keep it out of rows.parquet so the public schema stays stable.
-    df_out = pd.DataFrame(kept).drop(columns=["source_row"], errors="ignore")
+    df_out = pd.DataFrame(kept)
     parquet_path = layout.rows_path(args.data_dir)
     df_out.to_parquet(parquet_path, index=False)
     print(f"Wrote {parquet_path} ({len(df_out)} rows)")
