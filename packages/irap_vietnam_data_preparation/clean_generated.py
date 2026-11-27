@@ -1,8 +1,8 @@
 """Delete all pipeline outputs generated after the extraction step.
 
 Removes the files produced by ``parse_coding_tables.py``,
-``build_metadata.py``, ``find_repeated_images.py`` and
-``split_editor.py``, leaving the inputs to the extraction step
+``build_metadata.py``, ``find_repeated_images.py``, ``split_editor.py``
+and ``write_split_coding_tables.py``, leaving the inputs to the extraction step
 (``_raw/``) and its outputs (``FRAMES/`` and
 ``_work/FRAMES_duplicates/``) intact.
 
@@ -35,6 +35,9 @@ def _targets(data_dir: Path) -> list[Path]:
         layout.repeated_images_report_path(data_dir),
         # split_editor.py
         layout.splits_path(data_dir),
+        # write_split_coding_tables.py
+        layout.labeled_splits_coding_table_path(data_dir),
+        layout.unlabeled_splits_coding_table_path(data_dir),
     ]
 
 

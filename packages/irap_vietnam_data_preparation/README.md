@@ -140,6 +140,8 @@ python assign_nearest_splits.py $DATA_DIR
 
 It prints each assignment with the two distances and writes `splits.json` like **Save** does. `--dry-run` only prints. Check the result in the editor.
 
+Optional: `python write_split_coding_tables.py $DATA_DIR` writes the coding-table rows of the segments in the labeled splits and of those in the unlabeled splits to `_work/`.
+
 #### `splits.json` format
 
 `{<split>: [seg_id, ...]}`, with seg_ids as strings:

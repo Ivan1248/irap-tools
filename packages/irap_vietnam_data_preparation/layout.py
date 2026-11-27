@@ -32,6 +32,8 @@ SEGMENT_ID_TO_DATA_PATHS_REL_FILENAME = "segment_id_to_data_paths_rel.json"
 SEGMENT_ID_TO_ROAD_DATA_FILENAME = "segment_id_to_road_data.json"
 ROAD_ID_TO_SEGMENT_ID_SEQUENCE_FILENAME = "road_id_to_segment_id_sequence.json"
 SPLITS_FILENAME = "splits.json"
+LABELED_SPLITS_CODING_TABLE = "labeled_splits_coding_table.xlsx"
+UNLABELED_SPLITS_CODING_TABLE = "unlabeled_splits_coding_table.xlsx"
 
 # The keys of splits.json: the names of the labeled splits, the names of the unlabeled splits,
 # which are the names of the labeled splits with the prefix, and UNLOCATED_SPLIT for the
@@ -157,3 +159,11 @@ def road_id_to_segment_id_sequence_path(data_dir: Path) -> Path:
 
 def splits_path(data_dir: Path) -> Path:
     return metadata_dir(data_dir) / SPLITS_FILENAME
+
+
+def labeled_splits_coding_table_path(data_dir: Path) -> Path:
+    return work_dir(data_dir) / LABELED_SPLITS_CODING_TABLE
+
+
+def unlabeled_splits_coding_table_path(data_dir: Path) -> Path:
+    return work_dir(data_dir) / UNLABELED_SPLITS_CODING_TABLE
